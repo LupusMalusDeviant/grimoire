@@ -1,0 +1,106 @@
+# Nightly engine run: release-mode test suite on all three operating systems.
+# Scheduled runs are skipped when main had no commits in the last 24 hours.
+name: Nightly
+
+on:
+  schedule:
+    # 02:17 UTC, off the full hour to avoid scheduler congestion.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: Commits in the last 24 hours?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check age of the newest commit
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "Manueller Start: Nightly laeuft unabhaengig vom Commit-Alter."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last_commit=$(git log -1 --format=%ct)
+          age=$(( $(date +%s) - last_commit ))
+          if [ "$age" -lt 86400 ]; then
+            echo "Letzter Commit ist $(( age / 3600 )) h alt: Nightly laeuft."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Nightly uebersprungen::Keine Commits auf main in den letzten 24 Stunden."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test-release:
+    name: release tests (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install software Vulkan (lavapipe)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      - name: Remove stale float probes
+        run: rm -rf target/float-probe
+      - name: Test (release)
+        run: cargo test --workspace --release --locked
+      - name: Upload float probe
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: float-probe-release-${{ matrix.os }}
+          path: target/float-probe/
+          if-no-files-found: warn
+          retention-days: 14
+
+  float-compare:
+    name: Float probe comparison (release)
+    needs: [changes, test-release]
+    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+      - name: Download float probes
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: float-probe-release-*
+          path: float-probe
+      - name: Compare std-trig hashes across operating systems
+        run: bash .github/scripts/compare-float-probes.sh float-probe "Release-Build (Nightly)"
