@@ -23,12 +23,18 @@ enum Target {
 /// GPU validation and out-of-memory errors raised while a frame is prepared and submitted are
 /// returned from [`Renderer::render`]; a lost GPU device makes every later `render` call fail
 /// with [`RenderError::Backend`].
+///
+/// A failed [`Renderer::resize`] (for example beyond the device's texture size limit, or out of
+/// memory) is not clamped or retried: every later `render` call returns that error, as
+/// [`RenderError::OutOfMemory`] or [`RenderError::Backend`], until another `resize` replaces it.
 pub struct WgpuRenderer {
     context: GpuContext,
     target: Target,
     sprites: SpritePass,
     width: u32,
     height: u32,
+    /// Error of the most recent `resize`; never `SurfaceLost`, which callers treat as a skip.
+    resize_error: Option<RenderError>,
 }
 
 impl std::fmt::Debug for WgpuRenderer {
@@ -48,6 +54,24 @@ fn map_gpu_error(error: GpuError) -> RenderError {
         GpuError::SurfaceLost | GpuError::SurfaceUnavailable => RenderError::SurfaceLost,
         GpuError::OutOfMemory => RenderError::OutOfMemory,
         other => RenderError::Backend(other.to_string()),
+    }
+}
+
+fn map_resize_error(error: GpuError, width: u32, height: u32) -> RenderError {
+    match error {
+        GpuError::OutOfMemory => RenderError::OutOfMemory,
+        other => RenderError::Backend(format!("resize to {width}x{height} failed: {other}")),
+    }
+}
+
+/// `RenderError` is not `Clone` in its public contract; the kept resize error is returned again.
+fn repeat_error(error: &RenderError) -> RenderError {
+    match error {
+        RenderError::NoAdapter => RenderError::NoAdapter,
+        RenderError::SurfaceLost => RenderError::SurfaceLost,
+        RenderError::OutOfMemory => RenderError::OutOfMemory,
+        RenderError::NotOffscreen => RenderError::NotOffscreen,
+        RenderError::Backend(message) => RenderError::Backend(message.clone()),
     }
 }
 
@@ -103,6 +127,7 @@ impl WgpuRenderer {
             sprites,
             width,
             height,
+            resize_error: None,
         })
     }
 
@@ -128,6 +153,7 @@ impl WgpuRenderer {
             sprites,
             width,
             height,
+            resize_error: None,
         })
     }
 
@@ -149,6 +175,7 @@ impl WgpuRenderer {
 
 impl Renderer for WgpuRenderer {
     fn resize(&mut self, width: u32, height: u32) {
+        self.resize_error = None;
         if width == 0 || height == 0 {
             self.width = 0;
             self.height = 0;
@@ -165,6 +192,7 @@ impl Renderer for WgpuRenderer {
             log::error!("resize to {width}x{height} failed: {error}");
             self.width = 0;
             self.height = 0;
+            self.resize_error = Some(map_resize_error(error, width, height));
             return;
         }
         self.width = width;
@@ -175,6 +203,9 @@ impl Renderer for WgpuRenderer {
         let start = Instant::now();
         if self.context.is_device_lost() {
             return Err(RenderError::Backend(String::from("GPU device lost")));
+        }
+        if let Some(error) = &self.resize_error {
+            return Err(repeat_error(error));
         }
         if self.width == 0 || self.height == 0 {
             return Ok(skipped_frame(start));

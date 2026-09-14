@@ -199,6 +199,9 @@ pub enum RenderError {
 /// Contract of every renderer implementation. Object-safe.
 pub trait Renderer {
     /// Informs the renderer about a new drawable size in physical pixels. Must tolerate zero sizes.
+    ///
+    /// A non-zero size the renderer cannot use must not turn into silently skipped frames: the
+    /// failure is returned from the following [`Renderer::render`] calls.
     fn resize(&mut self, width: u32, height: u32);
 
     /// Draws `frame`. Never touches simulation state; must accept an empty sprite list.

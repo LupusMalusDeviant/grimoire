@@ -28,6 +28,7 @@ Phase P0 — Fundament.
 ### Fixed
 - `grimoire_core`: `StableHasher` speist jedes NaN kanonisch ein (Bitmuster sind nicht portabel).
 - `grimoire`/`grimoire_platform`: Beenden per Cmd+Q unter macOS verliert kein Spielende mehr. AppKit beendet den Prozess dort direkt nach `AppHandler::shutdown`, ohne dass `run_desktop` zurückkehrt; `run_desktop`, `AppHandler::shutdown`, `App::run` und die Crate-Verträge dokumentieren das. Die Hauptschleife der Fassade implementiert `shutdown` und ruft die neue optionale Methode `GamePlugin::shutdown` genau einmal je Plugin in Registrierungsreihenfolge auf (nicht, wenn der Renderer nicht erzeugt werden konnte); Fehler darin werden geloggt.
+- `grimoire_render`: Ein fehlgeschlagenes `resize` (etwa über dem Texturlimit des Geräts oder bei Speichermangel) lässt das Fenster nicht mehr dauerhaft schwarz, während `render` Erfolg meldet. `WgpuRenderer` behält den Fehler und liefert ihn aus jedem folgenden `render` als `OutOfMemory` bzw. `Backend`, bis ein weiteres `resize` ihn ersetzt; die Fassade beendet den Lauf damit. Keine Wiederholung mit begrenzter Größe; neuer Offscreen-Test mit einer Breite über dem Texturlimit.
 - `grimoire_render`: Surface wird bei `Lost` neu erzeugt, GPU-Validierungsfehler kommen aus `render` zurück, Kreisränder werden nicht mehr abgeschnitten.
 - `grimoire_sim`: `dropped_time` sättigt exakt bei `Duration::MAX`; `f32::min`/`max` durch `dmath` ersetzt (Werte und Golden-Hashes unverändert).
 - `grimoire_platform`: Lebenszyklus als testbare Zustandsmaschine, Temp-Dateinamen beim atomaren Schreiben gekürzt.

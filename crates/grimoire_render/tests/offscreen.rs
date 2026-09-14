@@ -330,6 +330,44 @@ fn empty_frame_clears_only() {
 }
 
 #[test]
+fn failed_resize_is_returned_from_every_render_until_a_resize_succeeds() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut frame = black_frame();
+    frame
+        .sprites
+        .push(circle([0.0, 0.0], 20.0, [1.0, 0.0, 0.0, 1.0]));
+
+    // Beyond the 2D texture limit of every wgpu device.
+    let too_wide = 1 << 20;
+    renderer.resize(too_wide, SIZE);
+    for attempt in 0..2 {
+        match renderer.render(&frame) {
+            Err(RenderError::Backend(message)) => assert!(
+                message.contains(&format!("resize to {too_wide}x{SIZE} failed")),
+                "attempt {attempt}: {message}"
+            ),
+            other => panic!("attempt {attempt}: expected the resize error, got {other:?}"),
+        }
+    }
+
+    renderer.resize(SIZE, SIZE);
+    let stats = renderer
+        .render(&frame)
+        .expect("render after a valid resize");
+    assert_eq!((stats.sprites_drawn, stats.draw_calls), (1, 1));
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    assert_eq!(image.len(), (SIZE * SIZE * 4) as usize);
+    assert_near(
+        pixel(&image, SIZE, SIZE / 2, SIZE / 2),
+        [255, 0, 0, 255],
+        3,
+        "centre after recovery",
+    );
+}
+
+#[test]
 fn zero_size_skips_rendering_until_resized() {
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
