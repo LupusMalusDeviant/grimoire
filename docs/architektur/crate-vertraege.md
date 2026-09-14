@@ -65,6 +65,15 @@ Erzwungen durch `clippy.toml` in diesen Crates, zusätzlich im Review geprüft:
 `AppHandler`, `PlatformContext`, `AppResult`, `PlatformError`, `FileSystem`, `StdFileSystem`,
 `MemoryFileSystem`, `run_desktop`, `run_headless`.
 
+**Fensterplatzierung (Ergänzung P0):** `WindowConfig` hat zusätzlich `monitor: MonitorChoice`
+(`Default`, `Primary`, `Secondary` = erster nicht-primärer Monitor, `Index(n)`; nicht verfügbare
+Wahl → Betriebssystem platziert) und `focus_on_open: bool` (`false` = Fenster öffnet ohne den Fokus
+zu übernehmen). Das Fenster wird auf dem gewählten Monitor zentriert. Für Entwicklung und Tests
+überschreiben die Umgebungsvariablen `GRIMOIRE_WINDOW_MONITOR` (`default|primary|secondary|<index>`)
+und `GRIMOIRE_WINDOW_FOCUS` (`0|1|false|true`) die Konfiguration jedes Programms. Konvention für
+lokale Fenster-Läufe auf dem Entwicklungsrechner: `GRIMOIRE_WINDOW_MONITOR=secondary` und
+`GRIMOIRE_WINDOW_FOCUS=0`.
+
 **Lebenszyklus:** `init` genau einmal (Desktop: nachdem das Fenster existiert) → Events stets vor dem
 nächsten Frame → `frame` fortlaufend → `shutdown` genau einmal nach erfolgreichem `init`.
 Schlägt `init` fehl, endet der Lauf mit `PlatformError::AppInit` ohne `shutdown`.

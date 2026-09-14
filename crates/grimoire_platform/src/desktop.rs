@@ -209,6 +209,7 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
                 f64::from(self.config.height),
             ))
             .with_resizable(self.config.resizable);
+        let attributes = crate::monitor::apply_placement(attributes, event_loop, &self.config);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {

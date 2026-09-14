@@ -23,6 +23,14 @@
 //! On Wayland winit aligns redraws with frame callbacks only through `pre_present_notify`, which
 //! [`PlatformWindow`] does not expose, so the renderer must present with vsync (FIFO) to avoid a
 //! spinning loop.
+//!
+//! ## Window placement during development
+//!
+//! [`WindowConfig::monitor`] and [`WindowConfig::focus_on_open`] choose where the window opens
+//! and whether it takes focus. The environment variables [`ENV_WINDOW_MONITOR`]
+//! (`GRIMOIRE_WINDOW_MONITOR=secondary`) and [`ENV_WINDOW_FOCUS`] (`GRIMOIRE_WINDOW_FOCUS=0`)
+//! override both for any program built on this crate, so examples and smoke tests can open on a
+//! second monitor without stealing focus from the application in front.
 
 pub mod app;
 pub mod clock;
@@ -31,6 +39,7 @@ pub mod error;
 pub mod event;
 pub mod fs;
 pub mod headless;
+mod monitor;
 pub mod window;
 
 pub use app::{AppHandler, AppResult, PlatformContext};
@@ -41,4 +50,6 @@ pub use event::{KeyCode, MouseButton, PlatformEvent, RawInputEvent};
 pub use fs::{FileSystem, MemoryFileSystem, StdFileSystem};
 pub use headless::run_headless;
 pub use raw_window_handle;
-pub use window::{PhysicalSize, PlatformWindow, WindowConfig};
+pub use window::{
+    ENV_WINDOW_FOCUS, ENV_WINDOW_MONITOR, MonitorChoice, PhysicalSize, PlatformWindow, WindowConfig,
+};
