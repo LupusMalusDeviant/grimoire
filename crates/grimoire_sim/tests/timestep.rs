@@ -109,6 +109,16 @@ fn extreme_deltas_never_panic() {
 }
 
 #[test]
+fn dropped_time_saturates_at_duration_max() {
+    let mut timestep = FixedTimestep::new(1);
+    timestep.advance(Duration::MAX);
+    timestep.advance(Duration::MAX);
+    assert_eq!(timestep.dropped_time(), Duration::MAX);
+    timestep.advance(Duration::MAX);
+    assert_eq!(timestep.dropped_time(), Duration::MAX);
+}
+
+#[test]
 fn alpha_stays_below_one_when_rounding_would_reach_it() {
     let mut timestep = FixedTimestep::new(1);
     let plan = timestep.advance(Duration::from_nanos(999_999_999));

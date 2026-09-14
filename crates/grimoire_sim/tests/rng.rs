@@ -5,9 +5,10 @@ use grimoire_sim::{SimRng, derive_rng};
 
 /// First eight `next_u32` values of `SimRng::new(0x5EED)` (algorithm version 1).
 ///
-/// Measured once and hardcoded: the test fails on any platform whose integer arithmetic or
-/// seeding differs, so CI on every target doubles as a cross-platform check. Renew only together
-/// with a deliberate change of `SimRng::ALGORITHM_VERSION`.
+/// Measured once on Windows x86_64 and hardcoded: the test fails on any platform whose integer
+/// arithmetic or seeding differs, so a CI run on each target doubles as a cross-platform check
+/// (not yet verified on other platforms). Renew only together with a deliberate change of
+/// `SimRng::ALGORITHM_VERSION`.
 const GOLDEN_5EED: [u32; 8] = [
     2_851_957_292,
     406_565_052,

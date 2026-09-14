@@ -6,8 +6,8 @@
 //! 1. two independent runs produce identical hash sequences (every 600 ticks and the final tick);
 //! 2. a snapshot at tick 4 000, restored into a freshly built simulation, continues identically;
 //! 3. `replay` over the recorded (and re-encoded) `InputLog` reproduces the hash sequence;
-//! 4. the final hash equals a golden constant, which makes CI on every platform a
-//!    cross-platform determinism check.
+//! 4. the final hash equals a golden constant (measured on Windows x86_64), which turns a
+//!    multi-platform CI run into a cross-platform determinism check.
 
 use std::sync::OnceLock;
 
@@ -21,10 +21,11 @@ use grimoire_sim::{
 
 /// Final `Simulation::state_hash` of the demo scenario after 10 000 ticks.
 ///
-/// This constant is the cross-platform determinism gate: CI runs this test on Windows, Linux and
-/// macOS, and every platform must reproduce the value measured on the development machine
-/// (Windows x86_64). A mismatch on one platform means floating-point or integer behaviour
-/// diverges there and must be investigated, never papered over.
+/// This constant is the cross-platform determinism gate: every platform must reproduce the value
+/// measured on the development machine. So far it was measured and verified only on Windows
+/// x86_64 (debug and release); it becomes a cross-platform check once a CI test matrix over
+/// Windows, Linux and macOS runs this test. A mismatch on one platform means floating-point or
+/// integer behaviour diverges there and must be investigated, never papered over.
 ///
 /// Renew it only when the outcome is supposed to change: a deliberate change of this scenario,
 /// of `World::stable_hash` / `Simulation::state_hash`, of `StableHasher::ALGORITHM_VERSION`, of

@@ -51,7 +51,8 @@ const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 8;
 ///
 /// Time is accumulated exactly in integer units of `nanoseconds × tick_rate_hz`, where one tick
 /// equals 10⁹ units. Nothing is rounded, so frame times that sum to `t` seconds yield exactly
-/// `⌊t × tick_rate_hz⌋` ticks no matter how they are split: there is no drift.
+/// `⌊t × tick_rate_hz⌋` ticks run plus dropped, no matter how they are split: there is no drift.
+/// As long as no single frame exceeds `max_ticks_per_frame`, all of them are run.
 ///
 /// When a frame is so long that more than `max_ticks_per_frame` ticks are due, the excess whole
 /// ticks are discarded (the simulation slows down instead of spiralling) and counted in
@@ -166,7 +167,9 @@ impl FixedTimestep {
 }
 
 fn nanos_to_duration(nanos: u128) -> Duration {
-    let seconds = u64::try_from(nanos / NANOS_PER_SECOND).unwrap_or(u64::MAX);
+    let Ok(seconds) = u64::try_from(nanos / NANOS_PER_SECOND) else {
+        return Duration::MAX;
+    };
     let subsec = u32::try_from(nanos % NANOS_PER_SECOND).unwrap_or(0);
     Duration::new(seconds, subsec)
 }
