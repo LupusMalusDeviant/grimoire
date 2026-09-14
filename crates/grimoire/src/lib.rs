@@ -9,10 +9,12 @@
 //! Every frame of [`AppBuilder::run`] (and of [`AppBuilder::run_headless_frames`], which drives
 //! the same loop with a [`grimoire_render::NullRenderer`] and a manual clock):
 //!
-//! 1. Platform events: resizes reach the renderer, raw input updates the held keys and buttons,
-//!    focus loss releases everything held.
-//! 2. The frame time from the platform clock advances a [`grimoire_sim::FixedTimestep`]; for each
-//!    tick due, the [`InputMap`] is sampled into input slot 0 and the simulation steps once.
+//! 1. Platform events: resizes reach the renderer, raw input updates the held keys and buttons
+//!    and latches every press, focus loss releases everything held.
+//! 2. The frame time from the platform clock advances a [`grimoire_sim::FixedTimestep`]. The
+//!    [`InputMap`] is sampled once into input slot 0, held or latched inputs count as pressed,
+//!    and the simulation steps once per tick due with that input. The latch is cleared only after
+//!    a frame that ran at least one tick, so a tap released between two ticks is not lost.
 //! 3. Every plugin extracts sprites with the interpolation factor `alpha`, the renderer draws.
 //!    A lost surface skips the frame and is reported to the platform, which throttles the loop
 //!    while frames keep going unpresented; any other render error ends the run with that error.

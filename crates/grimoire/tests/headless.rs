@@ -5,8 +5,9 @@ mod common;
 use std::time::Duration;
 
 use common::{Scenario, bot_input};
+use grimoire::platform::{PlatformEvent, RawInputEvent};
 use grimoire::prelude::*;
-use grimoire::{HeadlessReport, LoopReport};
+use grimoire::{AXIS_MAX, HeadlessReport, LoopReport};
 
 const MOVERS: u32 = 500;
 
@@ -88,6 +89,90 @@ fn frame_loop_simulates_the_same_states_as_the_pure_headless_run() {
     assert_eq!(looped.final_hash, pure.final_hash);
     assert_eq!(looped.hashes, pure.hashes);
     assert_eq!(looped.dropped_time, Duration::ZERO);
+}
+
+fn key(code: KeyCode, pressed: bool) -> PlatformEvent {
+    PlatformEvent::Input(RawInputEvent::Key {
+        code,
+        pressed,
+        repeat: false,
+    })
+}
+
+/// Raw events delivered before frame `frame` of the multi-tick equivalence test.
+fn changing_input_events(frame: u64, events: &mut Vec<PlatformEvent>) {
+    match frame {
+        0 => events.push(key(KeyCode::KeyD, true)),
+        2 => events.push(key(KeyCode::ShiftLeft, true)),
+        3 => events.push(key(KeyCode::ShiftLeft, false)),
+        4 => events.push(key(KeyCode::Space, true)),
+        7 => events.extend([
+            key(KeyCode::KeyD, false),
+            key(KeyCode::Space, false),
+            key(KeyCode::KeyA, true),
+        ]),
+        // Taps: pressed and released before the same frame.
+        10 => events.extend([key(KeyCode::Space, true), key(KeyCode::Space, false)]),
+        12 => events.push(key(KeyCode::KeyA, false)),
+        15 => events.extend([key(KeyCode::KeyW, true), key(KeyCode::KeyW, false)]),
+        _ => {}
+    }
+}
+
+/// Input every tick of frame `frame` must receive from [`changing_input_events`].
+fn changing_input_of_frame(frame: u64) -> TickInput {
+    let mut input = TickInput::default();
+    let slot = &mut input.slots[0];
+    if frame < 7 {
+        slot.axes[0] = AXIS_MAX;
+    } else if frame < 12 {
+        slot.axes[0] = -AXIS_MAX;
+    }
+    if frame == 15 {
+        slot.axes[1] = AXIS_MAX;
+    }
+    if frame == 2 {
+        slot.buttons |= 1 << 1;
+    }
+    if (4..7).contains(&frame) || frame == 10 {
+        slot.buttons |= 1 << 0;
+    }
+    input
+}
+
+#[test]
+fn frame_loop_feeds_one_sample_to_every_tick_of_a_multi_tick_frame() {
+    // 50 000 001 ns × 60 Hz is three ticks plus 60 units, so every frame runs exactly three ticks.
+    let frame_delta = Duration::from_nanos(50_000_001);
+    let build = || {
+        App::new(WindowConfig::default())
+            .seed(11)
+            .hash_every(3)
+            .plugin(Scenario { movers: 50 })
+    };
+    let looped = build()
+        .run_headless_frames_with_events(20, frame_delta, &mut changing_input_events)
+        .expect("headless frame loop runs");
+    let pure = build().run_headless(60, &mut |tick| changing_input_of_frame(tick / 3));
+
+    assert_eq!(looped.frames, 20);
+    assert_eq!(looped.final_tick, 60);
+    assert_eq!(looped.dropped_time, Duration::ZERO);
+    assert_eq!(looped.hashes, pure.hashes);
+    assert_eq!(looped.final_hash, pure.final_hash);
+
+    // The taps must matter, or the comparison above would not cover the latch.
+    let without_taps = build().run_headless(60, &mut |tick| {
+        let frame = tick / 3;
+        let mut input = changing_input_of_frame(frame);
+        match frame {
+            10 => input.slots[0].buttons = 0,
+            15 => input.slots[0].axes[1] = 0,
+            _ => {}
+        }
+        input
+    });
+    assert_ne!(without_taps.hashes, pure.hashes);
 }
 
 #[test]

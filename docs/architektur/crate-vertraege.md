@@ -311,7 +311,8 @@ pub struct FrameStats;       // frame, sim_tick, ticks_this_frame, alpha, frame_
                              // render: RenderStats; Copy, PartialEq, Debug
 pub enum InputSource;        // Key(KeyCode), Mouse(MouseButton); Copy, Ord, Hash, Debug
 pub enum InputAction;        // Button(u8), Axis { axis: usize, value: i16 }; Copy, Eq, Hash, Debug
-pub struct InputState;       // new, apply(&RawInputEvent), release_all, is_held(InputSource), is_empty; Clone, Eq, Default, Debug
+pub struct InputState;       // new, apply(&RawInputEvent), release_all, clear_presses, is_held(InputSource),
+                             // is_active(InputSource), is_empty; Clone, Eq, Default, Debug
 pub struct InputMap;         // new (leer), Default (Preset), bind(source, action) -> &mut Self, with(source, action) -> Self,
                              // unbind(source), bindings() -> &[(InputSource, InputAction)], sample(&InputState) -> InputFrame
 pub const AXIS_MAX: i16 = 32_767; pub const AXIS_COUNT: usize = 4; pub const BUTTON_COUNT: u8 = 32;
@@ -330,11 +331,16 @@ pub use grimoire_{core, ecs, platform, render, sim} as {core, ecs, platform, ren
 - `init`: Renderer erzeugen (Fehler → Lauf endet mit `GrimoireError::Render`, `build` entfällt), dann
   `Simulation::new(seed)`, `build` je Plugin in Registrierungsreihenfolge, danach `window_created` je Plugin,
   sofern ein Fenster existiert. `max_frames(0)` beendet den Lauf direkt nach `init`.
-- `event`: `Resized` → `Renderer::resize`; `Input` → `InputState` (Wiederhol-Events ändern nichts; `exit_key`
-  beendet den Lauf); `Focused(false)` → alle gehaltenen Eingaben loslassen (PRD-0013 Robustheit).
+- `event`: `Resized` → `Renderer::resize` (vor `init` ohne Wirkung); `Input` → `InputState` (ein Druck hält
+  die Quelle und merkt sie vor, Loslassen beendet nur das Halten; Wiederhol-Events ändern nichts; `exit_key`
+  beendet den Lauf); `Focused(false)` → alle gehaltenen Eingaben loslassen und vorgemerkte Drücke verwerfen
+  (PRD-0013 Robustheit).
 - `frame`: Delta aus `ctx.clock()` (einziger Uhrzugriff, außerhalb der Simulation) → `FixedTimestep::advance`;
-  die `InputMap` wird einmal pro Frame abgetastet und für jeden fälligen Tick als Slot 0 eines `TickInput`
-  (übrige Slots Default) an `Simulation::step` übergeben. Danach `RenderFrame::clear` (Kamera und Clear-Farbe
+  die `InputMap` wird einmal pro Frame abgetastet (gehaltene und vorgemerkte Quellen zählen) und für jeden
+  fälligen Tick als Slot 0 eines `TickInput` (übrige Slots Default) an `Simulation::step` übergeben. Nur nach
+  einem Frame mit mindestens einem Tick werden die vorgemerkten Drücke verworfen (`clear_presses`); ein Frame
+  ohne Tick behält sie. Ein Tipp, der vor dem nächsten Tick schon wieder losgelassen ist, erreicht so alle Ticks
+  des nächsten Frames mit Tick (PRD-0013 Latenz: Roh-Event → InputFrame des nächsten Sim-Ticks). Danach `RenderFrame::clear` (Kamera und Clear-Farbe
   bleiben), `extract` je Plugin mit `alpha`, `render`. `RenderError::SurfaceLost` → Frame gilt als gerendert mit
   `RenderStats::default()` und wird per `ctx.frame_not_presented()` gemeldet, nächster Frame versucht es erneut; jeder andere Render-Fehler wird geloggt und beendet
   den Lauf mit diesem Fehler (ohne `on_frame`). Dann `FrameStats` und `on_frame` je Plugin.
@@ -348,18 +354,20 @@ pub use grimoire_{core, ecs, platform, render, sim} as {core, ecs, platform, ren
   `tick % hash_every == 0`, zuletzt immer der Endzustand ohne Duplikat. Der Desktop-Lauf zeichnet keine Hashes auf.
 - `run_headless_frames_with_events` stellt vor Frame `n` (0-basiert) die vom Skript gelieferten Events in
   Reihenfolge zu; fordert ein Event das Ende an, entfällt der Frame (wie auf dem Desktop).
-- Gleicher Seed und gleiche Eingabe je Tick ergeben in `run_headless` und in der Frame-Schleife dieselben Hashes.
+- Gleicher Seed und gleiche Eingabe je Tick ergeben in `run_headless` und in der Frame-Schleife dieselben Hashes,
+  auch bei mehreren Ticks pro Frame und wechselnder Eingabe samt Tipps (`tests/headless.rs`).
 
 **InputMap-Preset** (`InputMap::default`): `D`/`ArrowRight` → Achse 0 `+32767`, `A`/`ArrowLeft` → Achse 0
 `-32767`, `W`/`ArrowUp` → Achse 1 `+32767` (Y nach oben positiv), `S`/`ArrowDown` → Achse 1 `-32767`,
-`Space` → Button 0, `ShiftLeft` → Button 1, linke Maustaste → Button 2. `sample` summiert die Beiträge gehaltener
-Quellen je Achse (in `i32`) und begrenzt auf `±32767`; Buttons werden verodert. Diagonalen werden nicht
-normalisiert. Die Zielachsen 2 und 3 bleiben in P0 0 (Mauszielen braucht die Kamera, kommt mit P1).
-`bind` mit Button-Bit `>= 32` oder Achse `>= 4` → Panic.
+`Space` → Button 0, `ShiftLeft` → Button 1, linke Maustaste → Button 2. `sample` summiert die Beiträge aktiver
+Quellen (gehalten oder vorgemerkt, `InputState::is_active`) je Achse (in `i32`) und begrenzt auf `±32767`;
+Buttons werden verodert. Diagonalen werden nicht normalisiert. Die Zielachsen 2 und 3 bleiben in P0 0
+(Mauszielen braucht die Kamera, kommt mit P1). `bind` mit Button-Bit `>= 32` oder Achse `>= 4` → Panic.
 
 **Bekannte Grenzen in P0:** Plugins können das Programm nicht selbst beenden (nur `max_frames`, `exit_key`,
-Fenster schließen); der Fensterpfad (`run`, Surface-Verlust, Resize) ist mangels Fenster in Tests nicht zur
-Laufzeit geprüft.
+Fenster schließen). Der echte Fensterpfad (`run` mit winit-Fenster und wgpu-Surface) ist mangels Fenster in
+Tests nicht zur Laufzeit geprüft; die Weiterleitung von `Resized` an `Renderer::resize` und die Behandlung von
+`SurfaceLost` prüfen Unit-Tests der Hauptschleife mit einem Test-Renderer.
 
 ## 10. Platzhalter
 

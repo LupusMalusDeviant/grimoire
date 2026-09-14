@@ -236,6 +236,10 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
                 self.hashes.push((tick, running.sim.state_hash()));
             }
         }
+        // A frame without ticks keeps the latch, so a tap released before the next tick survives.
+        if plan.ticks > 0 {
+            self.input.clear_presses();
+        }
 
         self.render_frame.clear();
         for plugin in &mut self.plugins {
@@ -318,17 +322,32 @@ impl<R: Renderer> AppHandler for ScriptedEvents<'_, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grimoire_platform::{Clock, ManualClock, PlatformWindow, run_headless};
+    use grimoire_platform::{Clock, ManualClock, PhysicalSize, PlatformWindow, run_headless};
 
-    /// Fails with the scripted error on the given render call (0-based).
+    /// Fails with the scripted error on the given render call (0-based) and records resizes.
     struct ScriptedRenderer {
         calls: u64,
         fail_on: u64,
         error: fn() -> RenderError,
+        /// `(render calls before the resize, width, height)`.
+        resizes: Vec<(u64, u32, u32)>,
+    }
+
+    impl ScriptedRenderer {
+        fn new(fail_on: u64, error: fn() -> RenderError) -> Self {
+            Self {
+                calls: 0,
+                fail_on,
+                error,
+                resizes: Vec::new(),
+            }
+        }
     }
 
     impl Renderer for ScriptedRenderer {
-        fn resize(&mut self, _width: u32, _height: u32) {}
+        fn resize(&mut self, width: u32, height: u32) {
+            self.resizes.push((self.calls, width, height));
+        }
 
         fn render(&mut self, _frame: &RenderFrame) -> Result<RenderStats, RenderError> {
             let call = self.calls;
@@ -380,13 +399,8 @@ mod tests {
         let outcome = Outcome::default();
         let frames = Frames::default();
         let seen = Rc::clone(&frames.0);
-        let factory: RendererFactory<ScriptedRenderer> = Box::new(move |_| {
-            Ok(ScriptedRenderer {
-                calls: 0,
-                fail_on,
-                error,
-            })
-        });
+        let factory: RendererFactory<ScriptedRenderer> =
+            Box::new(move |_| Ok(ScriptedRenderer::new(fail_on, error)));
         let mut game_loop = GameLoop::new(
             settings(),
             vec![Box::new(frames)],
@@ -442,13 +456,8 @@ mod tests {
 
     #[test]
     fn surface_lost_is_reported_to_the_runner_as_not_presented() {
-        let factory: RendererFactory<ScriptedRenderer> = Box::new(|_| {
-            Ok(ScriptedRenderer {
-                calls: 0,
-                fail_on: 2,
-                error: || RenderError::SurfaceLost,
-            })
-        });
+        let factory: RendererFactory<ScriptedRenderer> =
+            Box::new(|_| Ok(ScriptedRenderer::new(2, || RenderError::SurfaceLost)));
         let mut game_loop = GameLoop::new(settings(), Vec::new(), factory, Outcome::default());
         let mut ctx = RecordingContext::default();
         game_loop.init(&mut ctx).expect("init succeeds");
@@ -459,6 +468,37 @@ mod tests {
         }
         assert_eq!(ctx.not_presented, [2]);
         assert!(!ctx.exit_requested);
+    }
+
+    #[test]
+    fn resized_events_reach_the_renderer_before_the_next_render() {
+        let factory: RendererFactory<ScriptedRenderer> =
+            Box::new(|_| Ok(ScriptedRenderer::new(u64::MAX, || RenderError::SurfaceLost)));
+        let mut game_loop = GameLoop::new(settings(), Vec::new(), factory, Outcome::default());
+
+        // No renderer exists before init; the event is dropped instead of panicking.
+        let mut early = RecordingContext::default();
+        game_loop.event(&mut early, &PlatformEvent::Resized(PhysicalSize::new(1, 1)));
+
+        let mut script = |frame: u64, events: &mut Vec<PlatformEvent>| match frame {
+            3 => events.push(PlatformEvent::Resized(PhysicalSize::new(800, 600))),
+            5 => events.extend([
+                PlatformEvent::Resized(PhysicalSize::new(0, 0)),
+                PlatformEvent::Resized(PhysicalSize::new(1280, 720)),
+            ]),
+            _ => {}
+        };
+        let mut scripted = ScriptedEvents {
+            inner: &mut game_loop,
+            script: &mut script,
+            events: Vec::new(),
+            frame: 0,
+        };
+        run_headless(&mut scripted, 6, Duration::from_millis(16)).expect("init succeeds");
+
+        let renderer = &game_loop.running.as_ref().expect("init ran").renderer;
+        assert_eq!(renderer.resizes, [(3, 800, 600), (5, 0, 0), (5, 1280, 720)]);
+        assert_eq!(renderer.calls, 6);
     }
 
     #[test]

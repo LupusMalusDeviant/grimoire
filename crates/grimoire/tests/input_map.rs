@@ -72,6 +72,12 @@ fn default_buttons() {
         button: MouseButton::Left,
         pressed: false,
     });
+    assert_eq!(
+        InputMap::default().sample(&state).buttons,
+        0b101,
+        "the released press stays latched until a tick consumed it"
+    );
+    state.clear_presses();
     assert_eq!(InputMap::default().sample(&state).buttons, 0b001);
 }
 
@@ -139,7 +145,47 @@ fn key_repeat_events_do_not_change_state() {
     });
     assert!(state.is_held(InputSource::Key(KeyCode::KeyW)));
     release(&mut state, KeyCode::KeyW);
+    assert!(!state.is_held(InputSource::Key(KeyCode::KeyW)));
+    state.clear_presses();
     assert!(state.is_empty());
+}
+
+#[test]
+fn a_repeat_press_does_not_latch() {
+    let mut state = InputState::new();
+    state.apply(&RawInputEvent::Key {
+        code: KeyCode::Space,
+        pressed: true,
+        repeat: true,
+    });
+    assert!(!state.is_active(InputSource::Key(KeyCode::Space)));
+    assert_eq!(InputMap::default().sample(&state), InputFrame::default());
+}
+
+#[test]
+fn a_tap_released_before_sampling_stays_active_until_presses_are_cleared() {
+    let space = InputSource::Key(KeyCode::Space);
+    let mut state = InputState::new();
+    press(&mut state, KeyCode::Space);
+    release(&mut state, KeyCode::Space);
+    assert!(!state.is_held(space));
+    assert!(state.is_active(space));
+    assert!(!state.is_empty());
+    assert_eq!(InputMap::default().sample(&state).buttons, 1 << 0);
+
+    state.clear_presses();
+    assert!(!state.is_active(space));
+    assert!(state.is_empty());
+    assert_eq!(InputMap::default().sample(&state), InputFrame::default());
+}
+
+#[test]
+fn clearing_presses_keeps_held_inputs() {
+    let mut state = InputState::new();
+    press(&mut state, KeyCode::KeyD);
+    state.clear_presses();
+    assert!(state.is_held(InputSource::Key(KeyCode::KeyD)));
+    assert_eq!(InputMap::default().sample(&state).axes, [AXIS_MAX, 0, 0, 0]);
 }
 
 #[test]
@@ -162,8 +208,9 @@ fn release_all_clears_every_held_input() {
         button: MouseButton::Left,
         pressed: true,
     });
+    release(&mut state, KeyCode::Space);
     state.release_all();
-    assert!(state.is_empty());
+    assert!(state.is_empty(), "held inputs and latched presses are gone");
     assert_eq!(InputMap::default().sample(&state), InputFrame::default());
 }
 

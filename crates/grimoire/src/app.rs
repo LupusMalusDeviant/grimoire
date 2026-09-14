@@ -139,7 +139,8 @@ impl AppBuilder {
         self
     }
 
-    /// Bindings sampled into input slot 0 before every tick (default [`InputMap::default`]).
+    /// Bindings sampled into input slot 0 once per frame and fed to every tick of that frame
+    /// (default [`InputMap::default`]).
     #[must_use]
     pub fn input_map(mut self, input_map: InputMap) -> Self {
         self.input_map = input_map;

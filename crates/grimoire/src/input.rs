@@ -37,20 +37,27 @@ pub enum InputAction {
     },
 }
 
-/// Which keys and mouse buttons are currently held, fed from raw platform events.
+/// Which keys and mouse buttons are held, fed from raw platform events.
+///
+/// Besides the held set, every press is latched until [`InputState::clear_presses`]. A press that
+/// is released again before the next sample therefore still counts as active once, so short taps
+/// between two simulation ticks are not lost (PRD-0013: a raw event reaches the input of the next
+/// tick). Whoever samples the state clears the latch after the sample has reached a tick.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputState {
     held: BTreeSet<InputSource>,
+    latched: BTreeSet<InputSource>,
 }
 
 impl InputState {
-    /// Creates a state with nothing held.
+    /// Creates a state with nothing held and no press latched.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Applies one raw event. Key-repeat events and cursor or wheel movement change nothing.
+    /// Applies one raw event: a press holds and latches the source, a release only stops holding
+    /// it. Key-repeat events and cursor or wheel movement change nothing.
     pub fn apply(&mut self, event: &RawInputEvent) {
         let (source, pressed) = match *event {
             RawInputEvent::Key { repeat: true, .. } => return,
@@ -60,26 +67,42 @@ impl InputState {
         };
         if pressed {
             self.held.insert(source);
+            self.latched.insert(source);
         } else {
             self.held.remove(&source);
         }
     }
 
-    /// Releases everything, e.g. when the window loses focus and release events would be missed.
+    /// Releases everything and drops latched presses, e.g. when the window loses focus and
+    /// release events would be missed.
     pub fn release_all(&mut self) {
         self.held.clear();
+        self.latched.clear();
     }
 
-    /// Whether `source` is held.
+    /// Drops the latched presses; held sources stay held. Call it once a sample of this state has
+    /// been fed to at least one tick.
+    pub fn clear_presses(&mut self) {
+        self.latched.clear();
+    }
+
+    /// Whether `source` is held right now.
     #[must_use]
     pub fn is_held(&self, source: InputSource) -> bool {
         self.held.contains(&source)
     }
 
-    /// Whether nothing is held.
+    /// Whether `source` is held or was pressed since the last [`InputState::clear_presses`];
+    /// this is what [`InputMap::sample`] reads.
+    #[must_use]
+    pub fn is_active(&self, source: InputSource) -> bool {
+        self.held.contains(&source) || self.latched.contains(&source)
+    }
+
+    /// Whether nothing is held and no press is latched.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.held.is_empty()
+        self.held.is_empty() && self.latched.is_empty()
     }
 }
 
@@ -180,16 +203,17 @@ impl InputMap {
         &self.bindings
     }
 
-    /// Quantises the held inputs of `state` into one [`InputFrame`].
+    /// Quantises the active inputs of `state` (held or latched, see [`InputState::is_active`])
+    /// into one [`InputFrame`].
     ///
-    /// Axis contributions of held sources are summed per axis and clamped to `±32767`, so opposite
-    /// keys cancel out and duplicate bindings do not overflow.
+    /// Axis contributions of active sources are summed per axis and clamped to `±32767`, so
+    /// opposite keys cancel out and duplicate bindings do not overflow.
     #[must_use]
     pub fn sample(&self, state: &InputState) -> InputFrame {
         let mut sums = [0i32; AXIS_COUNT];
         let mut buttons = 0u32;
         for &(source, action) in &self.bindings {
-            if !state.is_held(source) {
+            if !state.is_active(source) {
                 continue;
             }
             match action {
