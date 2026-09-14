@@ -680,17 +680,11 @@ name = "grimoire"
 version = "0.1.0"
 dependencies = [
  "env_logger",
- "grimoire_assets",
- "grimoire_audio",
- "grimoire_collide",
  "grimoire_core",
- "grimoire_debug",
  "grimoire_ecs",
  "grimoire_platform",
  "grimoire_render",
- "grimoire_sigil",
  "grimoire_sim",
- "grimoire_ui",
  "log",
  "thiserror 2.0.20",
 ]
