@@ -96,8 +96,10 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
   Lauf (`gh workflow run ci.yml --ref <branch>`) oder einen Admin-Merge.
 - Ein neuer Push auf denselben Pull Request bricht dessen laufende CI ab. Läufe auf `main` werden
   **nie** abgebrochen; jeder `main`-Commit bekommt ein Ergebnis.
-- GPU-Tests überspringen sich ohne Adapter. Linux bekommt per `mesa-vulkan-drivers` (lavapipe) ein
-  Software-Vulkan, Windows-Runner haben WARP.
+- GPU-Tests überspringen sich ohne Adapter und schreiben dann eine `::warning::`-Zeile ins Log. Linux
+  bekommt per `mesa-vulkan-drivers` (lavapipe) ein Software-Vulkan, Windows-Runner haben WARP; dort setzt
+  die CI `GRIMOIRE_REQUIRE_GPU_ADAPTER=1`, sodass ein fehlender Adapter die Tests scheitern lässt. Lokal
+  lässt sich dasselbe mit `GRIMOIRE_GPU_ADAPTER=software GRIMOIRE_REQUIRE_GPU_ADAPTER=1 cargo test` prüfen.
 - **Float-Probe:** Die Core-Tests schreiben `target/float-probe/std-trig-<os>-<arch>.txt` und
   `core-<os>-<arch>.txt`. `float-compare` stellt die `std_trig_hash`-Werte nebeneinander. Eine
   Abweichung zwischen Systemen ist ein **Hinweis** (Eingabe für OF-2.1), kein roter Lauf; rot werden

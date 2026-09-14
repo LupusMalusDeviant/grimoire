@@ -103,8 +103,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # GPU tests skip themselves without an adapter. Lavapipe gives Linux a software Vulkan
-      # adapter; Windows runners have WARP; macOS runners may or may not expose Metal.
+      # Lavapipe gives Linux a software Vulkan adapter and Windows runners have WARP, so a missing
+      # adapter fails the GPU tests there. macOS runners may lack Metal: the tests skip with a
+      # ::warning:: line in the log.
       - name: Install software Vulkan (lavapipe)
         if: runner.os == 'Linux'
         run: |
@@ -116,6 +117,8 @@ jobs:
       - name: Remove stale float probes
         run: rm -rf target/float-probe
       - name: Test
+        env:
+          GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
         run: cargo test --workspace --locked
       # Examples open windows: build them, never run them in CI.
       - name: Build examples

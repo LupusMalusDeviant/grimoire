@@ -31,4 +31,5 @@ Phase P0 — Fundament.
 - `grimoire_core`/`grimoire_sim`: NaN im Simulationszustand fällt in Debug-Builds auf (`StableHasher::saw_nan`, Debug-Assertion in `Simulation::state_hash`); Hashwerte und Golden-Hashes unverändert.
 - `grimoire_ecs`: `CommandBuffer::spawn` lehnt Bundles mit doppeltem Komponententyp schon beim Aufzeichnen ab, statt `apply` mittendrin abzubrechen.
 - `grimoire_platform`: Die Desktop-Schleife lastet keinen Kern mehr aus, solange nichts präsentiert werden kann (minimiertes oder verdecktes Fenster, wiederholt nicht verfügbare Surface), sondern rendert dann alle 100 ms; neu sind `PlatformEvent::Occluded` und `PlatformContext::frame_not_presented`, die Fassade meldet `RenderError::SurfaceLost` darüber.
+- `grimoire_render`: Offscreen-Tests ohne GPU-Adapter bestehen nicht mehr unbemerkt: Das Überspringen erscheint als GitHub-Actions-Warnung im Log, und mit `GRIMOIRE_REQUIRE_GPU_ADAPTER=1` (in der CI unter Windows und Linux gesetzt) scheitern sie.
 - `grimoire_sim`: `InputLog::to_bytes` verweigert `tick_rate_hz == 0`, das `from_bytes` nie laden könnte; das Determinismus-Gate listet bei Abweichung alle Checkpoint-Hashes.

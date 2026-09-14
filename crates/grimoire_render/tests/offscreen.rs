@@ -1,6 +1,11 @@
-//! Offscreen rendering tests. They skip (and pass) when no GPU adapter exists, not even a
-//! software one.
+//! Offscreen rendering tests.
+//!
+//! Without any GPU adapter (not even a software one) they skip and pass, and print a GitHub
+//! Actions warning that stays visible in the log. With `GRIMOIRE_REQUIRE_GPU_ADAPTER=1` a missing
+//! adapter fails them instead; CI sets it wherever WARP or lavapipe guarantee an adapter.
 
+use std::io::Write;
+use std::sync::Once;
 use std::time::Duration;
 
 use grimoire_render::{
@@ -9,6 +14,35 @@ use grimoire_render::{
 };
 
 const SIZE: u32 = 64;
+
+/// Environment variable that turns a missing GPU adapter from a skip into a test failure.
+const ENV_REQUIRE_GPU_ADAPTER: &str = "GRIMOIRE_REQUIRE_GPU_ADAPTER";
+
+fn adapter_required(value: Option<&str>) -> bool {
+    matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true")
+    )
+}
+
+/// Fails the calling test if an adapter is required, otherwise announces the skip once.
+fn skip_without_adapter(required: bool) {
+    assert!(
+        !required,
+        "no GPU adapter found although {ENV_REQUIRE_GPU_ADAPTER}=1: the render tests would pass          without rendering"
+    );
+    static ANNOUNCED: Once = Once::new();
+    ANNOUNCED.call_once(|| {
+        // libtest captures print!/eprint! of passing tests, but not direct writes to the stream.
+        let _ = writeln!(
+            std::io::stdout(),
+            "
+::warning title=GPU tests skipped::no GPU adapter found; grimoire_render offscreen              tests passed without rendering"
+        );
+    });
+}
 
 fn offscreen_renderer(
     width: u32,
@@ -23,7 +57,8 @@ fn offscreen_renderer(
     match WgpuRenderer::new_offscreen(width, height, config) {
         Ok(renderer) => Some(renderer),
         Err(RenderError::NoAdapter) => {
-            println!("skipped: no GPU adapter");
+            let required = std::env::var(ENV_REQUIRE_GPU_ADAPTER).ok();
+            skip_without_adapter(adapter_required(required.as_deref()));
             None
         }
         Err(error) => panic!("offscreen renderer creation failed: {error}"),
@@ -69,6 +104,22 @@ fn black_frame() -> RenderFrame {
         },
         sprites: Vec::new(),
     }
+}
+
+#[test]
+fn adapter_requirement_is_read_from_the_variable() {
+    for value in ["1", "true", "TRUE", " 1 "] {
+        assert!(adapter_required(Some(value)), "{value:?}");
+    }
+    for value in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
+        assert!(!adapter_required(value), "{value:?}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "no GPU adapter found although GRIMOIRE_REQUIRE_GPU_ADAPTER=1")]
+fn missing_adapter_fails_when_required() {
+    skip_without_adapter(true);
 }
 
 #[test]

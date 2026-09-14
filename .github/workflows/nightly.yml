@@ -86,6 +86,9 @@ jobs:
       - name: Remove stale float probes
         run: rm -rf target/float-probe
       - name: Test (release)
+        env:
+          # WARP (Windows) and lavapipe (Linux) guarantee an adapter; macOS may skip with a warning.
+          GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
         run: cargo test --workspace --release --locked
       - name: Upload float probe
         if: ${{ !cancelled() }}
