@@ -406,28 +406,32 @@ mod tests {
     fn run_scripted(
         fail_on: u64,
         error: fn() -> RenderError,
-    ) -> (Outcome, Vec<FrameStats>, Option<LoopReport>) {
+    ) -> (Outcome, Vec<FrameStats>, Option<LoopReport>, (u32, u32)) {
         let outcome = Outcome::default();
         let frames = Frames::default();
         let seen = Rc::clone(&frames.0);
+        let lifecycle = Lifecycle::default();
+        let counts = Rc::clone(&lifecycle.0);
         let factory: RendererFactory<ScriptedRenderer> =
             Box::new(move |_| Ok(ScriptedRenderer::new(fail_on, error)));
         let mut game_loop = GameLoop::new(
             settings(),
-            vec![Box::new(frames)],
+            vec![Box::new(frames), Box::new(lifecycle)],
             factory,
             Rc::clone(&outcome),
         );
         run_headless(&mut game_loop, 10, Duration::from_millis(16)).expect("init succeeds");
         let report = game_loop.report();
         let seen = seen.borrow().clone();
-        (outcome, seen, report)
+        let counts = *counts.borrow();
+        (outcome, seen, report, counts)
     }
 
     #[test]
     fn surface_lost_skips_the_frame_and_keeps_running() {
-        let (outcome, frames, report) = run_scripted(2, || RenderError::SurfaceLost);
+        let (outcome, frames, report, lifecycle) = run_scripted(2, || RenderError::SurfaceLost);
         assert!(outcome.borrow().is_none());
+        assert_eq!(lifecycle, (1, 1));
         assert_eq!(frames.len(), 10);
         assert_eq!(frames[2].render, RenderStats::default());
         assert_eq!(frames[3].render.draw_calls, 1);
@@ -514,13 +518,18 @@ mod tests {
 
     #[test]
     fn other_render_errors_end_the_run_with_the_error() {
-        let (outcome, frames, report) = run_scripted(3, || RenderError::OutOfMemory);
+        let (outcome, frames, report, lifecycle) = run_scripted(3, || RenderError::OutOfMemory);
         assert!(matches!(
             *outcome.borrow(),
             Some(GrimoireError::Render(RenderError::OutOfMemory))
         ));
         assert_eq!(frames.len(), 3, "on_frame is skipped for the failed frame");
         assert_eq!(report.map(|report| report.frames), Some(3));
+        assert_eq!(
+            lifecycle,
+            (1, 1),
+            "plugins still shut down after a render error"
+        );
     }
 
     /// Counts `build` and `shutdown` calls.

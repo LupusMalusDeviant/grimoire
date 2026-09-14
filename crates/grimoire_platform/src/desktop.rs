@@ -41,8 +41,9 @@ pub(crate) const UNPRESENTED_FRAMES_BEFORE_THROTTLE: u32 = 3;
 /// On macOS this function may never return: quitting through the application menu (Cmd+Q)
 /// terminates the process inside AppKit. The loop still ends with [`AppHandler::shutdown`], but no
 /// [`crate::PlatformEvent::CloseRequested`] is delivered, destructors of `app` do not run, and code
-/// after the call is skipped. [`AppHandler::shutdown`] is therefore the only guaranteed
-/// end-of-run hook.
+/// after the call is skipped. [`AppHandler::shutdown`] is therefore the only end-of-run hook that
+/// runs on every orderly end of the loop; it does not run when the operating system ends the
+/// process (Windows session end, `SIGTERM` or `SIGINT`, Ctrl+C in a console).
 ///
 /// # Errors
 /// [`PlatformError::EventLoop`] or [`PlatformError::WindowCreation`] if the platform fails,

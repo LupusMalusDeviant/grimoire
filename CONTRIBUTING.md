@@ -86,7 +86,7 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
 
 | Workflow | Auslöser | Inhalt |
 |----------|----------|--------|
-| `ci.yml` | Push auf `main`, Pull Request, manuell | `fmt`, `standalone-gate`, `docs` (rustdoc mit `-D warnings`), `test` auf Windows/Linux/macOS (clippy, Tests, Beispiele bauen, Float-Probe als Artefakt `float-probe-<os>`), `float-compare` (Vergleich im Job-Summary) |
+| `ci.yml` | Push auf `main`, Pull Request, manuell | `fmt`, `standalone-gate`, `docs` (rustdoc mit `-D warnings`), `test` auf Windows/Linux/macOS (clippy, Tests, Offscreen-Tests mit erzwungenem CPU-Adapter unter Windows/Linux, Beispiele bauen, Float-Probe als Artefakt `float-probe-<os>`), `float-compare` (Vergleich im Job-Summary) |
 | `nightly.yml` | täglich 02:17 UTC, manuell | Tests im Release-Modus auf drei Systemen plus Float-Vergleich; geplante Läufe entfallen, wenn `main` 24 h nicht bewegt wurde (Push oder Merge laut Aktivitäts-API, nicht Commit-Datum) |
 | `release.yml` | Tag `vX.Y.Z` | Versionsprüfung, Testsuite (Linux), Release-Notes per git-cliff, GitHub-Release (nur Quelltext) |
 
@@ -100,6 +100,9 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
   bekommt per `mesa-vulkan-drivers` (lavapipe) ein Software-Vulkan, Windows-Runner haben WARP; dort setzt
   die CI `GRIMOIRE_REQUIRE_GPU_ADAPTER=1`, sodass ein fehlender Adapter die Tests scheitern lässt. Lokal
   lässt sich dasselbe mit `GRIMOIRE_GPU_ADAPTER=software GRIMOIRE_REQUIRE_GPU_ADAPTER=1 cargo test` prüfen.
+  Unter Windows und Linux führt die CI zusätzlich `cargo test --workspace --test offscreen` mit
+  `GRIMOIRE_GPU_ADAPTER=software` und `GRIMOIRE_REQUIRE_GPU_ADAPTER=1` aus und belegt so den erzwungenen
+  CPU-Adapter (WARP bzw. lavapipe), auf den sich lokale Testläufe verlassen.
 - **Float-Probe:** Die Core-Tests schreiben `target/float-probe/std-trig-<os>-<arch>.txt` und
   `core-<os>-<arch>.txt`. `float-compare` stellt die `std_trig_hash`-Werte nebeneinander. Eine
   Abweichung zwischen Systemen ist ein **Hinweis** (Eingabe für OF-2.1), kein roter Lauf; rot werden

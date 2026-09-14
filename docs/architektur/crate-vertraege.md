@@ -109,8 +109,10 @@ Schließt der Nutzer das Fenster, wird `CloseRequested` an die App zugestellt, d
 `terminate:` an AppKit. winit beendet die Schleife dann in `applicationWillTerminate:` (`exiting` →
 `shutdown`), danach ruft AppKit `exit()` auf. `run_desktop` kehrt in diesem Fall nicht zurück, `CloseRequested`
 wird nicht zugestellt, Destruktoren von App, Renderer und Plugins laufen nicht, und Code nach dem Aufruf entfällt.
-`AppHandler::shutdown` ist deshalb der einzige garantierte Haken am Laufende; Fehler darin werden geloggt, weil
-niemand einen Rückgabewert liest.
+`AppHandler::shutdown` ist deshalb der einzige Haken, der bei jedem geordneten Ende der Schleife läuft (auch nach
+Cmd+Q); Fehler darin werden geloggt, weil niemand einen Rückgabewert liest. Beendet das Betriebssystem den Prozess
+selbst (Sitzungsende unter Windows, `SIGTERM` oder `SIGINT`, Strg+C in einer Konsole), läuft `shutdown` nicht:
+winit 0.30.13 behandelt weder `WM_ENDSESSION` noch Signale.
 
 **Umgesetzt:**
 - `run_desktop` mit `winit` 0.30 (`ApplicationHandler`): Fenster in `resumed` genau einmal erzeugen,
@@ -159,9 +161,11 @@ den Offscreen-Test `failed_resize_is_returned_from_every_render_until_a_resize_s
 **GPU-Tests ohne Adapter (Ergänzung P0):** Die Meldung beim Überspringen ist eine GitHub-Actions-Warnung
 (`::warning::`), die direkt auf stdout geschrieben wird, damit die Ausgabeerfassung von libtest sie nicht
 verschluckt. Mit `GRIMOIRE_REQUIRE_GPU_ADAPTER=1` (oder `true`) scheitern die Tests stattdessen. Die CI setzt
-die Variable unter Windows (WARP) und Linux (lavapipe); macOS-Runner dürfen ohne Metal überspringen. Dort läuft
-außerdem ein zweiter Schritt `cargo test -p grimoire_render --test offscreen` mit `GRIMOIRE_GPU_ADAPTER=software`,
-der den erzwungenen CPU-Adapter der lokalen Testläufe belegt.
+die Variable unter Windows (WARP) und Linux (lavapipe); macOS-Runner dürfen ohne Metal überspringen. Unter Windows
+und Linux läuft außerdem ein zweiter Schritt `cargo test --workspace --test offscreen` mit
+`GRIMOIRE_GPU_ADAPTER=software`, der den erzwungenen CPU-Adapter der lokalen Testläufe belegt; `--workspace`
+statt `-p grimoire_render` hält die Feature-Auflösung gleich, sodass der Schritt die Artefakte des Testschritts
+wiederverwendet.
 
 ## 7. `grimoire_ecs`
 
@@ -319,7 +323,7 @@ pub trait GamePlugin {
     fn extract(&mut self, world: &World, alpha: f32, frame: &mut RenderFrame) {}  // nur lesend
     fn on_frame(&mut self, stats: &FrameStats) {}                                 // reine Präsentation
     fn window_created(&mut self, window: &Arc<dyn PlatformWindow>) {}             // nur Desktop, z. B. für den Fenstertitel
-    fn shutdown(&mut self) {}                                                     // Laufende; einziger garantierter End-Haken
+    fn shutdown(&mut self) {}                                                     // Laufende; bei jedem geordneten Ende, nicht bei Prozessende durchs OS
 }
 pub struct App;              // App::new(WindowConfig) -> AppBuilder; Debug, Clone, Copy
 pub struct AppBuilder;       // seed(u64) (Default 0), tick_rate(u32) (Default 60, Panic bei 0),
@@ -375,7 +379,8 @@ pub use grimoire_{core, ecs, platform, render, sim} as {core, ecs, platform, ren
 - `shutdown` (vom Runner genau einmal nach erfolgreichem `init`): `GamePlugin::shutdown` je Plugin genau einmal
   in Registrierungsreihenfolge, auch wenn ein Render-Fehler oder `max_frames(0)` den Lauf beendet hat. Konnte der
   Renderer nicht erzeugt werden, laufen weder `build` noch `shutdown`. Weil `run` unter macOS nach Cmd+Q nicht
-  zurückkehrt (Abschnitt 5), ist das der einzige garantierte Haken für Arbeit am Laufende; Plugins loggen Fehler
+  zurückkehrt (Abschnitt 5), ist das der einzige Haken für Arbeit am Laufende, der bei jedem geordneten Ende der
+  Schleife läuft (nicht, wenn das Betriebssystem den Prozess beendet, siehe Abschnitt 5); Plugins loggen Fehler
   darin, statt sie zurückzugeben. `run_headless` ruft `shutdown` nie auf.
 - `fps` = Frames / Dauer des letzten abgeschlossenen Messfensters von mindestens 1 s; `0.0` bis dahin.
 - `frame` in `FrameStats` ist der 0-basierte Frame-Index, `sim_tick` der Tick-Zähler nach den Ticks des Frames.

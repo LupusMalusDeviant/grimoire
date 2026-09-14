@@ -45,8 +45,10 @@ pub trait AppHandler {
 
     /// Called exactly once when the loop ends after a successful `init`.
     ///
-    /// The only end-of-run hook guaranteed on every platform: on macOS, quitting through the
-    /// application menu (Cmd+Q) ends the process right after this call, without returning from
-    /// [`crate::run_desktop`] and without running destructors. Failures here must be logged.
+    /// The only end-of-run hook that runs on every orderly end of the loop, including quitting
+    /// through the macOS application menu (Cmd+Q): that ends the process right after this call,
+    /// without returning from [`crate::run_desktop`] and without running destructors. It does not
+    /// run when the operating system ends the process (Windows session end, `SIGTERM` or `SIGINT`,
+    /// Ctrl+C in a console). Failures here must be logged.
     fn shutdown(&mut self) {}
 }

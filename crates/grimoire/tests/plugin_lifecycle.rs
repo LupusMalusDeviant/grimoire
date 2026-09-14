@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use grimoire::platform::{PlatformEvent, RawInputEvent};
 use grimoire::prelude::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,4 +212,24 @@ fn max_frames_ends_the_frame_loop() {
     let calls = log.borrow();
     assert_eq!(calls.len(), 2 * NAMES.len(), "only build and shutdown ran");
     assert_shut_down_once_in_order(&calls);
+}
+
+#[test]
+fn exit_key_ends_the_frame_loop_with_shutdown() {
+    let log = Log::default();
+    let mut script = |frame: u64, events: &mut Vec<PlatformEvent>| {
+        if frame == 3 {
+            events.push(PlatformEvent::Input(RawInputEvent::Key {
+                code: KeyCode::Escape,
+                pressed: true,
+                repeat: false,
+            }));
+        }
+    };
+    let report = app_with_recorders(&log)
+        .exit_key(KeyCode::Escape)
+        .run_headless_frames_with_events(100, Duration::from_millis(16), &mut script)
+        .expect("headless frame loop runs");
+    assert_eq!(report.frames, 3);
+    assert_shut_down_once_in_order(&log.borrow());
 }

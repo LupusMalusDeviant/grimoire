@@ -54,10 +54,12 @@ pub trait GamePlugin {
     /// [`crate::AppBuilder::run_headless_frames`] ends after the plugins were built. Not called
     /// when the renderer could not be created, and never by [`crate::AppBuilder::run_headless`].
     ///
-    /// This is the only end-of-run hook guaranteed on every desktop platform: on macOS, quitting
-    /// through the application menu (Cmd+Q) ends the process right after this call, so
-    /// [`crate::AppBuilder::run`] does not return and destructors do not run. Nothing receives a
-    /// result from here, so failures (for example of a final save) must be logged.
+    /// This is the only end-of-run hook that runs on every orderly end of the loop, including
+    /// quitting through the macOS application menu (Cmd+Q): that ends the process right after this
+    /// call, so [`crate::AppBuilder::run`] does not return and destructors do not run. It does not
+    /// run when the operating system ends the process (Windows session end, `SIGTERM` or `SIGINT`,
+    /// Ctrl+C in a console). Nothing receives a result from here, so failures (for example of a
+    /// final save) must be logged.
     fn shutdown(&mut self) {}
 }
 
