@@ -22,7 +22,8 @@ jedes Parallelisierungsmodell prägt diese API tief.
 
 - Deterministische, explizit festgelegte Ausführungsreihenfolge der Systeme (ADR-0005).
 - Bit-identische Zustands-Hashes über 10.000 Ticks im Doppellauf (P0-Gate WP5.6).
-- Einfache, schnell lieferbare API für P0; keine Threads in Simulations-Crates (`clippy.toml`, Vertrag §3).
+- Einfache, schnell lieferbare API für P0; keine Threads in Simulations-Crates (Vertrag §3; im Review
+  geprüft, denn `clippy.toml` erzwingt nur `HashMap`/`HashSet`-, Wanduhr- und libm-Verbote).
 - Späteres Skalieren auf das Bullet-Budget, ohne dass Spiel-Systeme neu geschrieben werden müssen.
 - Keine `unsafe`-Aliasing-Tricks im Fundament (Vertrag §2, Risiko R2 im Plan 0001).
 
@@ -57,17 +58,23 @@ Strukturänderungen laufen über `CommandBuffer` in Aufzeichnungsreihenfolge.
 1. **Zugriffsmengen einführen.** `System` erhält eine Methode mit Default-Implementierung, z. B.
    `fn access(&self) -> SystemAccess { SystemAccess::exclusive_world() }`. Bestehende Systeme
    bleiben damit gültig und exklusiv. Neue Systeme deklarieren Lese- und Schreibmengen über
-   Registrierungsnummern (`ComponentId`, Ressourcen-Slot), nie über `TypeId`-Reihenfolgen. Die
-   bereits vorhandene Konfliktprüfung der Queries (doppelter mutabler Zugriff) wird auf
-   System-Ebene gehoben, und ein Debug-Modus prüft, dass Queries die Deklaration einhalten.
+   Registrierungsnummern (Komponenten-ID, Ressourcen-Slot), nie über `TypeId`-Reihenfolgen.
+   Voraussetzung: `ComponentId` ist heute crate-intern und wird nicht re-exportiert; er (oder ein
+   öffentlicher Zugriffsmengen-Typ) muss dafür erst Teil der öffentlichen API werden. Die bereits
+   vorhandene Konfliktprüfung der Queries (doppelter mutabler sowie gleichzeitiger mutabler und
+   lesender Zugriff) wird auf System-Ebene gehoben, und ein Debug-Modus prüft, dass Queries die
+   Deklaration einhalten.
 2. **Stufen statt Threads zuerst.** Der Scheduler bildet aus der festen Systemliste
    deterministische Stufen: benachbarte Systeme ohne Schreibkonflikt bilden eine Stufe. Die
    Aufteilung hängt nur von Liste und Zugriffsmengen ab und wird als Teil der Diagnose ausgegeben.
 3. **Parallele Ausführung innerhalb einer Stufe.** Systeme einer Stufe dürfen parallel laufen,
    aber nur auf disjunkten Daten. Strukturänderungen landen in einem `CommandBuffer` **pro
    System**. Nach der Stufe werden die Puffer in der **Listenreihenfolge der Systeme**
-   zusammengeführt und angewendet, nie in Fertigstellungsreihenfolge. RNG-Ströme sind bereits
-   pro System und Tick abgeleitet (`derive_rng`), also unabhängig von der Thread-Verteilung.
+   zusammengeführt und angewendet, nie in Fertigstellungsreihenfolge. Voraussetzung an
+   `grimoire_sim`: Systeme ziehen Zufall ausschließlich über `derive_rng(seed, tick, stream)`
+   (Vertrag §8, noch nicht implementiert) mit einem fest pro System vergebenen `stream`, nie über
+   einen gemeinsam fortgeschalteten Generator. Nur dann sind die RNG-Ströme unabhängig von der
+   Thread-Verteilung.
 4. **Datenparallele Queries.** Parallele Iteration über eine Query zerlegt Archetypen und Zeilen
    in feste, von der Thread-Anzahl unabhängige Blöcke. Reduktionen (Summen, Min/Max, gesammelte
    Events) werden in Blockreihenfolge gefaltet.
@@ -79,8 +86,10 @@ Strukturänderungen laufen über `CommandBuffer` in Aufzeichnungsreihenfolge.
 
 - (+) P0 liefert schnell einen einfachen, testbaren Scheduler; der Determinismus-Beweis hängt
   nicht an Thread-Verhalten.
-- (+) Die ECS-API bleibt frei von `Send`/`Sync`-Zwängen für Systeme und von `unsafe` beim Aufteilen
-  der Welt.
+- (+) Die ECS-API bleibt frei von `unsafe` beim Aufteilen der Welt, und Systeme erhalten keine
+  `Send`/`Sync`-Zwänge über die bereits bestehenden hinaus: `system_fn` verlangt `Send`,
+  `Component` und `Resource` verlangen `Send + Sync`, `Bundle` verlangt `Send`. Diese Grenzen sind
+  damit für eine spätere Parallelisierung schon gesetzt.
 - (+) Der Migrationspfad ist additiv (Default-Methode, pro-System-Puffer, feste
   Zusammenführungsreihenfolge) und bricht bestehende Spiel-Systeme nicht.
 - (−) Bis zur Migration nutzt die Simulation nur einen Kern. Das Budget ab P2 muss gemessen werden
