@@ -1,6 +1,6 @@
 # ADR-0004: Deterministische Gleitkommaarithmetik (f32 mit Regeln und libm)
 
-- **Status:** Vorgeschlagen - wird nach grünem CI-Lauf der Golden-Tests auf Windows, Linux und macOS akzeptiert
+- **Status:** Akzeptiert (2026-09-14; Annahmekriterium im CI-Lauf 34893513991 auf Windows, Linux und macOS erfüllt)
 - **Datum:** 2026-09-14
 - **Entscheider:** Lupus Malus Deviant (PO), vorbereitet durch Claude
 - **Bezug:** Spiel-Repo PRD-0002 (OF-2.1), PRD-0018 (FR-04, FR-09), ADR-0005, Plan P0 WP6.1;
@@ -121,6 +121,19 @@ sie weiter, speist gleiche Operanden aber vorzeichenfrei ein.
 **Laufzeit:** Die Probe-Testdatei läuft in 0,16 s (Windows Debug), 0,04 s (Windows Release) und
 0,13 s (Linux Debug). Die gesamte Testsuite von `grimoire_core` braucht inkrementell 1,5 s.
 
+### Nachweis aus CI (Annahme)
+
+- **Lauf 34883182308** (Commit `0ef7696`, erster Push): Die Golden-Tests `basic_ieee_operations_match_golden`,
+  `dmath_functions_match_golden`, `mini_simulation_matches_golden` und `stable_hash_golden` sowie die
+  Golden-Werte von `grimoire_ecs` und `grimoire_sim` sind auf `windows-latest` (x86_64), `ubuntu-latest`
+  (x86_64) und `macos-latest` (arm64) grün, je 221 Tests.
+- **Lauf 34893513991** (Commit `b5ba0fe`, `chore(release): v0.1.0`): Tests mit `--no-fail-fast`, 278 (macOS)
+  bzw. 289 (Windows, Linux) Tests grün, darunter alle Golden-Tests. Der Float-Vergleich meldet: „Alle 3
+  core-Proben haben dieselben basic_hash- und dmath_hash-Werte.“ `std_trig_hash` ergibt dagegen drei
+  verschiedene Werte auf drei Plattformen, was die Sperre der `std`-Transzendentalfunktionen bestätigt.
+- Nicht ausgewertet wurde `special-macos-aarch64-*.txt` (NaN-Bitmuster auf ARM). Für die Hashes ist das
+  wegen der NaN-Kanonisierung (Regel 4) ohne Belang.
+
 ## Anforderungen
 
 - Gleicher Seed und gleiche InputFrames ergeben pro Plattform garantiert denselben Zustands-Hash,
@@ -133,7 +146,7 @@ sie weiter, speist gleiche Operanden aber vorzeichenfrei ein.
 
 ## Optionen
 
-1. **`f32` mit Regeln und `libm` (vorgeschlagen)**
+1. **`f32` mit Regeln und `libm` (gewählt)**
    - (+) Grundoperationen sind per IEEE-754 bitgleich; die Messung bestätigt das für x86_64 unter
      Windows und Linux bei verschiedenen Compiler-Versionen und Optimierungsstufen.
    - (+) Transzendente Funktionen laufen als reiner Rust-Code (`libm`), identisch auf x86_64 und aarch64.
@@ -157,7 +170,7 @@ sie weiter, speist gleiche Operanden aber vorzeichenfrei ein.
 
 ## Entscheidung
 
-Vorgeschlagen ist **Option 1**. Die Simulationsseite (`core`, `ecs`, `sim`, `collide`, `sigil`)
+Angenommen ist **Option 1**. Die Simulationsseite (`core`, `ecs`, `sim`, `collide`, `sigil`)
 rechnet mit `f32` nach diesen Regeln:
 
 1. **Erlaubt:** `+ - * / %`, Negation, `sqrt`, `abs`, `floor`, `ceil`, `round`, `trunc`, `clamp`,
@@ -209,8 +222,8 @@ Positionen (über `SimVec`) und Option 3.
 
 ## Konsequenzen
 
-- (+) Replays, Golden Master und Snapshots können plattformübergreifend verglichen werden, sobald CI
-  macOS arm64 bestätigt.
+- (+) Replays, Golden Master und Snapshots können plattformübergreifend verglichen werden; CI bestätigt
+  das für Windows x86_64, Linux x86_64 und macOS arm64.
 - (+) Die Determinismus-Regeln sind größtenteils maschinell erzwungen. Die Lint-Proben zeigten Lücken
   der ursprünglichen Konfiguration (`powi`, `f64`, Hyperbelfunktionen, `min`/`max`,
   `thread::Builder`/`scope`). Die in den Proben aufgerufenen Umgehungswege sind geschlossen; andere
@@ -228,5 +241,5 @@ Positionen (über `SimVec`) und Option 3.
   ausgeführt; ein dauerhafter CI-Check bräuchte eine Fixture außerhalb des Workspace.
 - (−) Upgrades von `libm` und Toolchain ändern potenziell `dmath_hash`. Sie sind bewusste Commits,
   die die Golden-Tests auf allen drei Plattformen bestehen müssen.
-- (−) CI muss `target/float-probe` hochladen und die `core-*.txt` der drei Plattformen vergleichen
-  (PRD-0018 FR-04b).
+- (+) CI lädt `target/float-probe` hoch und vergleicht die `core-*.txt` der drei Plattformen
+  (PRD-0018 FR-04b); eine Abweichung oder eine fehlende Probe macht den Lauf rot.
