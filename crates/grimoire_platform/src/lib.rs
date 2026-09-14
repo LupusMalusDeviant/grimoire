@@ -12,7 +12,12 @@
 //! 1. [`AppHandler::init`] exactly once — on desktop after the window exists.
 //! 2. Any number of [`AppHandler::event`] calls, always delivered before the next frame.
 //! 3. [`AppHandler::frame`] continuously, once per presented frame.
-//! 4. [`AppHandler::shutdown`] exactly once when the loop ends (exit requested or window closed).
+//! 4. [`AppHandler::shutdown`] exactly once when the loop ends (exit requested or window closed),
+//!    but only if `init` succeeded. A failed `init` ends the run with [`PlatformError::AppInit`].
+//!
+//! On desktop, [`PlatformContext::request_exit`] is honoured after every callback; no further
+//! `event` or `frame` call follows it. Wheel deltas reported in pixels are converted to lines at
+//! 40 logical pixels per line.
 
 pub mod app;
 pub mod clock;
