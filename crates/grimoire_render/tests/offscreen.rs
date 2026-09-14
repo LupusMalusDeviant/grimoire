@@ -93,6 +93,23 @@ fn red_circle_in_the_centre_on_black() {
     for (x, y) in [(0, 0), (SIZE - 1, 0), (0, SIZE - 1), (SIZE - 1, SIZE - 1)] {
         assert_near(pixel(&image, SIZE, x, y), [0, 0, 0, 255], 3, "corner pixel");
     }
+    // Pixel centre (43.5, 21.5) is world (18.0, 16.4): inside the sprite's bounding square
+    // (half size 20) but 24.3 units from the centre, so outside the circle.
+    assert_near(
+        pixel(&image, SIZE, 43, 21),
+        [0, 0, 0, 255],
+        3,
+        "bounding-square corner outside the circle",
+    );
+    // The signed-distance edge is anti-aliased: some pixel on the centre row is partially red.
+    let rim: Vec<u8> = (SIZE / 2..SIZE)
+        .map(|x| pixel(&image, SIZE, x, SIZE / 2)[0])
+        .collect();
+    println!("centre row from the middle to the right edge, red channel: {rim:?}");
+    assert!(
+        rim.iter().any(|&red| (10..=245).contains(&red)),
+        "circle edge is not anti-aliased: {rim:?}"
+    );
 }
 
 #[test]
@@ -147,6 +164,45 @@ fn quad_is_rotated() {
 }
 
 #[test]
+fn rotation_is_counter_clockwise_and_half_size_is_per_axis() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut frame = black_frame();
+    frame.sprites.push(SpriteInstance {
+        position: [0.0, 0.0],
+        half_size: [20.0, 3.0],
+        rotation: std::f32::consts::FRAC_PI_6,
+        shape: shape::QUAD,
+        color: [0.0, 1.0, 0.0, 1.0],
+    });
+    renderer.render(&frame).expect("render");
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    // Pixel centre (40.5, 27.5) is world (13.3, 7.0): 15.0 units along the long axis rotated
+    // counter-clockwise by 30 degrees, 0.6 units off it.
+    assert_near(
+        pixel(&image, SIZE, 40, 27),
+        [0, 255, 0, 255],
+        3,
+        "upper right, on the rotated long axis",
+    );
+    // Its mirror image world (-13.3, 7.0) would be covered by a clockwise rotation or by
+    // swapped half-size components.
+    assert_near(
+        pixel(&image, SIZE, 23, 27),
+        [0, 0, 0, 255],
+        3,
+        "upper left, off the rotated long axis",
+    );
+    assert_near(
+        pixel(&image, SIZE, 32, 12),
+        [0, 0, 0, 255],
+        3,
+        "above the centre, beyond the short half size",
+    );
+}
+
+#[test]
 fn alpha_blends_in_linear_space() {
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
@@ -174,6 +230,15 @@ fn ten_thousand_sprites_in_one_draw_call() {
     };
     let mut frame = black_frame();
     frame.sprites = swarm(10_000);
+    // The last instance lies far beyond the initial capacity of 16 and is drawn on top, so it
+    // is only visible if the grown buffer is uploaded and bound completely.
+    frame.sprites[9_999] = SpriteInstance {
+        position: [0.0, 0.0],
+        half_size: [10.0, 10.0],
+        rotation: 0.0,
+        shape: shape::QUAD,
+        color: [1.0, 0.0, 1.0, 1.0],
+    };
     let stats = renderer.render(&frame).expect("render");
     assert_eq!(stats.sprites_drawn, 10_000);
     assert_eq!(stats.draw_calls, 1);
@@ -184,6 +249,12 @@ fn ten_thousand_sprites_in_one_draw_call() {
     assert_eq!(stats.draw_calls, 1);
     let image = renderer.read_offscreen_rgba().expect("read-back");
     assert_eq!(image.len(), 256 * 256 * 4);
+    assert_near(
+        pixel(&image, 256, 128, 128),
+        [255, 0, 255, 255],
+        3,
+        "last instance on top",
+    );
 }
 
 #[test]

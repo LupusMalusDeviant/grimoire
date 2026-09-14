@@ -8,14 +8,21 @@ use grimoire_platform::PlatformWindow;
 use crate::context::GpuContext;
 use crate::error::GpuError;
 
-/// Picks the surface format: the first sRGB format the surface offers, otherwise its first
-/// format. Returns `None` for an empty list.
+/// Picks the surface format, in order of preference: a native sRGB format, a format with an sRGB
+/// variant (rendered through an sRGB view, see [`WindowSurface::view_format`]), otherwise the
+/// first format. Returns `None` for an empty list.
 #[must_use]
 pub fn select_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
     formats
         .iter()
         .copied()
         .find(wgpu::TextureFormat::is_srgb)
+        .or_else(|| {
+            formats
+                .iter()
+                .copied()
+                .find(|format| format.add_srgb_suffix().is_srgb())
+        })
         .or_else(|| formats.first().copied())
 }
 
@@ -33,7 +40,7 @@ pub fn select_present_mode(supported: &[wgpu::PresentMode], vsync: bool) -> wgpu
 }
 
 /// An acquired window frame. Render into [`SurfaceFrame::view`], submit, then call
-/// [`SurfaceFrame::present`].
+/// [`SurfaceFrame::present`]. Dropping it without presenting discards the frame.
 pub struct SurfaceFrame {
     texture: wgpu::SurfaceTexture,
     view: wgpu::TextureView,
@@ -93,6 +100,11 @@ impl WindowSurface {
         let present_mode = select_present_mode(&capabilities.present_modes, vsync);
         // Without a native sRGB format the sRGB encoding comes from an sRGB view of the target.
         let view_format = format.add_srgb_suffix();
+        if !view_format.is_srgb() {
+            log::warn!(
+                "surface offers no sRGB-capable format; {format:?} receives linear colours unencoded"
+            );
+        }
         let view_formats = if view_format == format {
             Vec::new()
         } else {
@@ -121,12 +133,12 @@ impl WindowSurface {
             configured: false,
             needs_reconfigure: false,
         };
-        this.resize(context, size.width, size.height);
+        this.resize(context, size.width, size.height)?;
         Ok(this)
     }
 
-    /// Format of the views returned by [`WindowSurface::acquire`]; always sRGB-encoded when the
-    /// backend offers one.
+    /// Format of the views returned by [`WindowSurface::acquire`]; sRGB-encoded unless the
+    /// surface offers no sRGB-capable format at all (a warning is logged in that case).
     #[must_use]
     pub const fn view_format(&self) -> wgpu::TextureFormat {
         self.view_format
@@ -156,34 +168,49 @@ impl WindowSurface {
         &self.window
     }
 
-    /// Reconfigures the surface for a new size. Zero sizes are ignored and return `false`; the
-    /// previous configuration stays in place until a valid size arrives.
-    pub fn resize(&mut self, context: &GpuContext, width: u32, height: u32) -> bool {
+    /// Reconfigures the surface for a new size. Zero sizes are ignored and return `Ok(false)`;
+    /// the previous configuration stays in place until a valid size arrives.
+    ///
+    /// # Errors
+    /// [`GpuError::Validation`] or [`GpuError::OutOfMemory`] if `wgpu` rejects the configuration
+    /// (for example a size above the device's texture limit); the surface is then unconfigured.
+    pub fn resize(
+        &mut self,
+        context: &GpuContext,
+        width: u32,
+        height: u32,
+    ) -> Result<bool, GpuError> {
         if width == 0 || height == 0 {
-            return false;
+            return Ok(false);
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(context.device(), &self.config);
-        self.configured = true;
+        let configured =
+            context.capture_errors(|device| self.surface.configure(device, &self.config));
+        self.configured = configured.is_ok();
         self.needs_reconfigure = false;
-        true
+        configured.map(|()| true)
     }
 
     /// Acquires the next frame.
     ///
     /// # Errors
-    /// - [`GpuError::ZeroSize`] if the surface has never been configured with a valid size.
-    /// - [`GpuError::SurfaceLost`] if the surface was lost or outdated; it has been reconfigured
-    ///   and the next call is expected to succeed.
+    /// - [`GpuError::ZeroSize`] if the surface has no valid configuration.
+    /// - [`GpuError::SurfaceLost`] if the surface was outdated (reconfigured) or lost (recreated
+    ///   and reconfigured); acquire again next frame.
     /// - [`GpuError::SurfaceUnavailable`] on timeout or occlusion; skip this frame.
-    /// - [`GpuError::Validation`] if `wgpu` reported a validation error.
+    /// - [`GpuError::CreateSurface`] if a lost surface cannot be recreated.
+    /// - [`GpuError::Validation`] or [`GpuError::OutOfMemory`] if `wgpu` reported such an error.
+    ///
+    /// # Panics
+    /// On macOS (Metal), recreating a lost surface panics off the main thread; call this from the
+    /// thread that runs the platform event loop.
     pub fn acquire(&mut self, context: &GpuContext) -> Result<SurfaceFrame, GpuError> {
         if !self.configured {
             return Err(GpuError::ZeroSize);
         }
         if self.needs_reconfigure {
-            self.reconfigure(context);
+            self.reconfigure(context)?;
         }
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
@@ -195,9 +222,21 @@ impl WindowSurface {
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return Err(GpuError::SurfaceUnavailable);
             }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                log::warn!("surface lost or outdated; reconfiguring");
-                self.reconfigure(context);
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                log::warn!("surface outdated; reconfiguring");
+                self.reconfigure(context)?;
+                return Err(GpuError::SurfaceLost);
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                // A lost surface cannot be revived by `configure`; it has to be recreated.
+                log::warn!("surface lost; recreating");
+                self.configured = false;
+                let surface = context
+                    .instance()
+                    .create_surface(Arc::clone(&self.window))?;
+                // Drop the old surface (and its swap chain) before configuring the new one.
+                self.surface = surface;
+                self.reconfigure(context)?;
                 return Err(GpuError::SurfaceLost);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -214,14 +253,14 @@ impl WindowSurface {
         Ok(SurfaceFrame { texture, view })
     }
 
-    fn reconfigure(&mut self, context: &GpuContext) {
+    fn reconfigure(&mut self, context: &GpuContext) -> Result<(), GpuError> {
         let size = self.window.inner_size();
         let (width, height) = if size.is_empty() {
             (self.config.width, self.config.height)
         } else {
             (size.width, size.height)
         };
-        self.resize(context, width, height);
+        self.resize(context, width, height).map(|_| ())
     }
 }
 
@@ -240,8 +279,17 @@ mod tests {
     }
 
     #[test]
+    fn prefers_format_with_srgb_variant_over_linear_only_format() {
+        let formats = [TextureFormat::Rgb10a2Unorm, TextureFormat::Bgra8Unorm];
+        assert_eq!(
+            select_surface_format(&formats),
+            Some(TextureFormat::Bgra8Unorm)
+        );
+    }
+
+    #[test]
     fn falls_back_to_first_format() {
-        let formats = [TextureFormat::Rgba16Float, TextureFormat::Bgra8Unorm];
+        let formats = [TextureFormat::Rgba16Float, TextureFormat::Rgb10a2Unorm];
         assert_eq!(
             select_surface_format(&formats),
             Some(TextureFormat::Rgba16Float)

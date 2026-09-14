@@ -7,6 +7,10 @@ use crate::SpriteInstance;
 /// Size of one [`SpriteInstance`] in the instance buffer.
 const INSTANCE_SIZE: u64 = std::mem::size_of::<SpriteInstance>() as u64;
 
+/// Camera uniform as `f32`s: column-major view-projection (16), pixels per world unit (1) and
+/// padding to the WGSL struct size of 80 bytes (3).
+type CameraUniform = [f32; 20];
+
 /// Vertex layout of [`SpriteInstance`]; offsets follow its `#[repr(C)]` field order.
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x2,
@@ -20,15 +24,24 @@ const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array!
 const QUAD_VERTICES: u32 = 6;
 
 /// Capacity the instance buffer must have to hold `required` sprites: unchanged while it fits,
-/// otherwise the next power of two (saturating at `u32::MAX`).
-pub(crate) const fn grown_capacity(current: u32, required: u32) -> u32 {
+/// otherwise the next power of two, capped at `max_capacity`. `None` if `required` itself
+/// exceeds `max_capacity`.
+pub(crate) const fn grown_capacity(current: u32, required: u32, max_capacity: u32) -> Option<u32> {
     if required <= current {
-        return current;
+        return Some(current);
+    }
+    if required > max_capacity {
+        return None;
     }
     match required.checked_next_power_of_two() {
-        Some(capacity) => capacity,
-        None => u32::MAX,
+        Some(capacity) if capacity <= max_capacity => Some(capacity),
+        _ => Some(max_capacity),
     }
+}
+
+/// Largest instance count a buffer of at most `max_buffer_size` bytes can hold.
+pub(crate) fn max_instance_capacity(max_buffer_size: u64) -> u32 {
+    u32::try_from(max_buffer_size / INSTANCE_SIZE).unwrap_or(u32::MAX)
 }
 
 pub(crate) struct SpritePass {
@@ -55,7 +68,7 @@ impl SpritePass {
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("grimoire camera uniform"),
-            size: std::mem::size_of::<[[f32; 4]; 4]>() as u64,
+            size: std::mem::size_of::<CameraUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -123,7 +136,8 @@ impl SpritePass {
             })
         })?;
 
-        let capacity = initial_capacity.max(1);
+        let max_capacity = max_instance_capacity(device.limits().max_buffer_size);
+        let capacity = initial_capacity.clamp(1, max_capacity.max(1));
         let instance_buffer = create_instance_buffer(context, capacity)?;
         Ok(Self {
             pipeline,
@@ -135,17 +149,25 @@ impl SpritePass {
     }
 
     /// Uploads the camera and the sprites, growing the instance buffer if needed.
+    /// `pixels_per_unit` is the number of target pixels per world unit.
     /// Returns the number of instances to draw.
     pub(crate) fn prepare(
         &mut self,
         context: &GpuContext,
         view_projection: &[[f32; 4]; 4],
+        pixels_per_unit: f32,
         sprites: &[SpriteInstance],
     ) -> Result<u32, GpuError> {
         let count = u32::try_from(sprites.len()).map_err(|_| {
             GpuError::Validation(format!("{} sprites exceed u32::MAX", sprites.len()))
         })?;
-        let capacity = grown_capacity(self.capacity, count);
+        let max_buffer_size = context.device().limits().max_buffer_size;
+        let capacity = grown_capacity(self.capacity, count, max_instance_capacity(max_buffer_size))
+            .ok_or_else(|| {
+                GpuError::Validation(format!(
+                    "{count} sprites exceed the device buffer limit of {max_buffer_size} bytes"
+                ))
+            })?;
         if capacity != self.capacity {
             log::debug!(
                 "growing sprite instance buffer from {} to {capacity}",
@@ -155,12 +177,11 @@ impl SpritePass {
             self.capacity = capacity;
         }
 
+        let mut camera: CameraUniform = [0.0; 20];
+        camera[..16].copy_from_slice(bytemuck::cast_slice(view_projection.as_slice()));
+        camera[16] = pixels_per_unit;
         let queue = context.queue();
-        queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(view_projection.as_slice()),
-        );
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&camera));
         if count > 0 {
             queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(sprites));
         }
@@ -186,12 +207,6 @@ impl SpritePass {
 
 fn create_instance_buffer(context: &GpuContext, capacity: u32) -> Result<wgpu::Buffer, GpuError> {
     let size = u64::from(capacity) * INSTANCE_SIZE;
-    let max = context.device().limits().max_buffer_size;
-    if size > max {
-        return Err(GpuError::Validation(format!(
-            "sprite instance buffer of {size} bytes exceeds the device limit of {max} bytes"
-        )));
-    }
     context.capture_errors(|device| {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("grimoire sprite instances"),
@@ -209,23 +224,40 @@ mod tests {
 
     #[test]
     fn capacity_is_kept_while_it_fits() {
-        assert_eq!(grown_capacity(16, 0), 16);
-        assert_eq!(grown_capacity(16, 16), 16);
-        assert_eq!(grown_capacity(1000, 999), 1000);
+        assert_eq!(grown_capacity(16, 0, u32::MAX), Some(16));
+        assert_eq!(grown_capacity(16, 16, u32::MAX), Some(16));
+        assert_eq!(grown_capacity(1000, 999, u32::MAX), Some(1000));
     }
 
     #[test]
     fn capacity_grows_to_next_power_of_two() {
-        assert_eq!(grown_capacity(16, 17), 32);
-        assert_eq!(grown_capacity(16, 10_000), 16_384);
-        assert_eq!(grown_capacity(16_384, 16_385), 32_768);
-        assert_eq!(grown_capacity(1000, 1024), 1024);
+        assert_eq!(grown_capacity(16, 17, u32::MAX), Some(32));
+        assert_eq!(grown_capacity(16, 10_000, u32::MAX), Some(16_384));
+        assert_eq!(grown_capacity(16_384, 16_385, u32::MAX), Some(32_768));
+        assert_eq!(grown_capacity(1000, 1024, u32::MAX), Some(1024));
     }
 
     #[test]
     fn capacity_saturates() {
-        assert_eq!(grown_capacity(1, u32::MAX), u32::MAX);
-        assert_eq!(grown_capacity(1, (1 << 31) + 1), u32::MAX);
+        assert_eq!(grown_capacity(1, u32::MAX, u32::MAX), Some(u32::MAX));
+        assert_eq!(grown_capacity(1, (1 << 31) + 1, u32::MAX), Some(u32::MAX));
+    }
+
+    #[test]
+    fn capacity_is_capped_by_the_buffer_limit() {
+        // 256 MiB of 40-byte instances: 6,000,000 sprites fit, 2^23 do not.
+        let max = max_instance_capacity(256 << 20);
+        assert_eq!(max, 6_710_886);
+        assert_eq!(grown_capacity(16_384, 6_000_000, max), Some(max));
+        assert_eq!(grown_capacity(16_384, max, max), Some(max));
+        assert_eq!(grown_capacity(16_384, max + 1, max), None);
+        assert_eq!(grown_capacity(16, 1000, max), Some(1024));
+    }
+
+    #[test]
+    fn huge_buffer_limits_saturate_the_capacity() {
+        assert_eq!(max_instance_capacity(u64::MAX), u32::MAX);
+        assert_eq!(max_instance_capacity(39), 0);
     }
 
     #[test]

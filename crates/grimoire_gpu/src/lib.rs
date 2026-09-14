@@ -9,10 +9,11 @@
 //!
 //! ## Colour space
 //!
-//! Every render target handed out by this crate is written through an sRGB view
+//! Render targets handed out by this crate are written through an sRGB view
 //! ([`WindowSurface::view_format`], [`OFFSCREEN_FORMAT`]). Shaders therefore output *linear*
 //! colour and the GPU applies the sRGB transfer function on write; blending happens in linear
-//! space.
+//! space. The only exception is a window surface that offers no sRGB-capable format at all:
+//! its first format is used as is and a warning is logged.
 
 mod context;
 mod error;

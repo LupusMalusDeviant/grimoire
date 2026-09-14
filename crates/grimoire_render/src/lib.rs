@@ -178,8 +178,12 @@ pub enum RenderError {
     /// No GPU adapter matching the requirements exists.
     #[error("no suitable GPU adapter found")]
     NoAdapter,
-    /// The window surface was lost or became outdated and could not be recovered this frame.
-    #[error("surface lost or outdated")]
+    /// No frame could be presented this time: the window surface was lost or became outdated
+    /// (it has been recovered for the next frame), or no frame is available right now because
+    /// acquisition timed out or the window is occluded or minimised. Not a failure: skip the
+    /// frame and render again; an occluded window may report this every frame, so throttle
+    /// rather than log each occurrence.
+    #[error("surface lost, outdated or temporarily unavailable")]
     SurfaceLost,
     /// The GPU ran out of memory.
     #[error("GPU out of memory")]

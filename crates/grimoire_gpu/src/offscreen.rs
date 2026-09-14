@@ -89,9 +89,11 @@ impl OffscreenTarget {
     ///
     /// # Errors
     /// [`GpuError::Readback`] if mapping fails, [`GpuError::OutOfMemory`] or
-    /// [`GpuError::Validation`] if the staging buffer cannot be created.
+    /// [`GpuError::Validation`] if the staging buffer or the copy is rejected.
     pub fn read_rgba(&self, context: &GpuContext) -> Result<Vec<u8>, GpuError> {
-        let padded_row = padded_bytes_per_row(self.width);
+        let padded_row = padded_bytes_per_row(self.width).ok_or_else(|| {
+            GpuError::Readback(format!("row of {} pixels overflows u32", self.width))
+        })?;
         let size = u64::from(padded_row) * u64::from(self.height);
         let staging = context.capture_errors(|device| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -103,31 +105,33 @@ impl OffscreenTarget {
         })?;
 
         let device = context.device();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("grimoire read-back encoder"),
-        });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_row),
-                    rows_per_image: Some(self.height),
+        let submission = context.capture_errors(|device| {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("grimoire read-back encoder"),
+            });
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let submission = context.queue().submit([encoder.finish()]);
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row),
+                        rows_per_image: Some(self.height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            context.queue().submit([encoder.finish()])
+        })?;
 
         let (sender, receiver) = mpsc::channel();
         staging.map_async(wgpu::MapMode::Read, .., move |result| {

@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use grimoire_platform::PlatformWindow;
 use grimoire_platform::raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle};
@@ -53,6 +54,7 @@ pub struct GpuContext {
     queue: wgpu::Queue,
     info: wgpu::AdapterInfo,
     backend_name: String,
+    device_lost: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for GpuContext {
@@ -84,7 +86,12 @@ impl GpuContext {
     /// # Errors
     /// [`GpuError::CreateSurface`] if the window handles are unusable, [`GpuError::NoAdapter`] if
     /// no adapter can present to the surface, [`GpuError::RequestDevice`] if the device cannot be
-    /// created.
+    /// created, [`GpuError::Validation`] or [`GpuError::OutOfMemory`] if the initial surface
+    /// configuration is rejected.
+    ///
+    /// # Panics
+    /// On macOS (Metal) `wgpu` panics if this is not called on the main thread; create window
+    /// contexts from the platform event loop thread (for example in `AppHandler::init`).
     pub fn new_for_window(
         window: Arc<dyn PlatformWindow>,
         options: ContextOptions,
@@ -134,10 +141,17 @@ impl GpuContext {
             info.device_type
         );
 
+        let adapter_limits = adapter.limits();
+        // WebGL2/GLES 3.0 baseline (no storage buffers, no compute), so GL 3.3-class adapters
+        // qualify; resolution and buffer size follow the adapter.
+        let required_limits = wgpu::Limits {
+            max_buffer_size: adapter_limits.max_buffer_size,
+            ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter_limits)
+        };
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("grimoire device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            required_limits,
             ..Default::default()
         };
         let (device, queue) = adapter.request_device(&descriptor).await?;
@@ -145,6 +159,15 @@ impl GpuContext {
         device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
             log::error!("uncaptured wgpu error: {error}");
         }));
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let lost_flag = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |reason, message| {
+            match reason {
+                wgpu::DeviceLostReason::Destroyed => log::debug!("GPU device destroyed: {message}"),
+                wgpu::DeviceLostReason::Unknown => log::error!("GPU device lost: {message}"),
+            }
+            lost_flag.store(true, Ordering::Relaxed);
+        });
 
         Ok(Self {
             instance,
@@ -153,7 +176,15 @@ impl GpuContext {
             queue,
             info,
             backend_name,
+            device_lost,
         })
+    }
+
+    /// Whether the device has been lost (driver reset, GPU removed, ...). A lost device never
+    /// recovers; a new context has to be created.
+    #[must_use]
+    pub fn is_device_lost(&self) -> bool {
+        self.device_lost.load(Ordering::Relaxed)
     }
 
     /// The `wgpu` instance.

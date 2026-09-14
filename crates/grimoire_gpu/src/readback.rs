@@ -2,11 +2,15 @@
 
 /// Bytes per row of a texture-to-buffer copy for `width` RGBA8 pixels, rounded up to
 /// [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`].
+///
+/// Returns `None` if the result does not fit into a `u32`.
 #[must_use]
-pub const fn padded_bytes_per_row(width: u32) -> u32 {
-    let unpadded = width * 4;
+pub const fn padded_bytes_per_row(width: u32) -> Option<u32> {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    unpadded.div_ceil(align) * align
+    let Some(unpadded) = width.checked_mul(4) else {
+        return None;
+    };
+    unpadded.div_ceil(align).checked_mul(align)
 }
 
 /// Copies `height` rows of `width * 4` bytes out of `padded`, whose rows are
@@ -35,18 +39,26 @@ mod tests {
 
     #[test]
     fn padding_rounds_up_to_alignment() {
-        assert_eq!(padded_bytes_per_row(1), 256);
-        assert_eq!(padded_bytes_per_row(64), 256);
-        assert_eq!(padded_bytes_per_row(65), 512);
-        assert_eq!(padded_bytes_per_row(100), 512);
-        assert_eq!(padded_bytes_per_row(128), 512);
-        assert_eq!(padded_bytes_per_row(0), 0);
+        assert_eq!(padded_bytes_per_row(1), Some(256));
+        assert_eq!(padded_bytes_per_row(64), Some(256));
+        assert_eq!(padded_bytes_per_row(65), Some(512));
+        assert_eq!(padded_bytes_per_row(100), Some(512));
+        assert_eq!(padded_bytes_per_row(128), Some(512));
+        assert_eq!(padded_bytes_per_row(0), Some(0));
+    }
+
+    #[test]
+    fn padding_reports_overflow() {
+        assert_eq!(padded_bytes_per_row(u32::MAX / 4 + 1), None);
+        // Fits unpadded but not after rounding up to the alignment.
+        assert_eq!(padded_bytes_per_row(u32::MAX / 4), None);
+        assert_eq!(padded_bytes_per_row(1 << 29), Some(1 << 31));
     }
 
     #[test]
     fn padded_rows_are_multiples_of_alignment_and_large_enough() {
         for width in 1..2048 {
-            let padded = padded_bytes_per_row(width);
+            let padded = padded_bytes_per_row(width).expect("small widths fit");
             assert_eq!(padded % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
             assert!(padded >= width * 4);
             assert!(padded - width * 4 < wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -57,7 +69,7 @@ mod tests {
     fn strip_keeps_row_order_and_drops_padding() {
         let width = 3;
         let height = 2;
-        let padded_row = padded_bytes_per_row(width);
+        let padded_row = padded_bytes_per_row(width).expect("small widths fit");
         let mut padded = vec![0xEE; (padded_row * height) as usize];
         for y in 0..height as usize {
             for byte in 0..12 {
