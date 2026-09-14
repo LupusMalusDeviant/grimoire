@@ -1,7 +1,11 @@
 //! Opens a window and logs every platform event.
 //!
 //! `Escape` or closing the window exits. `GRIMOIRE_EXAMPLE_MAX_FRAMES=<n>` exits after `n`
-//! frames, which smoke tests use. Log verbosity follows `RUST_LOG` (default `info`).
+//! frames (`0` exits right after init), which smoke tests use. Log verbosity follows `RUST_LOG`
+//! (default `info`).
+//!
+//! Nothing is drawn. On Wayland the compositor does not map a window without a buffer, so it
+//! stays invisible and gets no input; run it under X11/XWayland (`WAYLAND_DISPLAY` unset) there.
 //!
 //! ```text
 //! cargo run -p grimoire_platform --example window
@@ -22,6 +26,8 @@ const FRAME_TIME: Duration = Duration::from_micros(16_667);
 struct WindowExample {
     max_frames: Option<u64>,
     frames: u64,
+    /// Clock time at which the next frame may end.
+    next_deadline: Duration,
     last_title_update: Duration,
     frames_since_title_update: u64,
 }
@@ -36,6 +42,9 @@ impl AppHandler for WindowExample {
         );
         if let Some(max) = self.max_frames {
             log::info!("{MAX_FRAMES_VAR}={max}: exiting automatically");
+            if max == 0 {
+                ctx.request_exit();
+            }
         }
         Ok(())
     }
@@ -77,9 +86,13 @@ impl AppHandler for WindowExample {
             return;
         }
 
-        let next_frame = FRAME_TIME.saturating_mul(u32::try_from(self.frames).unwrap_or(u32::MAX));
-        if let Some(wait) = next_frame.checked_sub(ctx.clock().elapsed()) {
-            std::thread::sleep(wait);
+        // After a stall (window creation, a modal move/resize loop) the schedule restarts from
+        // now instead of rendering unpaced frames to catch up.
+        self.next_deadline += FRAME_TIME;
+        let now = ctx.clock().elapsed();
+        match self.next_deadline.checked_sub(now) {
+            Some(wait) if !wait.is_zero() => std::thread::sleep(wait),
+            _ => self.next_deadline = now,
         }
     }
 
@@ -110,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = WindowExample {
         max_frames: max_frames_from_env()?,
         frames: 0,
+        next_deadline: Duration::ZERO,
         last_title_update: Duration::ZERO,
         frames_since_title_update: 0,
     };

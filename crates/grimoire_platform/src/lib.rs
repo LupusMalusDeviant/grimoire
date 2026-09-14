@@ -18,6 +18,11 @@
 //! On desktop, [`PlatformContext::request_exit`] is honoured after every callback; no further
 //! `event` or `frame` call follows it. Wheel deltas reported in pixels are converted to lines at
 //! 40 logical pixels per line.
+//!
+//! The desktop loop requests the next redraw right after every `frame` and does not pace itself.
+//! On Wayland winit aligns redraws with frame callbacks only through `pre_present_notify`, which
+//! [`PlatformWindow`] does not expose, so the renderer must present with vsync (FIFO) to avoid a
+//! spinning loop.
 
 pub mod app;
 pub mod clock;

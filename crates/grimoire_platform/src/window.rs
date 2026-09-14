@@ -56,6 +56,14 @@ impl Default for WindowConfig {
 /// - The GPU layer relies only on the raw handles and [`PlatformWindow::inner_size`];
 ///   everything else is presentation glue.
 /// - The handles stay valid for as long as any `Arc` to the window is alive.
+///
+/// Platform notes for the desktop implementation:
+/// - **macOS:** the raw handles are only available on the main thread (other threads get
+///   [`raw_window_handle::HandleError::Unavailable`]), so GPU surfaces must be created inside
+///   the [`crate::AppHandler`] callbacks. Calls from other threads are forwarded to the main
+///   thread and can block while it is busy.
+/// - **Wayland:** redraws are not throttled to the compositor's frame callbacks; frame pacing
+///   comes from presenting with vsync (FIFO).
 pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle + Send + Sync {
     /// Current drawable size in physical pixels. May be empty while minimised.
     fn inner_size(&self) -> PhysicalSize;

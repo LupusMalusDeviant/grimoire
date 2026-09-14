@@ -27,11 +27,16 @@ pub(crate) const LOGICAL_PIXELS_PER_LINE: f64 = 40.0;
 /// Creates the main window and runs `app` inside the native event loop until the app requests
 /// exit or the window is closed.
 ///
-/// Blocks the calling thread, which must be the main thread (required on macOS).
+/// Blocks the calling thread until the loop ends.
 ///
 /// # Errors
 /// [`PlatformError::EventLoop`] or [`PlatformError::WindowCreation`] if the platform fails,
-/// [`PlatformError::AppInit`] if [`AppHandler::init`] fails.
+/// [`PlatformError::AppInit`] if [`AppHandler::init`] fails. The native event loop can be created
+/// only once per process, so a second call returns [`PlatformError::EventLoop`].
+///
+/// # Panics
+/// Panics if not called on the main thread, on every desktop platform (e.g. from a `#[test]` or a
+/// spawned thread).
 pub fn run_desktop<A: AppHandler + 'static>(
     config: WindowConfig,
     app: A,
@@ -47,9 +52,7 @@ pub fn run_desktop<A: AppHandler + 'static>(
             exit_requested: false,
         },
         window: None,
-        initialized: false,
-        stopping: false,
-        shut_down: false,
+        lifecycle: Lifecycle::default(),
         error: None,
     };
     let result = event_loop.run_app(&mut runner);
@@ -59,6 +62,8 @@ pub fn run_desktop<A: AppHandler + 'static>(
     result.map_err(|error| PlatformError::EventLoop(error.to_string()))
 }
 
+/// On macOS the raw handles are only available on the main thread, and `set_title` or
+/// `request_redraw` from another thread are forwarded to it.
 struct DesktopWindow {
     window: Arc<Window>,
 }
@@ -118,39 +123,82 @@ impl PlatformContext for DesktopContext {
     }
 }
 
+/// Lifecycle gating of the desktop runner, kept free of winit so it can be unit-tested.
+#[derive(Debug, Default)]
+struct Lifecycle {
+    window_created: bool,
+    initialized: bool,
+    /// Set once the loop was told to exit; no app callback runs afterwards except `shutdown`.
+    stopping: bool,
+    shut_down: bool,
+}
+
+impl Lifecycle {
+    /// Whether `resumed` should create the window: only the first time and never while stopping.
+    fn should_create_window(&self) -> bool {
+        !self.window_created && !self.stopping
+    }
+
+    fn window_created(&mut self) {
+        self.window_created = true;
+    }
+
+    /// Records the outcome of `init`. Returns whether the event loop must exit.
+    fn init_finished(&mut self, succeeded: bool, exit_requested: bool) -> bool {
+        self.initialized = succeeded;
+        self.callback_finished(!succeeded || exit_requested)
+    }
+
+    /// Whether `event` and `frame` may be delivered.
+    fn accepts_callbacks(&self) -> bool {
+        self.initialized && !self.stopping
+    }
+
+    /// Records the end of an app callback or a platform failure. Returns whether the event loop
+    /// must exit.
+    fn callback_finished(&mut self, exit: bool) -> bool {
+        self.stopping |= exit;
+        self.stopping
+    }
+
+    /// Returns `true` exactly once, and only if `init` succeeded.
+    fn take_shutdown(&mut self) -> bool {
+        let run = self.initialized && !self.shut_down;
+        self.shut_down |= run;
+        run
+    }
+}
+
 struct DesktopRunner<A> {
     app: A,
     config: WindowConfig,
     ctx: DesktopContext,
     window: Option<Arc<Window>>,
-    initialized: bool,
-    /// Set once the loop was told to exit; no app callback runs afterwards except `shutdown`.
-    stopping: bool,
-    shut_down: bool,
+    lifecycle: Lifecycle,
     error: Option<PlatformError>,
 }
 
 impl<A: AppHandler> DesktopRunner<A> {
-    fn stop(&mut self, event_loop: &ActiveEventLoop) {
-        self.stopping = true;
-        event_loop.exit();
-    }
-
-    fn stop_if_requested(&mut self, event_loop: &ActiveEventLoop) {
-        if self.ctx.exit_requested {
-            self.stop(event_loop);
+    /// Returns whether the loop keeps running.
+    fn finish_callback(&mut self, event_loop: &ActiveEventLoop, exit: bool) -> bool {
+        let stopping = self
+            .lifecycle
+            .callback_finished(exit || self.ctx.exit_requested);
+        if stopping {
+            event_loop.exit();
         }
+        !stopping
     }
 
     fn deliver(&mut self, event_loop: &ActiveEventLoop, event: &PlatformEvent) {
         self.app.event(&mut self.ctx, event);
-        self.stop_if_requested(event_loop);
+        self.finish_callback(event_loop, false);
     }
 }
 
 impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() || self.stopping {
+        if !self.lifecycle.should_create_window() {
             return;
         }
 
@@ -165,23 +213,27 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
             Ok(window) => Arc::new(window),
             Err(error) => {
                 self.error = Some(PlatformError::WindowCreation(error.to_string()));
-                self.stop(event_loop);
+                self.finish_callback(event_loop, true);
                 return;
             }
         };
+        self.lifecycle.window_created();
         self.window = Some(Arc::clone(&window));
         self.ctx.window = Some(Arc::new(DesktopWindow {
             window: Arc::clone(&window),
         }));
 
-        if let Err(error) = self.app.init(&mut self.ctx) {
+        let init_result = self.app.init(&mut self.ctx);
+        let succeeded = init_result.is_ok();
+        if let Err(error) = init_result {
             self.error = Some(PlatformError::AppInit(error.to_string()));
-            self.stop(event_loop);
-            return;
         }
-        self.initialized = true;
-        self.stop_if_requested(event_loop);
-        if !self.stopping {
+        if self
+            .lifecycle
+            .init_finished(succeeded, self.ctx.exit_requested)
+        {
+            event_loop.exit();
+        } else {
             window.request_redraw();
         }
     }
@@ -195,22 +247,21 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
         let Some(window) = self.window.clone() else {
             return;
         };
-        if !self.initialized || self.stopping || window.id() != window_id {
+        if !self.lifecycle.accepts_callbacks() || window.id() != window_id {
             return;
         }
 
         match event {
             WindowEvent::RedrawRequested => {
                 self.app.frame(&mut self.ctx);
-                self.stop_if_requested(event_loop);
-                if !self.stopping {
+                if self.finish_callback(event_loop, false) {
                     window.request_redraw();
                 }
             }
             WindowEvent::CloseRequested => {
                 self.app
                     .event(&mut self.ctx, &PlatformEvent::CloseRequested);
-                self.stop(event_loop);
+                self.finish_callback(event_loop, true);
             }
             WindowEvent::Resized(size) => {
                 let event = PlatformEvent::Resized(PhysicalSize::new(size.width, size.height));
@@ -254,8 +305,7 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if self.initialized && !self.shut_down {
-            self.shut_down = true;
+        if self.lifecycle.take_shutdown() {
             self.app.shutdown();
         }
     }
@@ -374,86 +424,224 @@ mod tests {
     use winit::dpi::PhysicalPosition;
     use winit::keyboard::{KeyCode as W, NativeKeyCode};
 
+    /// Every [`KeyCode`] variant, in declaration order.
+    const ALL_KEY_CODES: [KeyCode; 64] = [
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
+        KeyCode::Digit0,
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::ArrowUp,
+        KeyCode::ArrowDown,
+        KeyCode::ArrowLeft,
+        KeyCode::ArrowRight,
+        KeyCode::Space,
+        KeyCode::Enter,
+        KeyCode::Escape,
+        KeyCode::Tab,
+        KeyCode::Backspace,
+        KeyCode::ShiftLeft,
+        KeyCode::ShiftRight,
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::AltLeft,
+        KeyCode::AltRight,
+        KeyCode::F1,
+        KeyCode::F2,
+        KeyCode::F3,
+        KeyCode::F4,
+        KeyCode::F5,
+        KeyCode::F6,
+        KeyCode::F7,
+        KeyCode::F8,
+        KeyCode::F9,
+        KeyCode::F10,
+        KeyCode::F11,
+        KeyCode::F12,
+        KeyCode::Unidentified,
+    ];
+
+    /// The winit key each engine key is expected to come from. The match has no wildcard, so
+    /// adding a [`KeyCode`] variant stops this test from compiling until it is listed here and in
+    /// [`ALL_KEY_CODES`].
+    fn expected_winit_code(code: KeyCode) -> Option<W> {
+        match code {
+            KeyCode::KeyA => Some(W::KeyA),
+            KeyCode::KeyB => Some(W::KeyB),
+            KeyCode::KeyC => Some(W::KeyC),
+            KeyCode::KeyD => Some(W::KeyD),
+            KeyCode::KeyE => Some(W::KeyE),
+            KeyCode::KeyF => Some(W::KeyF),
+            KeyCode::KeyG => Some(W::KeyG),
+            KeyCode::KeyH => Some(W::KeyH),
+            KeyCode::KeyI => Some(W::KeyI),
+            KeyCode::KeyJ => Some(W::KeyJ),
+            KeyCode::KeyK => Some(W::KeyK),
+            KeyCode::KeyL => Some(W::KeyL),
+            KeyCode::KeyM => Some(W::KeyM),
+            KeyCode::KeyN => Some(W::KeyN),
+            KeyCode::KeyO => Some(W::KeyO),
+            KeyCode::KeyP => Some(W::KeyP),
+            KeyCode::KeyQ => Some(W::KeyQ),
+            KeyCode::KeyR => Some(W::KeyR),
+            KeyCode::KeyS => Some(W::KeyS),
+            KeyCode::KeyT => Some(W::KeyT),
+            KeyCode::KeyU => Some(W::KeyU),
+            KeyCode::KeyV => Some(W::KeyV),
+            KeyCode::KeyW => Some(W::KeyW),
+            KeyCode::KeyX => Some(W::KeyX),
+            KeyCode::KeyY => Some(W::KeyY),
+            KeyCode::KeyZ => Some(W::KeyZ),
+            KeyCode::Digit0 => Some(W::Digit0),
+            KeyCode::Digit1 => Some(W::Digit1),
+            KeyCode::Digit2 => Some(W::Digit2),
+            KeyCode::Digit3 => Some(W::Digit3),
+            KeyCode::Digit4 => Some(W::Digit4),
+            KeyCode::Digit5 => Some(W::Digit5),
+            KeyCode::Digit6 => Some(W::Digit6),
+            KeyCode::Digit7 => Some(W::Digit7),
+            KeyCode::Digit8 => Some(W::Digit8),
+            KeyCode::Digit9 => Some(W::Digit9),
+            KeyCode::ArrowUp => Some(W::ArrowUp),
+            KeyCode::ArrowDown => Some(W::ArrowDown),
+            KeyCode::ArrowLeft => Some(W::ArrowLeft),
+            KeyCode::ArrowRight => Some(W::ArrowRight),
+            KeyCode::Space => Some(W::Space),
+            KeyCode::Enter => Some(W::Enter),
+            KeyCode::Escape => Some(W::Escape),
+            KeyCode::Tab => Some(W::Tab),
+            KeyCode::Backspace => Some(W::Backspace),
+            KeyCode::ShiftLeft => Some(W::ShiftLeft),
+            KeyCode::ShiftRight => Some(W::ShiftRight),
+            KeyCode::ControlLeft => Some(W::ControlLeft),
+            KeyCode::ControlRight => Some(W::ControlRight),
+            KeyCode::AltLeft => Some(W::AltLeft),
+            KeyCode::AltRight => Some(W::AltRight),
+            KeyCode::F1 => Some(W::F1),
+            KeyCode::F2 => Some(W::F2),
+            KeyCode::F3 => Some(W::F3),
+            KeyCode::F4 => Some(W::F4),
+            KeyCode::F5 => Some(W::F5),
+            KeyCode::F6 => Some(W::F6),
+            KeyCode::F7 => Some(W::F7),
+            KeyCode::F8 => Some(W::F8),
+            KeyCode::F9 => Some(W::F9),
+            KeyCode::F10 => Some(W::F10),
+            KeyCode::F11 => Some(W::F11),
+            KeyCode::F12 => Some(W::F12),
+            KeyCode::Unidentified => None,
+        }
+    }
+
+    #[test]
+    fn all_key_codes_lists_every_variant_once() {
+        // Declaration-order discriminants are dense, so a variant missing from the list leaves a
+        // gap or a length mismatch.
+        let mut discriminants: Vec<usize> =
+            ALL_KEY_CODES.iter().map(|code| *code as usize).collect();
+        discriminants.sort_unstable();
+        let dense: Vec<usize> = (0..ALL_KEY_CODES.len()).collect();
+        assert_eq!(discriminants, dense);
+    }
+
     #[test]
     fn maps_every_named_key() {
-        let pairs = [
-            (W::KeyA, KeyCode::KeyA),
-            (W::KeyB, KeyCode::KeyB),
-            (W::KeyC, KeyCode::KeyC),
-            (W::KeyD, KeyCode::KeyD),
-            (W::KeyE, KeyCode::KeyE),
-            (W::KeyF, KeyCode::KeyF),
-            (W::KeyG, KeyCode::KeyG),
-            (W::KeyH, KeyCode::KeyH),
-            (W::KeyI, KeyCode::KeyI),
-            (W::KeyJ, KeyCode::KeyJ),
-            (W::KeyK, KeyCode::KeyK),
-            (W::KeyL, KeyCode::KeyL),
-            (W::KeyM, KeyCode::KeyM),
-            (W::KeyN, KeyCode::KeyN),
-            (W::KeyO, KeyCode::KeyO),
-            (W::KeyP, KeyCode::KeyP),
-            (W::KeyQ, KeyCode::KeyQ),
-            (W::KeyR, KeyCode::KeyR),
-            (W::KeyS, KeyCode::KeyS),
-            (W::KeyT, KeyCode::KeyT),
-            (W::KeyU, KeyCode::KeyU),
-            (W::KeyV, KeyCode::KeyV),
-            (W::KeyW, KeyCode::KeyW),
-            (W::KeyX, KeyCode::KeyX),
-            (W::KeyY, KeyCode::KeyY),
-            (W::KeyZ, KeyCode::KeyZ),
-            (W::Digit0, KeyCode::Digit0),
-            (W::Digit1, KeyCode::Digit1),
-            (W::Digit2, KeyCode::Digit2),
-            (W::Digit3, KeyCode::Digit3),
-            (W::Digit4, KeyCode::Digit4),
-            (W::Digit5, KeyCode::Digit5),
-            (W::Digit6, KeyCode::Digit6),
-            (W::Digit7, KeyCode::Digit7),
-            (W::Digit8, KeyCode::Digit8),
-            (W::Digit9, KeyCode::Digit9),
-            (W::ArrowUp, KeyCode::ArrowUp),
-            (W::ArrowDown, KeyCode::ArrowDown),
-            (W::ArrowLeft, KeyCode::ArrowLeft),
-            (W::ArrowRight, KeyCode::ArrowRight),
-            (W::Space, KeyCode::Space),
-            (W::Enter, KeyCode::Enter),
-            (W::Escape, KeyCode::Escape),
-            (W::Tab, KeyCode::Tab),
-            (W::Backspace, KeyCode::Backspace),
-            (W::ShiftLeft, KeyCode::ShiftLeft),
-            (W::ShiftRight, KeyCode::ShiftRight),
-            (W::ControlLeft, KeyCode::ControlLeft),
-            (W::ControlRight, KeyCode::ControlRight),
-            (W::AltLeft, KeyCode::AltLeft),
-            (W::AltRight, KeyCode::AltRight),
-            (W::F1, KeyCode::F1),
-            (W::F2, KeyCode::F2),
-            (W::F3, KeyCode::F3),
-            (W::F4, KeyCode::F4),
-            (W::F5, KeyCode::F5),
-            (W::F6, KeyCode::F6),
-            (W::F7, KeyCode::F7),
-            (W::F8, KeyCode::F8),
-            (W::F9, KeyCode::F9),
-            (W::F10, KeyCode::F10),
-            (W::F11, KeyCode::F11),
-            (W::F12, KeyCode::F12),
-        ];
-        for (winit_code, expected) in pairs {
-            assert_eq!(
-                map_key_code(PhysicalKey::Code(winit_code)),
-                expected,
-                "{winit_code:?}"
-            );
+        for code in ALL_KEY_CODES {
+            match expected_winit_code(code) {
+                Some(winit_code) => assert_eq!(
+                    map_key_code(PhysicalKey::Code(winit_code)),
+                    code,
+                    "{winit_code:?}"
+                ),
+                None => assert_eq!(code, KeyCode::Unidentified),
+            }
         }
-        // Every non-fallback variant of KeyCode is covered exactly once.
-        let mut mapped: Vec<KeyCode> = pairs.iter().map(|(_, code)| *code).collect();
-        mapped.sort();
-        mapped.dedup();
-        assert_eq!(mapped.len(), pairs.len());
-        assert!(!mapped.contains(&KeyCode::Unidentified));
+    }
+
+    #[test]
+    fn lifecycle_normal_run_shuts_down_once() {
+        let mut lifecycle = Lifecycle::default();
+        assert!(lifecycle.should_create_window());
+        lifecycle.window_created();
+        assert!(
+            !lifecycle.should_create_window(),
+            "later resumes are ignored"
+        );
+        assert!(!lifecycle.accepts_callbacks(), "no events before init");
+
+        assert!(!lifecycle.init_finished(true, false));
+        assert!(lifecycle.accepts_callbacks());
+        assert!(!lifecycle.callback_finished(false));
+        assert!(lifecycle.accepts_callbacks());
+
+        assert!(lifecycle.callback_finished(true));
+        assert!(
+            !lifecycle.accepts_callbacks(),
+            "nothing is delivered once stopping"
+        );
+        assert!(lifecycle.callback_finished(false), "stopping is sticky");
+
+        assert!(lifecycle.take_shutdown());
+        assert!(!lifecycle.take_shutdown());
+    }
+
+    #[test]
+    fn lifecycle_init_error_exits_without_shutdown() {
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.window_created();
+        assert!(lifecycle.init_finished(false, false));
+        assert!(!lifecycle.accepts_callbacks());
+        assert!(!lifecycle.take_shutdown());
+    }
+
+    #[test]
+    fn lifecycle_exit_requested_in_init_skips_frames() {
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.window_created();
+        assert!(lifecycle.init_finished(true, true));
+        assert!(!lifecycle.accepts_callbacks());
+        assert!(lifecycle.take_shutdown());
+        assert!(!lifecycle.take_shutdown());
+    }
+
+    #[test]
+    fn lifecycle_window_creation_failure_never_inits() {
+        let mut lifecycle = Lifecycle::default();
+        assert!(lifecycle.callback_finished(true));
+        assert!(!lifecycle.should_create_window());
+        assert!(!lifecycle.accepts_callbacks());
+        assert!(!lifecycle.take_shutdown());
     }
 
     #[test]

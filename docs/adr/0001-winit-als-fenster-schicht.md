@@ -67,6 +67,15 @@ Headless-Implementierung (`run_headless`) erfüllt denselben `AppHandler`-Vertra
   bei `suspended` freigegeben und bei `resumed` neu erzeugt werden. P0 erzeugt das Fenster genau
   einmal und ignoriert weitere `resumed`-Aufrufe; für Mobile braucht der `AppHandler`-Vertrag
   zusätzliche Suspend/Resume-Hooks (eigene Entscheidung, sobald ein Mobile-Ziel ansteht).
+- (−) **Wayland-Taktung:** winit richtet `RedrawRequested` nur dann an den Frame-Callbacks des
+  Compositors aus, wenn vor dem Präsentieren `Window::pre_present_notify` aufgerufen wird.
+  `PlatformWindow` bietet dafür keinen Hook, und der Runner fordert den nächsten Redraw sofort an.
+  Der Renderer muss deshalb mit VSync (FIFO) präsentieren, sonst dreht die Schleife ungebremst.
+  Ein optionaler Hook ist Kandidat für eine spätere Vertragsrevision. Ohne gezeichneten Puffer
+  blendet Wayland ein Fenster zudem gar nicht ein (betrifft das Beispiel `window`).
+- (−) **Haupt-Thread:** `run_desktop` panikt außerhalb des Haupt-Threads (alle Desktop-Plattformen),
+  der Event-Loop lässt sich pro Prozess nur einmal erzeugen, und auf macOS liefern die Roh-Handles
+  nur auf dem Haupt-Thread einen Wert. GPU-Surfaces entstehen daher in den `AppHandler`-Callbacks.
 - (−) Gamepads deckt winit nicht ab; dafür wird im Input-Stream (PRD-0013) eine eigene Lösung
   gewählt (z. B. `gilrs`), ebenfalls hinter `grimoire_platform`-Traits.
 - (−) winit-Eigenheiten (z. B. Pixel- statt Zeilen-Scrolldeltas bei Touchpads) müssen im Runner

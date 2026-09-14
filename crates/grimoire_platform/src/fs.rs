@@ -39,6 +39,10 @@ const MAX_TEMP_ATTEMPTS: u32 = 64;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Characters of the target file name kept in a temp file name (at most 128 bytes or 64 UTF-16
+/// units).
+const TEMP_NAME_PREFIX_CHARS: usize = 32;
+
 fn split_target(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
@@ -57,12 +61,15 @@ fn create_temp_file(dir: &Path, file_name: &std::ffi::OsStr) -> io::Result<(Path
     let mut last_error = None;
     for _ in 0..MAX_TEMP_ATTEMPTS {
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp_name = format!(
-            ".{}.{}-{}.tmp",
-            file_name.to_string_lossy(),
-            std::process::id(),
-            counter
-        );
+        // Only a short prefix of the target name, so a target name near the 255-unit component
+        // limit still leaves room for the suffix; uniqueness comes from pid, counter and
+        // `create_new`.
+        let prefix: String = file_name
+            .to_string_lossy()
+            .chars()
+            .take(TEMP_NAME_PREFIX_CHARS)
+            .collect();
+        let temp_name = format!(".{prefix}.{}-{counter}.tmp", std::process::id());
         let temp_path = dir.join(temp_name);
         match OpenOptions::new()
             .write(true)
@@ -324,6 +331,18 @@ mod tests {
         names.sort();
         assert_eq!(names, ["blocked", "data.bin"]);
         assert_eq!(fs.read(&path).unwrap(), [4u8; 32]);
+    }
+
+    #[test]
+    fn std_accepts_file_name_near_length_limit() {
+        let dir = TempDir::new("long_name");
+        let fs = StdFileSystem;
+        // 250 units is valid on NTFS, ext4 and APFS; a temp name embedding it in full is not.
+        let path = dir.path().join(format!("{}.sav", "n".repeat(246)));
+        fs.write_atomic(&path, b"first").unwrap();
+        fs.write_atomic(&path, b"second").unwrap();
+        assert_eq!(fs.read(&path).unwrap(), b"second");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
