@@ -31,9 +31,14 @@ Ausgangslage aus der Rust-Float-Semantik (RFC 3514) und dem Code:
 Werkzeuge im Engine-Repo: `crates/grimoire_core/tests/float_determinism.rs` (Eingaben aus einem
 ganzzahligen LCG, Floats nur über `f32::from_bits`, je Arbeitslast mindestens 100.000 Iterationen) und
 `crates/grimoire_core/tests/stable_hash_golden.rs` (friert den Hash-Algorithmus v1 ein). Die Probe
-schreibt nach `<target>/float-probe/`: `core-`, `std-trig-`, `detail-` und `special-<os>-<arch>.txt`.
-`<target>` ist das Elternverzeichnis von `CARGO_TARGET_TMPDIR` (berücksichtigt `CARGO_TARGET_DIR`),
-ersatzweise `CARGO_MANIFEST_DIR/../../target`.
+schreibt `core-<os>-<arch>.txt` und `std-trig-<os>-<arch>.txt` (Namen ohne Build-Profil, der letzte
+Lauf gewinnt) sowie `detail-<os>-<arch>-<profil>.txt` und `special-<os>-<arch>-<profil>.txt`
+(`<profil>` = `debug` bei aktiven Debug-Assertions, sonst `release`; mit Zeile `profile=…`), weil
+`std_trig_hash` und `min`/`max` gemessen zwischen den Profilen abweichen. Verzeichnis, in dieser
+Reihenfolge: Laufzeitvariable `GRIMOIRE_FLOAT_PROBE_DIR`; sonst `<build-dir>/float-probe`, wobei
+`<build-dir>` das Elternverzeichnis von `CARGO_TARGET_TMPDIR` ist. Das ist das Target-Verzeichnis
+(inklusive `CARGO_TARGET_DIR`), solange `build.build-dir` bzw. `CARGO_BUILD_BUILD_DIR` es nicht
+verlegt. Ersatzweise `CARGO_MANIFEST_DIR/../../target/float-probe`.
 
 Gemessen am 2026-09-14 auf Windows 11 x86_64 (MSVC, rustc 1.98.1) und Linux x86_64 (WSL2 Ubuntu,
 glibc, rustc 1.95.0; eigenständige Kopie von `grimoire_core` mit denselben `libm`-Quellen). macOS arm64
@@ -44,9 +49,13 @@ ist lokal nicht verfügbar und wird erst durch CI gemessen.
 | Arbeitslast | Hash |
 |-------------|------|
 | `basic_hash` — Grundoperationen, `%`, Runden, Casts, `Vec2` inkl. `normalize_or_zero`/`lerp` | `0xd5965d26f7f427f2` |
-| `dmath_hash` — alle `dmath`-Funktionen, Domänen plus 28 Randwerte | `0x6109792b432233ee` |
+| `dmath_hash` — alle `dmath`-Funktionen inkl. `min`/`max`, Domänen plus 28 Randwerte | `0x7447120326b9c11f` |
 | `mini_sim_hash` — 256 Partikel × 400 Ticks mit `rotate`, `exp`, `atan2`, `sin`, `hypot` | `0xcf8c7a4958150c94` |
-| `stable_hash_golden` — 62 Werte Hash-Algorithmus v1 | alle grün |
+| `stable_hash_golden` — 66 Werte Hash-Algorithmus v1 (inkl. kanonischer NaN) | alle grün |
+
+`dmath::min`/`max` kamen nach dem Review hinzu. Alle vier Läufe wurden danach wiederholt; die
+Einzel-Hashes `dmath_min=0x8ab7719d0ec16875` und `dmath_max=0x4f524c16fbefeed9` sind ebenfalls
+identisch, die übrigen Einzel-Hashes blieben unverändert.
 
 **`std`-Transzendentalfunktionen** (nur aufgezeichnet): `std_trig_hash` Windows `0xc362e1c66a97709b`
 (Debug = Release); Linux `0x4e6cc5be56a3538f` (Debug) bzw. `0x4ae997d8f79db1d9` (Release). Auf Linux
@@ -75,13 +84,17 @@ denselben Eingaben:
 | `f64`: `0.0 / 0.0`, `sqrt(-1.0)` | `0xfff8000000000000` |
 
 x86_64 liefert zur Laufzeit das negative Default-NaN, die Konstantenfaltung dagegen das positive, also
-schon auf derselben Maschine zwei Muster. ARMv8 verwendet laut Architektur das positive Default-NaN
-`0x7fc00000`; die CI-Datei `special-macos-aarch64.txt` bestätigt das.
+schon auf derselben Maschine zwei Muster. Für ARMv8 ist laut Architektur das positive Default-NaN
+`0x7fc00000` zu erwarten; gemessen ist das noch nicht, `special-macos-aarch64-<profil>.txt` aus CI
+soll es bestätigen.
 
 **`min`/`max` mit `(+0.0, -0.0)`** (`min(+0,-0)`, `min(-0,+0)`, `max(+0,-0)`, `max(-0,+0)`):
 Windows/1.98.1 Debug `-0 +0 -0 +0`, Release `-0 -0 -0 -0`; Linux/1.95.0 Debug `+0 -0 +0 -0`, Release
-`+0 +0 +0 +0`. Das Ergebnis hängt also von Optimierungsstufe und Compiler-Version ab. Die asserted
-Arbeitslast speist gleiche Operanden deshalb vorzeichenfrei ein.
+`+0 +0 +0 +0`. Das Ergebnis hängt also von Optimierungsstufe und Compiler-Version ab. Weil
+`StableHasher` `-0.0` und `+0.0` unterscheidet und eine `-0.0` spätere Ergebnisse ändert
+(`atan2(±0, -1) = ±π`), bräche schon `speed.max(0.0)` mit `speed == -0.0` die Gleichheit von Debug
+und Release auf einer Maschine. `f32::min`/`max` sind deshalb gesperrt (Regel 5). Die Probe misst
+sie weiter, speist gleiche Operanden aber vorzeichenfrei ein.
 
 **Lint-Probe** (temporäre Crate `crates/lintprobe`, danach vollständig gelöscht und nie committet;
 `cargo clippy -p lintprobe -- -D warnings` mit clippy 1.98.1):
@@ -96,10 +109,14 @@ Arbeitslast speist gleiche Operanden deshalb vorzeichenfrei ein.
 - Lücken der ursprünglichen Konfiguration: `sinh cosh tanh asinh acosh atanh sin_cos exp2 exp_m1 ln_1p
   log log2 log10 cbrt powi` für `f32`, sämtliche `f64`-Pendants, `f64::mul_add`,
   `Instant::elapsed`/`SystemTime::elapsed` und `std::thread::spawn`. Nach der Ergänzung meldete die
-  Probe 58 Fundstellen und flaggte jede darin verwendete Lücke: alle 15 `f32`-Ergänzungen,
-  `f64::sin`, `f64::powf`, `f64::mul_add`, `Instant::elapsed` und `thread::spawn`. Die übrigen
-  `f64`-Einträge und `SystemTime::elapsed` folgen demselben Pfadschema, wurden aber nicht einzeln
-  aufgerufen.
+  Probe 58 Fundstellen.
+- Zweite Probe nach dem Review (eigenständige Crate außerhalb des Workspace, clippy 0.1.98, jeder
+  Eintrag genau einmal aufgerufen): Alle 68 Einträge lösen auf und werden gemeldet, nämlich 2 Typen,
+  4 Wanduhr-Methoden, 4 Thread-Einträge (`thread::spawn`, `thread::Builder::spawn`,
+  `thread::Builder::spawn_scoped`, `thread::scope`) und je 29 `f32`- und `f64`-Methoden (inklusive
+  `min`/`max`, auch als Pfadaufruf `f32::min(x, y)` und als Funktionszeiger). Vorher waren
+  `Builder::spawn` und `thread::scope` eine Lücke. Negativkontrollen ohne Meldung: `Ord::min`/`max`
+  auf Ganzzahlen, `std::cmp::min`/`max`, `Iterator::max`, `f32::clamp`, `sqrt`, Rundungsfunktionen.
 
 **Laufzeit:** Die Probe-Testdatei läuft in 0,16 s (Windows Debug), 0,04 s (Windows Release) und
 0,13 s (Linux Debug). Die gesamte Testsuite von `grimoire_core` braucht inkrementell 1,5 s.
@@ -121,8 +138,8 @@ Arbeitslast speist gleiche Operanden deshalb vorzeichenfrei ein.
      Windows und Linux bei verschiedenen Compiler-Versionen und Optimierungsstufen.
    - (+) Transzendente Funktionen laufen als reiner Rust-Code (`libm`), identisch auf x86_64 und aarch64.
    - (+) Normale Ergonomie; `Vec2`, Kollision und Sigil bleiben einfach; kein Umbau.
-   - (−) Die Regeln sind nur teils lint-bar (NaN, Nullvorzeichen aus `min`/`max`, Payload-Inspektion)
-     und brauchen Review.
+   - (−) Die Regeln sind nur teils lint-bar (NaN im Zustand, Inspektion von NaN-Bits) und brauchen
+     Review.
    - (−) `libm` ist langsamer als Plattform-libm und muss bei Upgrades gegen die Golden-Hashes
      geprüft werden.
 2. **Festkomma für Simulationspositionen** (z. B. `i32` 16.16 oder `i64` 32.32)
@@ -144,7 +161,7 @@ Vorgeschlagen ist **Option 1**. Die Simulationsseite (`core`, `ecs`, `sim`, `col
 rechnet mit `f32` nach diesen Regeln:
 
 1. **Erlaubt:** `+ - * / %`, Negation, `sqrt`, `abs`, `floor`, `ceil`, `round`, `trunc`, `clamp`,
-   `min`/`max` (mit Regel 5), Casts zwischen `f32` und Ganzzahlen.
+   `dmath::min`/`dmath::max`, Casts zwischen `f32` und Ganzzahlen.
 2. **Transzendente Funktionen nur über `grimoire_core::math::dmath`.** Fehlt eine Funktion, wird sie
    dort auf Basis von `libm` ergänzt und von der Probe abgedeckt. `std`-Transzendentalfunktionen für
    `f32` und `f64` sind per `clippy.toml` gesperrt.
@@ -162,15 +179,24 @@ rechnet mit `f32` nach diesen Regeln:
    - Algorithmus-Version 1 ist mit dieser Regel definiert; vorher existierten keine Golden-Hashes.
      Die reine Verbotsvariante (bitgenau hashen, NaN verbieten) wurde verworfen, weil ein einziges
      durchgerutschtes NaN plattformabhängige Hashes ohne Verhaltensunterschied erzeugt hätte.
-5. **Das Vorzeichen einer Null aus `min`/`max` bei gleichen Operanden darf nichts beeinflussen**
-   (gemessen: abhängig von Optimierungsstufe und Compiler). Nicht lint-bar, Review-Regel.
-6. **Keine Threads, keine Wanduhr** (gesperrt, wie in ADR-0005).
+5. **Kein `f32::min`/`max` und kein `f64::min`/`max`** (gesperrt). Das Vorzeichen einer Null bei
+   `(+0.0, -0.0)` hängt gemessen von Optimierungsstufe und Compiler ab. Ersatz:
+   `grimoire_core::math::dmath::min`/`max`, die nur vergleichen, bei gleichen Operanden den ersten
+   liefern und NaN wie `std` behandeln. Sie sind in `dmath_hash` abgedeckt. `f32::clamp` bleibt
+   erlaubt, weil es nur vergleicht und bei gleichen Werten den Operanden selbst zurückgibt.
+6. **Keine Threads, keine Wanduhr** (gesperrt, wie in ADR-0005; `thread::spawn`,
+   `thread::Builder::spawn`/`spawn_scoped`, `thread::scope`, `Instant`/`SystemTime::now`/`elapsed`).
 7. **`clippy.toml` ist in allen fünf Crates identisch.** Jeder neue Eintrag wird mit einer temporären
    Lint-Probe verifiziert, weil clippy nicht auflösbare Pfade stillschweigend ignoriert. Pfade für
    inhärente Float-Methoden haben die Form `f32::name`.
 
-**Annahmekriterium:** `cargo test -p grimoire_core` ist in CI auf Windows x86_64, Linux x86_64 und
-macOS arm64 mit denselben Konstanten grün, und die hochgeladenen `core-*.txt` sind identisch.
+**Annahmekriterium:** `cargo test -p grimoire_core --no-fail-fast` ist in CI auf Windows x86_64,
+Linux x86_64 und macOS arm64 mit denselben Konstanten grün, und die hochgeladenen `core-*.txt` sind
+identisch. `--no-fail-fast` ist Pflicht, weil sonst ein früher fehlschlagendes Test-Binary Cargo
+stoppt, bevor die Probe ihre erklärenden Dateien schreibt. Der Upload von `target/float-probe` läuft
+mit `if: always()`. Wird `build.build-dir` gesetzt, pinnt CI den Pfad per `GRIMOIRE_FLOAT_PROBE_DIR`.
+Laufen Debug und Release in dasselbe Verzeichnis, sind nur die profilbenannten `detail-`/`special-`
+Dateien eindeutig zuzuordnen.
 Weicht macOS arm64 ab, wird zuerst per `detail-*.txt` die betroffene Funktion bestimmt. Liegt die
 Ursache in `libm` (Arch-Pfade), wird `libm` mit `force-soft-floats` oder eigener Implementierung
 geprüft. Liegt sie in den Grundoperationen, entscheidet ein Folge-ADR zwischen Option 2 für
@@ -180,12 +206,16 @@ Positionen (über `SimVec`) und Option 3.
 
 - (+) Replays, Golden Master und Snapshots können plattformübergreifend verglichen werden, sobald CI
   macOS arm64 bestätigt.
-- (+) Die Determinismus-Regeln sind größtenteils maschinell erzwungen. Die Lint-Probe zeigte, dass die
-  ursprüngliche Konfiguration Lücken hatte (`powi`, `f64`, Hyperbelfunktionen, Threads); sie sind
-  geschlossen.
+- (+) Die Determinismus-Regeln sind größtenteils maschinell erzwungen. Die Lint-Proben zeigten Lücken
+  der ursprünglichen Konfiguration (`powi`, `f64`, Hyperbelfunktionen, `min`/`max`,
+  `thread::Builder`/`scope`). Die in den Proben aufgerufenen Umgehungswege sind geschlossen; andere
+  Wege, Threads zu starten (etwa über Drittcrates), erfasst die Liste nicht.
+- (−) Die Sperren gelten in allen fünf Simulations-Crates für `--all-targets`, also auch für Tests und
+  Benchmarks von `ecs`, `sim`, `collide` und `sigil`. Bestehender Code dort muss auf
+  `dmath::min`/`max` umgestellt werden oder begründet `#[allow(clippy::disallowed_methods)]` tragen.
 - (+) Die Probe liefert bei einem Bruch pro Funktion einen Hash (`detail-*.txt`) und damit die
   Ursache.
-- (−) Regeln 4 und 5 bleiben Review-Aufgaben. Eine Laufzeitprüfung auf NaN im Simulationszustand
+- (−) Regel 4 bleibt Review-Aufgabe. Eine Laufzeitprüfung auf NaN im Simulationszustand
   (z. B. Debug-Assertion in `Simulation::step`) ist nicht Teil dieses ADR.
 - (−) Nicht auflösbare `clippy.toml`-Pfade bleiben still. Die Lint-Probe wird bisher nur manuell
   ausgeführt; ein dauerhafter CI-Check bräuchte eine Fixture außerhalb des Workspace.

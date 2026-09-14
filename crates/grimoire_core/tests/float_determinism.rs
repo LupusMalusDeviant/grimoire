@@ -8,15 +8,26 @@
 //! - every `dmath` function over its domain plus edge values: asserted against [`DMATH_GOLDEN`];
 //! - a small particle simulation: asserted against [`MINI_SIM_GOLDEN`];
 //! - `std` transcendental functions (platform libm): only recorded, never asserted;
-//! - NaN bit patterns and signed-zero `min`/`max`: only recorded.
+//! - NaN bit patterns and signed-zero `f32::min`/`max`: only recorded.
 //!
-//! Probe files land in `<target>/float-probe/`, which CI uploads:
-//! `core-<os>-<arch>.txt` (`basic_hash`, `dmath_hash`), `std-trig-<os>-<arch>.txt`
-//! (`std_trig_hash`), `detail-<os>-<arch>.txt` (per-function hashes, std-vs-dmath differences)
-//! and `special-<os>-<arch>.txt` (NaN bits, signed-zero `min`/`max`). `<os>` and `<arch>` are
-//! `std::env::consts::{OS, ARCH}`. `<target>` is the parent of `CARGO_TARGET_TMPDIR`, which
-//! Cargo sets to `<target>/tmp` for integration tests and which honours `CARGO_TARGET_DIR`;
-//! without it the probe falls back to `CARGO_MANIFEST_DIR/../../target`.
+//! Probe files, which CI uploads:
+//! - `core-<os>-<arch>.txt` (`basic_hash`, `dmath_hash`) and `std-trig-<os>-<arch>.txt`
+//!   (`std_trig_hash`). Their names carry no build profile, so a later run in the same directory
+//!   overwrites them; `core` is profile-independent as long as the goldens hold.
+//! - `detail-<os>-<arch>-<profile>.txt` (profile, all hashes, per-function hashes, std-vs-dmath
+//!   differences) and `special-<os>-<arch>-<profile>.txt` (NaN bits, signed-zero `min`/`max`),
+//!   which do differ between profiles. `<profile>` is `debug` with debug assertions enabled,
+//!   otherwise `release`.
+//!
+//! `<os>` and `<arch>` are `std::env::consts::{OS, ARCH}`. The directory is, in this order:
+//! 1. `GRIMOIRE_FLOAT_PROBE_DIR` at run time, so CI can pin the upload path;
+//! 2. `<build dir>/float-probe`, where `<build dir>` is the parent of `CARGO_TARGET_TMPDIR`. That is
+//!    the target directory (honouring `CARGO_TARGET_DIR`) unless `build.build-dir` /
+//!    `CARGO_BUILD_BUILD_DIR` moves it elsewhere;
+//! 3. `CARGO_MANIFEST_DIR/../../target/float-probe` if Cargo did not set `CARGO_TARGET_TMPDIR`.
+//!
+//! Run with `cargo test -p grimoire_core --no-fail-fast`: without it, a failing unit test stops
+//! Cargo before this binary writes the files that explain the failure.
 
 use std::fmt::Write as _;
 use std::hint::black_box;
@@ -31,7 +42,7 @@ const ITERATIONS: u32 = 100_000;
 /// Golden hash of [`basic_workload`].
 const BASIC_GOLDEN: u64 = 0xd596_5d26_f7f4_27f2;
 /// Golden hash of [`dmath_results`].
-const DMATH_GOLDEN: u64 = 0x6109_792b_4322_33ee;
+const DMATH_GOLDEN: u64 = 0x7447_1203_26b9_c11f;
 /// Golden hash of [`mini_simulation`].
 const MINI_SIM_GOLDEN: u64 = 0xcf8c_7a49_5815_0c94;
 
@@ -126,6 +137,7 @@ fn feed_vec2(hasher: &mut StableHasher, value: Vec2) {
 
 /// `f32::min`/`max` leave the sign of a zero result unspecified when both operands are zeros;
 /// it changes even with the optimisation level. Equal operands are therefore fed sign-free.
+#[allow(clippy::disallowed_methods)] // Measures std min/max for unequal operands on purpose.
 fn min_max(a: f32, b: f32) -> [f32; 2] {
     if a == b {
         let zero_sign_free = a + 0.0;
@@ -246,6 +258,19 @@ fn wide_pair_input(rng: &mut Lcg) -> (f32, f32) {
     (wide_input(rng), wide_input(rng))
 }
 
+/// Mostly distinct operands, with frequent equal pairs and zeros of opposite sign.
+fn min_max_input(rng: &mut Lcg) -> (f32, f32) {
+    match rng.below(8) {
+        0 => (0.0, -0.0),
+        1 => (-0.0, 0.0),
+        2 => {
+            let x = wide_input(rng);
+            (x, x)
+        }
+        _ => wide_pair_input(rng),
+    }
+}
+
 fn powf_input(rng: &mut Lcg) -> (f32, f32) {
     if rng.below(8) == 0 {
         // Negative base with an integral exponent has a real result.
@@ -326,6 +351,8 @@ fn dmath_results() -> &'static [(&'static str, Vec<f32>)] {
             ("hypot", run_binary(21, wide_pair_input, dmath::hypot)),
             ("sqrt", run_unary(22, positive_input, dmath::sqrt)),
             ("vec2_trig", run_vec2_trig(23)),
+            ("min", run_binary(24, min_max_input, dmath::min)),
+            ("max", run_binary(25, min_max_input, dmath::max)),
         ]
     })
 }
@@ -401,24 +428,40 @@ fn mini_simulation() -> u64 {
 }
 
 fn probe_dir() -> PathBuf {
-    let target = match option_env!("CARGO_TARGET_TMPDIR") {
+    if let Some(dir) = std::env::var_os("GRIMOIRE_FLOAT_PROBE_DIR").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    let build_dir = match option_env!("CARGO_TARGET_TMPDIR") {
         Some(tmp) => Path::new(tmp)
             .parent()
             .map_or_else(|| PathBuf::from(tmp), Path::to_path_buf),
         None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
     };
-    target.join("float-probe")
+    build_dir.join("float-probe")
 }
 
-fn write_probe(kind: &str, contents: &str) {
+const PROFILE: &str = if cfg!(debug_assertions) {
+    "debug"
+} else {
+    "release"
+};
+
+/// Whether a probe file name carries [`PROFILE`].
+#[derive(Clone, Copy)]
+enum Naming {
+    Platform,
+    PlatformAndProfile,
+}
+
+fn write_probe(kind: &str, naming: Naming, contents: &str) {
     let dir = probe_dir();
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|error| panic!("cannot create {}: {error}", dir.display()));
-    let file = dir.join(format!(
-        "{kind}-{}-{}.txt",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    ));
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let file = dir.join(match naming {
+        Naming::Platform => format!("{kind}-{platform}.txt"),
+        Naming::PlatformAndProfile => format!("{kind}-{platform}-{PROFILE}.txt"),
+    });
     std::fs::write(&file, contents)
         .unwrap_or_else(|error| panic!("cannot write {}: {error}", file.display()));
     println!("wrote {}", file.display());
@@ -466,6 +509,7 @@ fn mini_simulation_matches_golden() {
 fn core_probe_file_is_written() {
     write_probe(
         "core",
+        Naming::Platform,
         &format!(
             "basic_hash=0x{:016x}\ndmath_hash=0x{:016x}\n",
             basic_hash(),
@@ -479,9 +523,18 @@ fn std_transcendental_probe_is_recorded() {
     let std_results = std_trig_results();
     let std_hash = combine(&std_results);
     println!("std_trig_hash=0x{std_hash:016x}");
-    write_probe("std-trig", &format!("std_trig_hash=0x{std_hash:016x}\n"));
+    write_probe(
+        "std-trig",
+        Naming::Platform,
+        &format!("std_trig_hash=0x{std_hash:016x}\n"),
+    );
 
-    let mut detail = String::new();
+    let mut detail = format!(
+        "profile={PROFILE}\nbasic_hash=0x{:016x}\ndmath_hash=0x{:016x}\nmini_sim_hash=0x{:016x}\nstd_trig_hash=0x{std_hash:016x}\n",
+        basic_hash(),
+        dmath_hash(),
+        mini_simulation()
+    );
     for (name, values) in dmath_results() {
         writeln!(detail, "dmath_{name}=0x{:016x}", hash_values(values)).expect("write to String");
     }
@@ -504,11 +557,12 @@ fn std_transcendental_probe_is_recorded() {
         .expect("write to String");
     }
     print!("{detail}");
-    write_probe("detail", &detail);
+    write_probe("detail", Naming::PlatformAndProfile, &detail);
 }
 
 #[test]
 #[allow(clippy::zero_divided_by_zero)] // The constant-folded NaN is part of the investigation.
+#[allow(clippy::disallowed_methods)] // Records the unspecified zero sign of std min/max.
 fn nan_bit_patterns_are_recorded_and_hash_canonically() {
     const FOLDED_ZERO_DIV_ZERO: f32 = 0.0 / 0.0;
     let zero = black_box(0.0f32);
@@ -532,7 +586,7 @@ fn nan_bit_patterns_are_recorded_and_hash_canonically() {
         ("f64_sqrt_minus_one", black_box(-1.0f64).sqrt()),
     ];
 
-    let mut report = String::new();
+    let mut report = format!("profile={PROFILE}\n");
     for (name, value) in nans_f32 {
         writeln!(report, "{name}=0x{:08x}", value.to_bits()).expect("write to String");
         assert!(value.is_nan(), "{name} is not NaN");
@@ -563,5 +617,5 @@ fn nan_bit_patterns_are_recorded_and_hash_canonically() {
         writeln!(report, "{name}_zero=0x{:08x}", value.to_bits()).expect("write to String");
     }
     print!("{report}");
-    write_probe("special", &report);
+    write_probe("special", Naming::PlatformAndProfile, &report);
 }

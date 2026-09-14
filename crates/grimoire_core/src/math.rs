@@ -2,16 +2,23 @@
 //!
 //! Floating-point rules for everything that influences simulation state:
 //!
-//! - IEEE-754 basic operations on `f32` (`+ - * /`, `sqrt`, `abs`, `floor`, `ceil`, `round`,
-//!   `trunc`, `min`, `max`) are exactly specified and therefore identical on every platform.
-//! - Transcendental functions from `std` (`sin`, `cos`, `tan`, `atan2`, `exp`, `ln`, `powf`, ...)
-//!   call the platform's C math library, whose results differ between operating systems.
-//!   Simulation code uses [`dmath`] instead, a pure-Rust implementation.
-//! - `mul_add` is not used in simulation code.
+//! - IEEE-754 basic operations on `f32` (`+ - * / %`, negation, `sqrt`, `abs`, `floor`, `ceil`,
+//!   `round`, `trunc`, `clamp`, casts) are exactly specified and therefore identical on every
+//!   platform.
+//! - `f32::min`/`max` are not: the zero sign of `min(+0.0, -0.0)` changes even with the
+//!   optimisation level, and the state hash distinguishes `-0.0` from `+0.0`. Use
+//!   [`dmath::min`]/[`dmath::max`].
+//! - Transcendental functions from `std` (`sin`, `cos`, `tan`, `atan2`, `exp`, `ln`, `powf`,
+//!   hyperbolic and logarithmic variants, `cbrt`, ...) call the platform's C math library, whose
+//!   results differ between operating systems. This holds for `f64` as well. Simulation code uses
+//!   [`dmath`] instead, a pure-Rust implementation.
+//! - `mul_add` and `powi` (precision documented as non-deterministic) are not used.
+//! - NaN must never enter simulation state, and code never inspects NaN sign or payload.
 //!
-//! The simulation-side crates enforce these rules with clippy (`disallowed-methods` in their
-//! `clippy.toml`). Whether plain `f32` with these rules is bit-identical across Windows, Linux
-//! and macOS (x86_64 and arm64) is verified by golden tests in CI (engine ADR on floating point).
+//! The simulation-side crates enforce everything except the NaN rule with clippy
+//! (`disallowed-methods` in their `clippy.toml`). Whether plain `f32` with these rules is
+//! bit-identical across Windows, Linux and macOS (x86_64 and arm64) is verified by golden tests
+//! in CI; see `docs/adr/0004-deterministische-gleitkommaarithmetik.md`.
 
 use core::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -109,6 +116,26 @@ pub mod dmath {
     #[must_use]
     pub fn sqrt(x: f32) -> f32 {
         x.sqrt()
+    }
+
+    /// Minimum of `a` and `b`. If both compare equal (including `+0.0` and `-0.0`), returns `a`.
+    ///
+    /// Unlike `f32::min`, the zero sign of the result does not depend on the compiler. NaN
+    /// behaves as in `std`: a NaN operand is ignored unless both are NaN.
+    #[inline]
+    #[must_use]
+    pub fn min(a: f32, b: f32) -> f32 {
+        if b < a || a.is_nan() { b } else { a }
+    }
+
+    /// Maximum of `a` and `b`. If both compare equal (including `+0.0` and `-0.0`), returns `a`.
+    ///
+    /// Unlike `f32::max`, the zero sign of the result does not depend on the compiler. NaN
+    /// behaves as in `std`: a NaN operand is ignored unless both are NaN.
+    #[inline]
+    #[must_use]
+    pub fn max(a: f32, b: f32) -> f32 {
+        if b > a || a.is_nan() { b } else { a }
     }
 }
 
@@ -294,6 +321,34 @@ mod tests {
 
     fn approx(a: Vec2, b: Vec2) -> bool {
         (a.x - b.x).abs() < 1e-5 && (a.y - b.y).abs() < 1e-5
+    }
+
+    #[test]
+    fn min_max_keep_first_operand_on_equal_zeros() {
+        let (pos, neg) = (
+            core::hint::black_box(0.0f32),
+            core::hint::black_box(-0.0f32),
+        );
+        assert_eq!(dmath::min(pos, neg).to_bits(), 0x0000_0000);
+        assert_eq!(dmath::min(neg, pos).to_bits(), 0x8000_0000);
+        assert_eq!(dmath::max(pos, neg).to_bits(), 0x0000_0000);
+        assert_eq!(dmath::max(neg, pos).to_bits(), 0x8000_0000);
+    }
+
+    #[test]
+    fn min_max_order_and_nan() {
+        assert_eq!(dmath::min(1.0, -2.0), -2.0);
+        assert_eq!(dmath::min(-2.0, 1.0), -2.0);
+        assert_eq!(dmath::max(1.0, -2.0), 1.0);
+        assert_eq!(dmath::max(-2.0, 1.0), 1.0);
+        assert_eq!(dmath::min(f32::NAN, 3.0), 3.0);
+        assert_eq!(dmath::min(3.0, f32::NAN), 3.0);
+        assert_eq!(dmath::max(f32::NAN, 3.0), 3.0);
+        assert_eq!(dmath::max(3.0, f32::NAN), 3.0);
+        assert!(dmath::min(f32::NAN, f32::NAN).is_nan());
+        assert!(dmath::max(f32::NAN, f32::NAN).is_nan());
+        assert_eq!(dmath::min(f32::NEG_INFINITY, f32::MIN), f32::NEG_INFINITY);
+        assert_eq!(dmath::max(f32::INFINITY, f32::MAX), f32::INFINITY);
     }
 
     #[test]

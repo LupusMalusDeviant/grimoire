@@ -138,7 +138,32 @@ fn floats() {
             hash_of(&core::f64::consts::PI),
             0x342a344f6a50a3d3,
         ),
+        ("f32 NaN", hash_of(&f32::NAN), 0xaae0e52258cea636),
+        (
+            "f32 negative NaN with payload",
+            hash_of(&f32::from_bits(0xffc0_0001)),
+            0xaae0e52258cea636,
+        ),
+        ("f64 NaN", hash_of(&f64::NAN), 0x759055abba8610fd),
+        (
+            "f64 negative NaN with payload",
+            hash_of(&f64::from_bits(0xfff8_0000_0000_0001)),
+            0x759055abba8610fd,
+        ),
     ]);
+}
+
+#[test]
+fn nan_is_fed_as_canonical_quiet_nan_bits() {
+    // Pins the canonical bit patterns themselves, not only that all NaNs hash alike.
+    assert_eq!(
+        hash_of(&f32::from_bits(0xffc0_0001)),
+        hash_of(&0x7fc0_0000u32)
+    );
+    assert_eq!(
+        hash_of(&f64::from_bits(0xfff8_0000_0000_0001)),
+        hash_of(&0x7ff8_0000_0000_0000u64)
+    );
 }
 
 #[test]
