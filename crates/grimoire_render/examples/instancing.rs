@@ -159,7 +159,8 @@ impl AppHandler for Instancing {
 
         if let Some(renderer) = &mut self.renderer {
             match renderer.render(&self.frame) {
-                Ok(_) | Err(RenderError::SurfaceLost) => {}
+                Ok(_) => {}
+                Err(RenderError::SurfaceLost) => ctx.frame_not_presented(),
                 Err(error) => {
                     log::error!("render failed: {error}");
                     ctx.request_exit();

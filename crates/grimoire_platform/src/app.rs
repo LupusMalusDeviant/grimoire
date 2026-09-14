@@ -22,6 +22,11 @@ pub trait PlatformContext {
 
     /// Whether an exit has been requested.
     fn exit_requested(&self) -> bool;
+
+    /// Reports that the current frame presented nothing, e.g. because the surface was
+    /// unavailable. After several such frames in a row the desktop runner slows the loop down
+    /// instead of spinning; the headless runner ignores it.
+    fn frame_not_presented(&mut self) {}
 }
 
 /// Application driven by [`crate::run_desktop`] or [`crate::run_headless`].

@@ -19,10 +19,14 @@
 //! `event` or `frame` call follows it. Wheel deltas reported in pixels are converted to lines at
 //! 40 logical pixels per line.
 //!
-//! The desktop loop requests the next redraw right after every `frame` and does not pace itself.
-//! On Wayland winit aligns redraws with frame callbacks only through `pre_present_notify`, which
-//! [`PlatformWindow`] does not expose, so the renderer must present with vsync (FIFO) to avoid a
-//! spinning loop.
+//! The desktop loop requests the next redraw right after every `frame` and leaves pacing to the
+//! presentation (vsync). While nothing can be presented it slows down to one frame every 100 ms
+//! instead of spinning: while the window is occluded ([`PlatformEvent::Occluded`]) or has an
+//! empty drawable size (minimised), and after three frames in a row reported through
+//! [`PlatformContext::frame_not_presented`]. It returns to full speed as soon as the window is
+//! visible again or a frame presents. On Wayland winit aligns redraws with frame callbacks only
+//! through `pre_present_notify`, which [`PlatformWindow`] does not expose, so the renderer must
+//! present with vsync (FIFO) to avoid a spinning loop.
 //!
 //! ## Window placement during development
 //!

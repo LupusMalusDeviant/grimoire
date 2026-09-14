@@ -207,6 +207,7 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
                 self.input.apply(raw);
             }
             PlatformEvent::Focused(true)
+            | PlatformEvent::Occluded(_)
             | PlatformEvent::ScaleFactorChanged(_)
             | PlatformEvent::CloseRequested => {}
         }
@@ -242,7 +243,10 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
         }
         let render = match running.renderer.render(&self.render_frame) {
             Ok(stats) => stats,
-            Err(RenderError::SurfaceLost) => RenderStats::default(),
+            Err(RenderError::SurfaceLost) => {
+                ctx.frame_not_presented();
+                RenderStats::default()
+            }
             Err(error) => {
                 log::error!("rendering failed, ending the run: {error}");
                 self.fail(error.into());
@@ -314,7 +318,7 @@ impl<R: Renderer> AppHandler for ScriptedEvents<'_, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grimoire_platform::run_headless;
+    use grimoire_platform::{Clock, ManualClock, PlatformWindow, run_headless};
 
     /// Fails with the scripted error on the given render call (0-based).
     struct ScriptedRenderer {
@@ -403,6 +407,58 @@ mod tests {
         assert_eq!(frames[2].render, RenderStats::default());
         assert_eq!(frames[3].render.draw_calls, 1);
         assert_eq!(report.map(|report| report.frames), Some(10));
+    }
+
+    /// Headless context that records what the loop reports to the runner.
+    #[derive(Default)]
+    struct RecordingContext {
+        clock: ManualClock,
+        exit_requested: bool,
+        not_presented: Vec<u64>,
+        frame: u64,
+    }
+
+    impl PlatformContext for RecordingContext {
+        fn window(&self) -> Option<std::sync::Arc<dyn PlatformWindow>> {
+            None
+        }
+
+        fn clock(&self) -> &dyn Clock {
+            &self.clock
+        }
+
+        fn request_exit(&mut self) {
+            self.exit_requested = true;
+        }
+
+        fn exit_requested(&self) -> bool {
+            self.exit_requested
+        }
+
+        fn frame_not_presented(&mut self) {
+            self.not_presented.push(self.frame);
+        }
+    }
+
+    #[test]
+    fn surface_lost_is_reported_to_the_runner_as_not_presented() {
+        let factory: RendererFactory<ScriptedRenderer> = Box::new(|_| {
+            Ok(ScriptedRenderer {
+                calls: 0,
+                fail_on: 2,
+                error: || RenderError::SurfaceLost,
+            })
+        });
+        let mut game_loop = GameLoop::new(settings(), Vec::new(), factory, Outcome::default());
+        let mut ctx = RecordingContext::default();
+        game_loop.init(&mut ctx).expect("init succeeds");
+        for frame in 0..5 {
+            ctx.frame = frame;
+            ctx.clock.advance(Duration::from_millis(16));
+            game_loop.frame(&mut ctx);
+        }
+        assert_eq!(ctx.not_presented, [2]);
+        assert!(!ctx.exit_requested);
     }
 
     #[test]

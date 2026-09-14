@@ -14,7 +14,8 @@
 //! 2. The frame time from the platform clock advances a [`grimoire_sim::FixedTimestep`]; for each
 //!    tick due, the [`InputMap`] is sampled into input slot 0 and the simulation steps once.
 //! 3. Every plugin extracts sprites with the interpolation factor `alpha`, the renderer draws.
-//!    A lost surface skips the frame; any other render error ends the run with that error.
+//!    A lost surface skips the frame and is reported to the platform, which throttles the loop
+//!    while frames keep going unpresented; any other render error ends the run with that error.
 //! 4. Every plugin receives the [`FrameStats`].
 //!
 //! The clock is read only by the loop, never by the simulation, so the same seed and the same

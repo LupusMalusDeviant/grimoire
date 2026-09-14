@@ -82,6 +82,16 @@ und `GRIMOIRE_WINDOW_FOCUS` (`0|1|false|true`) die Konfiguration jedes Programms
 lokale Fenster-Läufe auf dem Entwicklungsrechner: `GRIMOIRE_WINDOW_MONITOR=secondary` und
 `GRIMOIRE_WINDOW_FOCUS=0`.
 
+**Frame-Taktung (Ergänzung P0):** `PlatformEvent::Occluded(bool)` meldet, dass das Fenster vollständig
+verdeckt ist bzw. wieder sichtbar wird (nicht unter Windows und Wayland; ein minimiertes Fenster meldet dort
+ein leeres `Resized`). `PlatformContext::frame_not_presented()` (Standard-Implementierung ohne Wirkung) meldet
+dem Runner einen Frame, der nichts präsentiert hat. Der Desktop-Runner fordert nach jedem Frame sofort den
+nächsten an und überlässt die Taktung der Präsentation (vsync). Solange das Fenster verdeckt ist oder eine
+leere Zeichenfläche hat, sowie ab drei nicht präsentierten Frames in Folge, fordert er den nächsten Frame erst
+nach 100 ms an (`ControlFlow::WaitUntil`), statt einen Kern auszulasten; `frame` läuft in diesem Takt weiter.
+Sobald das Fenster wieder sichtbar ist oder ein Frame präsentiert, gilt wieder volle Geschwindigkeit.
+`run_headless` ignoriert die Meldung.
+
 **Lebenszyklus:** `init` genau einmal (Desktop: nachdem das Fenster existiert) → Events stets vor dem
 nächsten Frame → `frame` fortlaufend → `shutdown` genau einmal nach erfolgreichem `init`.
 Schlägt `init` fehl, endet der Lauf mit `PlatformError::AppInit` ohne `shutdown`.
@@ -321,7 +331,7 @@ pub use grimoire_{core, ecs, platform, render, sim} as {core, ecs, platform, ren
   die `InputMap` wird einmal pro Frame abgetastet und für jeden fälligen Tick als Slot 0 eines `TickInput`
   (übrige Slots Default) an `Simulation::step` übergeben. Danach `RenderFrame::clear` (Kamera und Clear-Farbe
   bleiben), `extract` je Plugin mit `alpha`, `render`. `RenderError::SurfaceLost` → Frame gilt als gerendert mit
-  `RenderStats::default()`, nächster Frame versucht es erneut; jeder andere Render-Fehler wird geloggt und beendet
+  `RenderStats::default()` und wird per `ctx.frame_not_presented()` gemeldet, nächster Frame versucht es erneut; jeder andere Render-Fehler wird geloggt und beendet
   den Lauf mit diesem Fehler (ohne `on_frame`). Dann `FrameStats` und `on_frame` je Plugin.
 - `fps` = Frames / Dauer des letzten abgeschlossenen Messfensters von mindestens 1 s; `0.0` bis dahin.
 - `frame` in `FrameStats` ist der 0-basierte Frame-Index, `sim_tick` der Tick-Zähler nach den Ticks des Frames.

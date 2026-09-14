@@ -11,6 +11,9 @@ pub enum PlatformEvent {
     ScaleFactorChanged(f64),
     /// The window gained (`true`) or lost (`false`) keyboard focus.
     Focused(bool),
+    /// The window became fully hidden (`true`) or visible again (`false`). Not reported on
+    /// Windows and Wayland; a minimised window reports an empty [`PlatformEvent::Resized`] there.
+    Occluded(bool),
     /// The user asked to close the window. The loop exits after this event is handled.
     CloseRequested,
     /// Raw device input.

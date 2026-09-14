@@ -3,14 +3,15 @@
 //! All `winit` types stay private to this module.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event::{ElementState, MouseScrollDelta, StartCause, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
@@ -23,6 +24,14 @@ use crate::window::{PhysicalSize, PlatformWindow, WindowConfig};
 /// Logical pixels that count as one scrolled line when a device reports pixel deltas
 /// (touchpads, precision wheels). Matches the line height common in desktop toolkits.
 pub(crate) const LOGICAL_PIXELS_PER_LINE: f64 = 40.0;
+
+/// Frame interval while nothing can be presented. Frames keep running at this rate so a missed
+/// "visible again" notification cannot stall the application.
+pub(crate) const THROTTLED_FRAME_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Consecutive frames reported as not presented before the loop is throttled. A single lost or
+/// outdated surface after a resize must not cause a visible hitch.
+pub(crate) const UNPRESENTED_FRAMES_BEFORE_THROTTLE: u32 = 3;
 
 /// Creates the main window and runs `app` inside the native event loop until the app requests
 /// exit or the window is closed.
@@ -50,6 +59,7 @@ pub fn run_desktop<A: AppHandler + 'static>(
             window: None,
             clock: SystemClock::new(),
             exit_requested: false,
+            frame_not_presented: false,
         },
         window: None,
         lifecycle: Lifecycle::default(),
@@ -103,6 +113,7 @@ struct DesktopContext {
     window: Option<Arc<dyn PlatformWindow>>,
     clock: SystemClock,
     exit_requested: bool,
+    frame_not_presented: bool,
 }
 
 impl PlatformContext for DesktopContext {
@@ -121,6 +132,19 @@ impl PlatformContext for DesktopContext {
     fn exit_requested(&self) -> bool {
         self.exit_requested
     }
+
+    fn frame_not_presented(&mut self) {
+        self.frame_not_presented = true;
+    }
+}
+
+/// When the next frame is requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FramePacing {
+    /// Right away; the presentation paces the loop.
+    Immediate,
+    /// After the given delay, because nothing can be presented.
+    After(Duration),
 }
 
 /// Lifecycle gating of the desktop runner, kept free of winit so it can be unit-tested.
@@ -131,6 +155,9 @@ struct Lifecycle {
     /// Set once the loop was told to exit; no app callback runs afterwards except `shutdown`.
     stopping: bool,
     shut_down: bool,
+    occluded: bool,
+    drawable_empty: bool,
+    unpresented_frames: u32,
 }
 
 impl Lifecycle {
@@ -159,6 +186,45 @@ impl Lifecycle {
     fn callback_finished(&mut self, exit: bool) -> bool {
         self.stopping |= exit;
         self.stopping
+    }
+
+    /// Records a change of the occlusion state. Returns whether the window became presentable
+    /// again, so the next frame must be requested right away.
+    fn set_occluded(&mut self, occluded: bool) -> bool {
+        self.change_visibility(|lifecycle| lifecycle.occluded = occluded)
+    }
+
+    /// Records a new drawable size. Returns whether the window became presentable again.
+    fn set_drawable_empty(&mut self, empty: bool) -> bool {
+        self.change_visibility(|lifecycle| lifecycle.drawable_empty = empty)
+    }
+
+    fn change_visibility(&mut self, change: impl FnOnce(&mut Self)) -> bool {
+        let was_hidden = self.is_hidden();
+        change(self);
+        let shown = was_hidden && !self.is_hidden();
+        if shown {
+            self.unpresented_frames = 0;
+        }
+        shown && self.accepts_callbacks()
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.occluded || self.drawable_empty
+    }
+
+    /// Records the end of a frame and decides when the next one is requested.
+    fn frame_finished(&mut self, presented: bool) -> FramePacing {
+        self.unpresented_frames = if presented {
+            0
+        } else {
+            self.unpresented_frames.saturating_add(1)
+        };
+        if self.is_hidden() || self.unpresented_frames >= UNPRESENTED_FRAMES_BEFORE_THROTTLE {
+            FramePacing::After(THROTTLED_FRAME_INTERVAL)
+        } else {
+            FramePacing::Immediate
+        }
     }
 
     /// Returns `true` exactly once, and only if `init` succeeded.
@@ -193,6 +259,12 @@ impl<A: AppHandler> DesktopRunner<A> {
     fn deliver(&mut self, event_loop: &ActiveEventLoop, event: &PlatformEvent) {
         self.app.event(&mut self.ctx, event);
         self.finish_callback(event_loop, false);
+    }
+
+    /// Requests the next frame now; `ControlFlow::Wait` cancels a pending throttle deadline.
+    fn request_frame_now(event_loop: &ActiveEventLoop, window: &Window) {
+        event_loop.set_control_flow(ControlFlow::Wait);
+        window.request_redraw();
     }
 }
 
@@ -239,6 +311,15 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
         }
     }
 
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if let StartCause::ResumeTimeReached { .. } = cause
+            && self.lifecycle.accepts_callbacks()
+            && let Some(window) = &self.window
+        {
+            Self::request_frame_now(event_loop, window);
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -255,8 +336,13 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
         match event {
             WindowEvent::RedrawRequested => {
                 self.app.frame(&mut self.ctx);
+                let presented = !std::mem::take(&mut self.ctx.frame_not_presented);
                 if self.finish_callback(event_loop, false) {
-                    window.request_redraw();
+                    match self.lifecycle.frame_finished(presented) {
+                        FramePacing::Immediate => Self::request_frame_now(event_loop, &window),
+                        FramePacing::After(delay) => event_loop
+                            .set_control_flow(ControlFlow::WaitUntil(Instant::now() + delay)),
+                    }
                 }
             }
             WindowEvent::CloseRequested => {
@@ -265,8 +351,17 @@ impl<A: AppHandler> ApplicationHandler for DesktopRunner<A> {
                 self.finish_callback(event_loop, true);
             }
             WindowEvent::Resized(size) => {
-                let event = PlatformEvent::Resized(PhysicalSize::new(size.width, size.height));
-                self.deliver(event_loop, &event);
+                let size = PhysicalSize::new(size.width, size.height);
+                self.deliver(event_loop, &PlatformEvent::Resized(size));
+                if self.lifecycle.set_drawable_empty(size.is_empty()) {
+                    Self::request_frame_now(event_loop, &window);
+                }
+            }
+            WindowEvent::Occluded(occluded) => {
+                self.deliver(event_loop, &PlatformEvent::Occluded(occluded));
+                if self.lifecycle.set_occluded(occluded) {
+                    Self::request_frame_now(event_loop, &window);
+                }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.deliver(event_loop, &PlatformEvent::ScaleFactorChanged(scale_factor));
@@ -643,6 +738,110 @@ mod tests {
         assert!(!lifecycle.should_create_window());
         assert!(!lifecycle.accepts_callbacks());
         assert!(!lifecycle.take_shutdown());
+    }
+
+    fn running_lifecycle() -> Lifecycle {
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.window_created();
+        assert!(!lifecycle.init_finished(true, false));
+        lifecycle
+    }
+
+    #[test]
+    fn presented_frames_request_the_next_frame_immediately() {
+        let mut lifecycle = running_lifecycle();
+        for _ in 0..100 {
+            assert_eq!(lifecycle.frame_finished(true), FramePacing::Immediate);
+        }
+    }
+
+    #[test]
+    fn minimised_window_throttles_until_it_has_a_size_again() {
+        let mut lifecycle = running_lifecycle();
+        assert!(!lifecycle.set_drawable_empty(true));
+        for _ in 0..10 {
+            assert_eq!(
+                lifecycle.frame_finished(true),
+                FramePacing::After(THROTTLED_FRAME_INTERVAL)
+            );
+        }
+        assert!(!lifecycle.set_drawable_empty(true), "still empty");
+        assert!(lifecycle.set_drawable_empty(false), "restored: frame now");
+        assert!(!lifecycle.set_drawable_empty(false), "no second wake-up");
+        assert_eq!(lifecycle.frame_finished(true), FramePacing::Immediate);
+    }
+
+    #[test]
+    fn occluded_window_throttles_until_visible_again() {
+        let mut lifecycle = running_lifecycle();
+        assert!(!lifecycle.set_occluded(true));
+        assert_eq!(
+            lifecycle.frame_finished(false),
+            FramePacing::After(THROTTLED_FRAME_INTERVAL)
+        );
+        assert!(lifecycle.set_occluded(false));
+        assert_eq!(lifecycle.frame_finished(true), FramePacing::Immediate);
+    }
+
+    #[test]
+    fn window_stays_throttled_while_any_hiding_reason_remains() {
+        let mut lifecycle = running_lifecycle();
+        assert!(!lifecycle.set_occluded(true));
+        assert!(!lifecycle.set_drawable_empty(true));
+        assert!(!lifecycle.set_occluded(false), "still minimised");
+        assert_eq!(
+            lifecycle.frame_finished(true),
+            FramePacing::After(THROTTLED_FRAME_INTERVAL)
+        );
+        assert!(lifecycle.set_drawable_empty(false));
+        assert_eq!(lifecycle.frame_finished(true), FramePacing::Immediate);
+    }
+
+    #[test]
+    fn repeated_unpresented_frames_throttle_until_a_frame_presents() {
+        let mut lifecycle = running_lifecycle();
+        for _ in 1..UNPRESENTED_FRAMES_BEFORE_THROTTLE {
+            assert_eq!(lifecycle.frame_finished(false), FramePacing::Immediate);
+        }
+        for _ in 0..10 {
+            assert_eq!(
+                lifecycle.frame_finished(false),
+                FramePacing::After(THROTTLED_FRAME_INTERVAL)
+            );
+        }
+        assert_eq!(lifecycle.frame_finished(true), FramePacing::Immediate);
+        assert_eq!(
+            lifecycle.frame_finished(false),
+            FramePacing::Immediate,
+            "a presented frame resets the streak"
+        );
+    }
+
+    #[test]
+    fn becoming_visible_resets_the_unpresented_streak() {
+        let mut lifecycle = running_lifecycle();
+        assert!(!lifecycle.set_occluded(true));
+        for _ in 0..UNPRESENTED_FRAMES_BEFORE_THROTTLE {
+            lifecycle.frame_finished(false);
+        }
+        assert!(lifecycle.set_occluded(false));
+        assert_eq!(lifecycle.frame_finished(false), FramePacing::Immediate);
+    }
+
+    #[test]
+    fn becoming_visible_requests_no_frame_before_init_or_while_stopping() {
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.window_created();
+        assert!(!lifecycle.set_drawable_empty(true));
+        assert!(
+            !lifecycle.set_drawable_empty(false),
+            "no frames before init"
+        );
+
+        let mut lifecycle = running_lifecycle();
+        assert!(!lifecycle.set_occluded(true));
+        assert!(lifecycle.callback_finished(true));
+        assert!(!lifecycle.set_occluded(false), "no frames once stopping");
     }
 
     #[test]
