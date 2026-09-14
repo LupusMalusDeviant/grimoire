@@ -5,7 +5,9 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
-Phase P0 — Fundament.
+## [0.1.0] - 2026-09-14
+
+Phase P0 — Fundament. Erste Version, gegen die das Spiel *Fiends n Patrons* pinnt.
 
 ### Added
 - Workspace-Gerüst mit 13 Crates gemäß Crate-Map, gepinnte Toolchain 1.98.1, Crate-Verträge (`docs/architektur/crate-vertraege.md`).
