@@ -90,8 +90,17 @@ impl InputLog {
     pub const FORMAT_VERSION: u32 = 1;
 
     /// Encodes the log in the binary format described on [`InputLog`].
+    ///
+    /// # Panics
+    ///
+    /// If `tick_rate_hz` is 0: [`InputLog::from_bytes`] rejects that value, so the encoded log
+    /// could never be loaded again.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
+        assert!(
+            self.tick_rate_hz != 0,
+            "InputLog::to_bytes: tick_rate_hz must not be 0"
+        );
         let mut bytes = Vec::with_capacity(HEADER_SIZE + FRAME_SIZE * self.frames.len());
         bytes.extend_from_slice(&Self::MAGIC);
         bytes.extend_from_slice(&Self::FORMAT_VERSION.to_le_bytes());

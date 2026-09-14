@@ -87,6 +87,16 @@ fn log_round_trips() {
 }
 
 #[test]
+#[should_panic(expected = "tick_rate_hz must not be 0")]
+fn encoding_a_zero_tick_rate_panics_instead_of_writing_an_unloadable_log() {
+    let log = InputLog {
+        tick_rate_hz: 0,
+        ..sample_log()
+    };
+    let _ = log.to_bytes();
+}
+
+#[test]
 fn header_layout_is_little_endian() {
     let bytes = sample_log().to_bytes();
     assert_eq!(&bytes[0..8], b"GRIMREPL");
