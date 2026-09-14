@@ -42,16 +42,22 @@ graph TD
 Erzwungen durch `clippy.toml` in diesen Crates, zusätzlich im Review geprüft:
 
 - Keine `HashMap`/`HashSet` (Iterationsreihenfolge). Lookups über `TypeId` sind nur mit `BTreeMap` und nie iterierend für Hash/Ordnung erlaubt.
-- Keine Wanduhr (`Instant::now`, `SystemTime::now`); Simulationszeit ist der Tick-Zähler.
-- Keine Transzendentalfunktionen aus `std` (`sin`, `cos`, `atan2`, `exp`, `powf`, …) — stattdessen `grimoire_core::math::dmath`. Kein `mul_add`.
-- Keine Threads, keine Adressen/`TypeId`s in Hashes oder Reihenfolgen.
+- Keine Wanduhr (`Instant::now`/`elapsed`, `SystemTime::now`/`elapsed`); Simulationszeit ist der Tick-Zähler.
+- Keine Transzendentalfunktionen aus `std`, weder für `f32` noch für `f64` (`sin`, `cos`, `atan2`, `exp`, `powf`, `sinh`, `log10`, `cbrt`, …) — stattdessen `grimoire_core::math::dmath`. Kein `mul_add`, kein `powi` (laut `std`-Doku nicht deterministisch).
+- Keine Threads (`std::thread::spawn` gesperrt), keine Adressen/`TypeId`s in Hashes oder Reihenfolgen.
 - Jede Komponente und Ressource ist `Clone + StableHash`, damit Welten hashbar und snapshotbar sind.
+
+Nur im Review prüfbar (Engine-ADR 0004):
+
+- NaN gelangt nie in Simulationszustand. Code verzweigt nie auf Vorzeichen oder Payload eines möglichen NaN (`to_bits`, `total_cmp`, `is_sign_negative`, `copysign`) — beides ist plattform- und optimierungsabhängig.
+- Das Vorzeichen des Ergebnisses von `f32::min`/`max` für `(+0.0, -0.0)` ist unspezifiziert (wechselt sogar zwischen Debug und Release) und darf nichts beeinflussen.
+- Clippy ignoriert nicht auflösbare Pfade in `clippy.toml` stillschweigend: Neue Einträge werden mit einer temporären Lint-Probe verifiziert; die fünf `clippy.toml` bleiben identisch.
 
 ## 4. `grimoire_core` — fertig
 
 | Element | Vertrag |
 |---------|---------|
-| `StableHasher` | `new`, `with_seed`, `write_{u8…u64,i8…i64,usize,isize,bool,f32,f64,bytes,str}`, `finish` (setzt nicht zurück), `ALGORITHM_VERSION = 1` |
+| `StableHasher` | `new`, `with_seed`, `write_{u8…u64,i8…i64,usize,isize,bool,f32,f64,bytes,str}`, `finish` (setzt nicht zurück), `ALGORITHM_VERSION = 1`; `write_f32`/`write_f64` bitgenau, jedes NaN wird als kanonisches `0x7fc0_0000` bzw. `0x7ff8_0000_0000_0000` eingespeist; Version 1 eingefroren durch `tests/stable_hash_golden.rs` |
 | `StableHash` | `fn stable_hash(&self, &mut StableHasher)`; Impls für Primitive, `str`, `String`, `()`, Slices (längenpräfixiert), Arrays, `Vec`, `Option`, Tupel bis 8, `&T`, `Box<T>`, `Vec2` |
 | `hash_of(&T) -> u64` | Hash eines Wertes mit frischem Hasher |
 | `impl_stable_hash!(Typ { feld, … })` | Makro für Structs |
