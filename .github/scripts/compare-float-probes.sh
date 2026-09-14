@@ -4,8 +4,10 @@
 # the golden assertions inside the test suite are what fail a run.
 #
 # Usage: compare-float-probes.sh <download-dir> <label>
-#   <download-dir> contains one sub-directory per artifact (float-probe-<os>/...),
-#   as produced by actions/download-artifact with a pattern and without merge-multiple.
+#   <download-dir> holds the probe files. The workflows download with merge-multiple: true, so the
+#   files lie directly in it (their names carry <os>-<arch> and cannot collide). One level of
+#   per-artifact sub-directories is accepted as well: actions/download-artifact without
+#   merge-multiple nests only when more than one artifact matches, so both layouts occur.
 set -euo pipefail
 
 dir="${1:?download directory missing}"
@@ -17,8 +19,7 @@ shopt -s nullglob
 declare -A hashes=()
 rows=""
 
-for file in "$dir"/*/std-trig-*.txt; do
-  artifact="$(basename "$(dirname "$file")")"
+for file in "$dir"/std-trig-*.txt "$dir"/*/std-trig-*.txt; do
   target="$(basename "$file" .txt)"
   target="${target#std-trig-}"
   value="$(sed -n 's/^std_trig_hash=\(0x[0-9A-Fa-f]\{1,\}\)[[:space:]]*$/\1/p' "$file" | head -n 1)"
@@ -26,8 +27,12 @@ for file in "$dir"/*/std-trig-*.txt; do
     value="unlesbar"
     echo "::warning title=Float-Probe unlesbar::${file} enthaelt keine Zeile std_trig_hash=0x..."
   fi
+  if [ -n "${hashes[$target]+set}" ]; then
+    echo "::warning title=Float-Probe doppelt::Mehr als eine std-trig-Probe fuer ${target}; ${file} wird ignoriert."
+    continue
+  fi
   hashes["$target"]="$value"
-  rows+="| ${target} | \`${value}\` | ${artifact#float-probe-} |"$'\n'
+  rows+="| ${target} | \`${value}\` |"$'\n'
 done
 
 count="${#hashes[@]}"
@@ -44,8 +49,8 @@ if [ "$count" -eq 0 ]; then
 fi
 
 {
-  echo "| Ziel (OS-Arch) | std_trig_hash | Runner |"
-  echo "|---|---|---|"
+  echo "| Ziel (OS-Arch) | std_trig_hash |"
+  echo "|---|---|"
   printf '%s' "$rows"
   echo
 } >> "$summary"
@@ -74,8 +79,8 @@ fi
   echo
   echo "<details><summary>Rohdaten aller Proben</summary>"
   echo
-  for file in "$dir"/*/*.txt; do
-    echo "**$(basename "$(dirname "$file")")/$(basename "$file")**"
+  for file in "$dir"/*.txt "$dir"/*/*.txt; do
+    echo "**${file#"$dir"/}**"
     echo
     echo '```text'
     cat "$file"

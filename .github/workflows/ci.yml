@@ -15,9 +15,12 @@ on:
       - "docs/**"
   workflow_dispatch:
 
+# Superseded pull request runs are cancelled. Runs on main are never cancelled: every main commit
+# gets a verdict, gh run watch --exit-status does not end as "cancelled", and the main-only cache
+# save is not lost.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -79,7 +82,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo doc
@@ -97,7 +100,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # GPU tests skip themselves without an adapter. Lavapipe gives Linux a software Vulkan
@@ -143,6 +146,8 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: float-probe-*
+          # Flat layout for any number of matches (a single match is never nested).
+          merge-multiple: true
           path: float-probe
       - name: Compare std-trig hashes across operating systems
         run: bash .github/scripts/compare-float-probes.sh float-probe "Debug-Build"

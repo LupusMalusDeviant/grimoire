@@ -74,18 +74,28 @@ PowerShell: `$env:RUSTDOCFLAGS = '-D warnings'; cargo doc --workspace --no-deps 
 `--locked` verlangt ein aktuelles `Cargo.lock`. Wer eine Abhängigkeit oder Version ändert,
 committet das Lockfile mit.
 
+**Achtung, `[patch]` im Elternordner:** Ist in `<Arbeitsordner>\.cargo\config.toml` der
+Spiel-Patch für `grimoire` aktiv (siehe `CONTRIBUTING.md` des Spiels), gilt er auch für dieses Repo
+und alle Worktrees unter `<Arbeitsordner>\`. Cargo trägt den hier ungenutzten Patch dann als
+`[[patch.unused]]` in `Cargo.lock` ein: Jeder Befehl mit `--locked` bricht mit „cannot update the
+lock file“ ab, und ohne `--locked` wird das Lockfile verändert (am 2026-09-14 mit Cargo 1.98.1
+nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile mit
+`[[patch.unused]]` nie committen.
+
 ## CI im Überblick
 
 | Workflow | Auslöser | Inhalt |
 |----------|----------|--------|
 | `ci.yml` | Push auf `main`, Pull Request, manuell | `fmt`, `standalone-gate`, `docs` (rustdoc mit `-D warnings`), `test` auf Windows/Linux/macOS (clippy, Tests, Beispiele bauen, Float-Probe als Artefakt `float-probe-<os>`), `float-compare` (Vergleich im Job-Summary) |
-| `nightly.yml` | täglich 02:17 UTC, manuell | Tests im Release-Modus auf drei Systemen plus Float-Vergleich; geplante Läufe entfallen, wenn `main` 24 h keinen Commit hatte |
+| `nightly.yml` | täglich 02:17 UTC, manuell | Tests im Release-Modus auf drei Systemen plus Float-Vergleich; geplante Läufe entfallen, wenn `main` 24 h nicht bewegt wurde (Push oder Merge laut Aktivitäts-API, nicht Commit-Datum) |
 | `release.yml` | Tag `vX.Y.Z` | Versionsprüfung, Testsuite (Linux), Release-Notes per git-cliff, GitHub-Release (nur Quelltext) |
 
 - Commits, die nur Markdown oder `docs/` ändern, lösen `ci.yml` nicht aus. **Achtung Branch-Schutz:**
   Ein per Pfadfilter übersprungener Workflow meldet keinen Status. Pull Requests, die ausschließlich
   Doku ändern, bleiben dann bei Pflicht-Checks auf „Expected“ stehen und brauchen einen manuellen
   Lauf (`gh workflow run ci.yml --ref <branch>`) oder einen Admin-Merge.
+- Ein neuer Push auf denselben Pull Request bricht dessen laufende CI ab. Läufe auf `main` werden
+  **nie** abgebrochen; jeder `main`-Commit bekommt ein Ergebnis.
 - GPU-Tests überspringen sich ohne Adapter. Linux bekommt per `mesa-vulkan-drivers` (lavapipe) ein
   Software-Vulkan, Windows-Runner haben WARP.
 - **Float-Probe:** Die Core-Tests schreiben `target/float-probe/std-trig-<os>-<arch>.txt` und
