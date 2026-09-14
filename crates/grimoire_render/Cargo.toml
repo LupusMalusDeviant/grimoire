@@ -1,0 +1,22 @@
+[package]
+name = "grimoire_render"
+description = "Grimoire renderer: frame description data and the wgpu-based implementation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+grimoire_gpu.workspace = true
+grimoire_platform.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+
+[lints]
+workspace = true

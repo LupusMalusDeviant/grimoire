@@ -1,0 +1,22 @@
+# Determinism lint (engine ADR on floating point, PRD-0018 FR-09).
+# Simulation-side crates must not depend on wall-clock time, unordered hash containers or platform libm.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap or an ordered Vec" },
+    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet or an ordered Vec" },
+]
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "wall-clock time must not influence simulation state; use the Tick resource" },
+    { path = "std::time::SystemTime::now", reason = "wall-clock time must not influence simulation state; use the Tick resource" },
+    { path = "f32::sin", reason = "platform libm differs; use grimoire_core::math::dmath::sin" },
+    { path = "f32::cos", reason = "platform libm differs; use grimoire_core::math::dmath::cos" },
+    { path = "f32::tan", reason = "platform libm differs; use grimoire_core::math::dmath::tan" },
+    { path = "f32::asin", reason = "platform libm differs; use grimoire_core::math::dmath::asin" },
+    { path = "f32::acos", reason = "platform libm differs; use grimoire_core::math::dmath::acos" },
+    { path = "f32::atan", reason = "platform libm differs; use grimoire_core::math::dmath::atan" },
+    { path = "f32::atan2", reason = "platform libm differs; use grimoire_core::math::dmath::atan2" },
+    { path = "f32::exp", reason = "platform libm differs; use grimoire_core::math::dmath::exp" },
+    { path = "f32::ln", reason = "platform libm differs; use grimoire_core::math::dmath::ln" },
+    { path = "f32::powf", reason = "platform libm differs; use grimoire_core::math::dmath::powf" },
+    { path = "f32::hypot", reason = "platform libm differs; use grimoire_core::math::dmath::hypot" },
+    { path = "f32::mul_add", reason = "fused multiply-add is not used in simulation code" },
+]

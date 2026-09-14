@@ -1,0 +1,16 @@
+[package]
+name = "grimoire_collide"
+description = "2D collision: circle and capsule shapes, spatial grid broadphase, graze queries."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+
+[lints]
+workspace = true

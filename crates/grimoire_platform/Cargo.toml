@@ -1,0 +1,21 @@
+[package]
+name = "grimoire_platform"
+description = "Platform layer: windows, event loop, raw input, clocks and file system (desktop and headless)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+log.workspace = true
+raw-window-handle.workspace = true
+thiserror.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+
+[lints]
+workspace = true

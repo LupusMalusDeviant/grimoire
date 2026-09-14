@@ -1,0 +1,20 @@
+[package]
+name = "grimoire_sim"
+description = "Deterministic simulation: fixed timestep, seeded RNG, input frames, replays and state hashes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,30 @@
+[package]
+name = "grimoire"
+description = "Facade of the Grimoire engine: app lifecycle, game plugins and the main loop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+grimoire_assets.workspace = true
+grimoire_audio.workspace = true
+grimoire_collide.workspace = true
+grimoire_core.workspace = true
+grimoire_debug.workspace = true
+grimoire_ecs.workspace = true
+grimoire_platform.workspace = true
+grimoire_render.workspace = true
+grimoire_sigil.workspace = true
+grimoire_sim.workspace = true
+grimoire_ui.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+
+[lints]
+workspace = true
