@@ -7,10 +7,14 @@
 //!
 //! Algorithm v1: a 64-bit word mixer `state = (state.rotate_left(5) ^ word) * K` over
 //! little-endian words (FxHash constant), finalised with SplitMix64 over `state ^ length`.
+//! Floats are fed as their IEEE-754 bits, with every NaN replaced by the positive quiet NaN
+//! without payload.
 //! Any change to the algorithm invalidates every stored golden hash and must bump
-//! [`StableHasher::ALGORITHM_VERSION`].
+//! [`StableHasher::ALGORITHM_VERSION`]; `tests/stable_hash_golden.rs` freezes version 1.
 
 const MIX_CONSTANT: u64 = 0x517c_c1b7_2722_0a95;
+const CANONICAL_NAN_F32: u32 = 0x7fc0_0000;
+const CANONICAL_NAN_F64: u64 = 0x7ff8_0000_0000_0000;
 
 /// Streaming 64-bit hasher whose output is bit-identical on every platform and Rust release.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,28 +128,39 @@ impl StableHasher {
         self.write_u8(value as u8);
     }
 
-    /// Feeds an `f32` bit-exactly: `-0.0` and `0.0` hash differently, NaN payloads matter.
+    /// Feeds an `f32` bit-exactly, except that every NaN is fed as one canonical quiet NaN.
+    ///
+    /// `-0.0` and `0.0` still hash differently. NaN sign and payload are not portable: they
+    /// differ between x86_64 and aarch64 and between constant folding and run time (engine
+    /// ADR 0004), while every other bit of an IEEE-754 result is.
     #[inline]
     pub const fn write_f32(&mut self, value: f32) {
-        self.write_u32(value.to_bits());
+        let bits = if value.is_nan() {
+            CANONICAL_NAN_F32
+        } else {
+            value.to_bits()
+        };
+        self.write_u32(bits);
     }
 
-    /// Feeds an `f64` bit-exactly.
+    /// Feeds an `f64` bit-exactly, with the same NaN canonicalisation as [`Self::write_f32`].
     #[inline]
     pub const fn write_f64(&mut self, value: f64) {
-        self.write_u64(value.to_bits());
+        let bits = if value.is_nan() {
+            CANONICAL_NAN_F64
+        } else {
+            value.to_bits()
+        };
+        self.write_u64(bits);
     }
 
     /// Feeds raw bytes, prefixed with their length so that concatenations stay unambiguous.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.write_usize(bytes.len());
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            let mut word = [0u8; 8];
-            word.copy_from_slice(chunk);
-            self.mix(u64::from_le_bytes(word));
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.mix(u64::from_le_bytes(*word));
         }
-        let rest = chunks.remainder();
         if !rest.is_empty() {
             let mut word = [0u8; 8];
             word[..rest.len()].copy_from_slice(rest);
@@ -187,6 +202,8 @@ pub fn hash_of<T: StableHash + ?Sized>(value: &T) -> u64 {
 /// - The fed byte stream depends only on the value — never on memory addresses, capacities,
 ///   `TypeId`s, hash-map iteration order or the platform's word size.
 /// - Floats are fed bit-exactly: the purpose is detecting *any* divergence, not semantic equality.
+///   The only exception is NaN, whose sign and payload are platform-dependent; all NaNs hash
+///   alike. NaN in simulation state is a bug regardless (engine ADR 0004).
 /// - Adding, removing or reordering fed fields changes hashes; golden masters are then renewed
 ///   deliberately.
 pub trait StableHash {
@@ -368,6 +385,34 @@ mod tests {
     #[test]
     fn floats_hash_bit_exactly() {
         assert_ne!(hash_of(&0.0f32), hash_of(&-0.0f32));
+        assert_ne!(hash_of(&0.0f64), hash_of(&-0.0f64));
+        assert_ne!(
+            hash_of(&1.0f32),
+            hash_of(&f32::from_bits(1.0f32.to_bits() + 1))
+        );
+    }
+
+    #[test]
+    fn nan_sign_and_payload_are_canonicalised() {
+        let canonical = hash_of(&f32::NAN);
+        for bits in [0x7fc0_0000u32, 0xffc0_0000, 0x7f80_0001, 0xffff_ffff] {
+            assert_eq!(hash_of(&f32::from_bits(bits)), canonical, "{bits:#010x}");
+        }
+        let canonical = hash_of(&f64::NAN);
+        for bits in [
+            0x7ff8_0000_0000_0000u64,
+            0xfff8_0000_0000_0000,
+            0x7ff0_0000_0000_0001,
+        ] {
+            assert_eq!(hash_of(&f64::from_bits(bits)), canonical, "{bits:#018x}");
+        }
+    }
+
+    #[test]
+    fn nan_is_distinct_from_infinities() {
+        let nan = hash_of(&f32::NAN);
+        assert_ne!(nan, hash_of(&f32::INFINITY));
+        assert_ne!(nan, hash_of(&f32::NEG_INFINITY));
     }
 
     #[test]
