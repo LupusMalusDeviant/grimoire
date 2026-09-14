@@ -84,12 +84,23 @@ impl Simulation {
     ///
     /// Feeds, into a fresh `StableHasher`: tick (`u64`), seed (`u64`), then
     /// [`World::stable_hash`].
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if any `f32` or `f64` in the hashed state is NaN. NaN is forbidden in
+    /// simulation state (engine ADR 0004, rule 4) and hashes identically on every platform, so
+    /// the golden and replay gates would otherwise pass silently. Release builds do not check.
     #[must_use]
     pub fn state_hash(&self) -> u64 {
         let mut hasher = StableHasher::new();
         hasher.write_u64(self.tick);
         hasher.write_u64(self.seed);
         self.world.stable_hash(&mut hasher);
+        debug_assert!(
+            !hasher.saw_nan(),
+            "NaN in simulation state at tick {}",
+            self.tick
+        );
         hasher.finish()
     }
 

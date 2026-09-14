@@ -8,7 +8,8 @@
 //! Algorithm v1: a 64-bit word mixer `state = (state.rotate_left(5) ^ word) * K` over
 //! little-endian words (FxHash constant), finalised with SplitMix64 over `state ^ length`.
 //! Floats are fed as their IEEE-754 bits, with every NaN replaced by the positive quiet NaN
-//! without payload.
+//! without payload. The hasher remembers whether it was fed a NaN ([`StableHasher::saw_nan`]);
+//! that flag is not part of the hash.
 //! Any change to the algorithm invalidates every stored golden hash and must bump
 //! [`StableHasher::ALGORITHM_VERSION`]; `tests/stable_hash_golden.rs` freezes version 1.
 
@@ -17,11 +18,22 @@ const CANONICAL_NAN_F32: u32 = 0x7fc0_0000;
 const CANONICAL_NAN_F64: u64 = 0x7ff8_0000_0000_0000;
 
 /// Streaming 64-bit hasher whose output is bit-identical on every platform and Rust release.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Equality compares only what determines [`StableHasher::finish`], not [`StableHasher::saw_nan`].
+#[derive(Debug, Clone)]
 pub struct StableHasher {
     state: u64,
     length: u64,
+    nan_seen: bool,
 }
+
+impl PartialEq for StableHasher {
+    fn eq(&self, other: &Self) -> bool {
+        self.state == other.state && self.length == other.length
+    }
+}
+
+impl Eq for StableHasher {}
 
 impl Default for StableHasher {
     fn default() -> Self {
@@ -45,6 +57,7 @@ impl StableHasher {
         Self {
             state: seed,
             length: 0,
+            nan_seen: false,
         }
     }
 
@@ -132,10 +145,12 @@ impl StableHasher {
     ///
     /// `-0.0` and `0.0` still hash differently. NaN sign and payload are not portable: they
     /// differ between x86_64 and aarch64 and between constant folding and run time (engine
-    /// ADR 0004), while every other bit of an IEEE-754 result is.
+    /// ADR 0004), while every other bit of an IEEE-754 result is. A NaN also sets
+    /// [`Self::saw_nan`].
     #[inline]
     pub const fn write_f32(&mut self, value: f32) {
         let bits = if value.is_nan() {
+            self.nan_seen = true;
             CANONICAL_NAN_F32
         } else {
             value.to_bits()
@@ -147,6 +162,7 @@ impl StableHasher {
     #[inline]
     pub const fn write_f64(&mut self, value: f64) {
         let bits = if value.is_nan() {
+            self.nan_seen = true;
             CANONICAL_NAN_F64
         } else {
             value.to_bits()
@@ -178,6 +194,15 @@ impl StableHasher {
     #[must_use]
     pub const fn finish(&self) -> u64 {
         splitmix64(self.state ^ self.length)
+    }
+
+    /// Whether any `f32` or `f64` written so far was NaN.
+    ///
+    /// NaN is forbidden in simulation state (engine ADR 0004, rule 4), but the canonicalisation
+    /// makes it invisible in the hash; this flag is how hash-based gates still detect it.
+    #[must_use]
+    pub const fn saw_nan(&self) -> bool {
+        self.nan_seen
     }
 }
 
@@ -413,6 +438,33 @@ mod tests {
         let nan = hash_of(&f32::NAN);
         assert_ne!(nan, hash_of(&f32::INFINITY));
         assert_ne!(nan, hash_of(&f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn nan_is_flagged_without_affecting_hash_or_equality() {
+        let mut clean = StableHasher::new();
+        clean.write_f32(1.0);
+        clean.write_f32(f32::INFINITY);
+        clean.write_f64(-0.0);
+        clean.write_f64(f64::NEG_INFINITY);
+        assert!(!clean.saw_nan());
+
+        let mut from_f32 = StableHasher::new();
+        from_f32.write_f32(f32::from_bits(0xffc0_0001));
+        from_f32.write_u64(7);
+        assert!(from_f32.saw_nan(), "the flag stays set after later writes");
+        assert!(from_f32.clone().saw_nan());
+
+        let mut from_f64 = StableHasher::new();
+        from_f64.write_f64(f64::NAN);
+        assert!(from_f64.saw_nan());
+
+        let mut canonical_bits = StableHasher::new();
+        canonical_bits.write_u32(CANONICAL_NAN_F32);
+        canonical_bits.write_u64(7);
+        assert!(!canonical_bits.saw_nan());
+        assert_eq!(canonical_bits.finish(), from_f32.finish());
+        assert_eq!(canonical_bits, from_f32);
     }
 
     #[test]

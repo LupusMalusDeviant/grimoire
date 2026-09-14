@@ -135,6 +135,52 @@ fn state_hash_covers_tick_seed_and_world() {
     assert_ne!(moved.state_hash(), a.state_hash());
 }
 
+#[derive(Clone)]
+struct Heading {
+    radians: f32,
+}
+impl_stable_hash!(Heading { radians });
+
+/// Simulation whose only system writes NaN into a component from tick `poison_tick` on.
+fn poisoned(poison_tick: u64) -> Simulation {
+    let mut sim = Simulation::new(3);
+    sim.world_mut().spawn((Heading { radians: 0.5 },));
+    sim.schedule_mut()
+        .add_system(system_fn("poison", move |world| {
+            let tick = world.resource::<Tick>().map_or(0, |tick| tick.0);
+            if tick >= poison_tick {
+                for (heading,) in world.query_mut::<(&mut Heading,)>() {
+                    heading.radians = f32::NAN;
+                }
+            }
+        }));
+    sim
+}
+
+#[test]
+fn finite_float_state_hashes_without_panicking() {
+    let mut sim = poisoned(u64::MAX);
+    sim.step(TickInput::default());
+    let _ = sim.state_hash();
+    let _ = replay(&mut sim, &log_of([0, 0]), 1);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "NaN in simulation state at tick 2")]
+fn nan_in_state_panics_at_the_first_debug_checkpoint() {
+    let mut sim = poisoned(1);
+    let _ = replay(&mut sim, &log_of([0, 0, 0]), 1);
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn nan_in_state_is_not_checked_in_release_builds() {
+    let mut sim = poisoned(0);
+    sim.step(TickInput::default());
+    let _ = sim.state_hash();
+}
+
 #[test]
 fn snapshot_and_restore_continue_identically() {
     let mut sim = traced(9);

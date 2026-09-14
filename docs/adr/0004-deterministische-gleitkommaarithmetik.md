@@ -168,6 +168,9 @@ rechnet mit `f32` nach diesen Regeln:
 3. **Kein `mul_add`, kein `powi`** (gesperrt).
 4. **NaN ist ein Fehler im Simulationszustand.** Code verzweigt nie auf NaN-Vorzeichen oder -Payload
    (`to_bits`, `total_cmp`, `is_sign_negative`, `copysign` auf möglichen NaN).
+   Debug-Builds prüfen die Regel an jedem Hash-Punkt: `StableHasher` merkt sich eingespeiste NaN
+   (`saw_nan`, nicht Teil des Hashes), und `Simulation::state_hash` löst dann eine Debug-Assertion mit
+   dem Tick aus. Die Prüfung kostet keinen zusätzlichen Durchlauf, weil der Hash die Welt ohnehin liest.
    `StableHasher::write_f32`/`write_f64` **kanonisieren NaN** vor dem Hashen (`0x7fc00000` bzw.
    `0x7ff8000000000000`). Begründung:
    - Rein bitgenaues Hashen würde Hashes schon auf einer Maschine von der Konstantenfaltung abhängig
@@ -215,8 +218,9 @@ Positionen (über `SimVec`) und Option 3.
   `dmath::min`/`max` umgestellt werden oder begründet `#[allow(clippy::disallowed_methods)]` tragen.
 - (+) Die Probe liefert bei einem Bruch pro Funktion einen Hash (`detail-*.txt`) und damit die
   Ursache.
-- (−) Regel 4 bleibt Review-Aufgabe. Eine Laufzeitprüfung auf NaN im Simulationszustand
-  (z. B. Debug-Assertion in `Simulation::step`) ist nicht Teil dieses ADR.
+- (−) Regel 4 ist nur in Debug-Builds und nur an Hash-Punkten maschinell geprüft
+  (`Simulation::state_hash`). Release-Builds, NaN, das vor dem nächsten Hash wieder verschwindet, und
+  das Verzweigen auf NaN-Bits bleiben Review-Aufgabe.
 - (−) Nicht auflösbare `clippy.toml`-Pfade bleiben still. Die Lint-Probe wird bisher nur manuell
   ausgeführt; ein dauerhafter CI-Check bräuchte eine Fixture außerhalb des Workspace.
 - (−) Upgrades von `libm` und Toolchain ändern potenziell `dmath_hash`. Sie sind bewusste Commits,
