@@ -22,6 +22,7 @@ Phase P0 — Fundament.
 
 ### Changed
 - `grimoire`: hängt in P0 nur noch von `core`, `ecs`, `platform`, `render` und `sim` ab; die Platzhalter-Crates folgen mit ihrer API.
+- Determinismus-Lint gilt auch für die Fassade `grimoire` (Hauptschleife, `InputMap`, Tests und Beispiel `sim_loop`): sie trägt dieselbe `clippy.toml`, jetzt sechs identische Kopien.
 
 ### Fixed
 - `grimoire_core`: `StableHasher` speist jedes NaN kanonisch ein (Bitmuster sind nicht portabel).

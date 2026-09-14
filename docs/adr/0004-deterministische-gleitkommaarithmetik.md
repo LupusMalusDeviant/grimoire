@@ -189,7 +189,9 @@ rechnet mit `f32` nach diesen Regeln:
    erlaubt, weil es nur vergleicht und bei gleichen Werten den Operanden selbst zurückgibt.
 6. **Keine Threads, keine Wanduhr** (gesperrt, wie in ADR-0005; `thread::spawn`,
    `thread::Builder::spawn`/`spawn_scoped`, `thread::scope`, `Instant`/`SystemTime::now`/`elapsed`).
-7. **`clippy.toml` ist in allen fünf Crates identisch.** Jeder neue Eintrag wird mit einer temporären
+7. **`clippy.toml` ist in allen fünf Simulations-Crates und in der Fassade `grimoire` identisch**
+   (deren Hauptschleife, `InputMap` und Beispiele speisen `TickInput` und Systeme in die Simulation;
+   Nachtrag P0). Jeder neue Eintrag wird mit einer temporären
    Lint-Probe verifiziert, weil clippy nicht auflösbare Pfade stillschweigend ignoriert. Pfade für
    inhärente Float-Methoden haben die Form `f32::name`.
 
@@ -213,8 +215,9 @@ Positionen (über `SimVec`) und Option 3.
   der ursprünglichen Konfiguration (`powi`, `f64`, Hyperbelfunktionen, `min`/`max`,
   `thread::Builder`/`scope`). Die in den Proben aufgerufenen Umgehungswege sind geschlossen; andere
   Wege, Threads zu starten (etwa über Drittcrates), erfasst die Liste nicht.
-- (−) Die Sperren gelten in allen fünf Simulations-Crates für `--all-targets`, also auch für Tests und
-  Benchmarks von `ecs`, `sim`, `collide` und `sigil`. Bestehender Code dort muss auf
+- (−) Die Sperren gelten in allen fünf Simulations-Crates und in der Fassade `grimoire` für
+  `--all-targets`, also auch für Tests, Beispiele und Benchmarks von `ecs`, `sim`, `collide`, `sigil` und
+  `grimoire`. Bestehender Code dort muss auf
   `dmath::min`/`max` umgestellt werden oder begründet `#[allow(clippy::disallowed_methods)]` tragen.
 - (+) Die Probe liefert bei einem Bruch pro Funktion einen Hash (`detail-*.txt`) und damit die
   Ursache.

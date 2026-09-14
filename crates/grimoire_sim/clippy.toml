@@ -1,5 +1,6 @@
 # Determinism lint (engine ADR 0004, PRD-0018 FR-09). Keep this file identical in grimoire_core,
-# grimoire_ecs, grimoire_sim, grimoire_collide and grimoire_sigil.
+# grimoire_ecs, grimoire_sim, grimoire_collide, grimoire_sigil and the facade grimoire, whose main
+# loop, InputMap and examples feed TickInput and systems into the simulation.
 # Simulation-side crates must not depend on wall-clock time, unordered hash containers, threads or
 # the platform libm. Inherent float methods are written `f32::name` / `f64::name`; clippy silently
 # ignores paths that do not resolve, so verify every new entry with a lint probe (ADR 0004).
