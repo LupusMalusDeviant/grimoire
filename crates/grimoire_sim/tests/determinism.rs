@@ -6,8 +6,8 @@
 //! 1. two independent runs produce identical hash sequences (every 600 ticks and the final tick);
 //! 2. a snapshot at tick 4 000, restored into a freshly built simulation, continues identically;
 //! 3. `replay` over the recorded (and re-encoded) `InputLog` reproduces the hash sequence;
-//! 4. the final hash equals a golden constant (measured on Windows x86_64), which turns a
-//!    multi-platform CI run into a cross-platform determinism check.
+//! 4. the final hash equals a golden constant that CI reproduces on Windows, Linux and macOS,
+//!    which makes every CI run a cross-platform determinism check.
 
 use std::sync::OnceLock;
 
@@ -21,11 +21,13 @@ use grimoire_sim::{
 
 /// Final `Simulation::state_hash` of the demo scenario after 10 000 ticks.
 ///
-/// This constant is the cross-platform determinism gate: every platform must reproduce the value
-/// measured on the development machine. So far it was measured and verified only on Windows
-/// x86_64 (debug and release); it becomes a cross-platform check once a CI test matrix over
-/// Windows, Linux and macOS runs this test. A mismatch on one platform means floating-point or
-/// integer behaviour diverges there and must be investigated, never papered over.
+/// This constant is the cross-platform determinism gate: every platform must reproduce it.
+/// Measured on Windows x86_64 (debug and release) and reproduced by the CI test matrix in debug
+/// builds on windows-latest (x86_64), ubuntu-latest (x86_64) and macos-latest (arm64), first in
+/// run 34883182308 at commit 0ef7696; the nightly workflow adds release builds. A mismatch on one
+/// platform means floating-point or integer behaviour diverges there and must be investigated,
+/// never papered over. The failure message lists every checkpoint hash, so comparing it with the
+/// output of a passing platform shows the first diverging checkpoint tick.
 ///
 /// Renew it only when the outcome is supposed to change: a deliberate change of this scenario,
 /// of `World::stable_hash` / `Simulation::state_hash`, of `StableHasher::ALGORITHM_VERSION`, of
@@ -374,10 +376,35 @@ fn replay_of_the_recorded_log_reproduces_the_run() {
 
 #[test]
 fn final_hash_matches_golden_value() {
-    let &(tick, hash) = reference()
-        .hashes
-        .last()
-        .expect("at least the final checkpoint");
+    let hashes = &reference().hashes;
+    let &(tick, hash) = hashes.last().expect("at least the final checkpoint");
     assert_eq!(tick, TOTAL_TICKS);
-    assert_eq!(hash, GOLDEN_FINAL_HASH, "measured final hash: {hash}");
+    assert_eq!(
+        hash,
+        GOLDEN_FINAL_HASH,
+        "{}",
+        checkpoint_report(hash, hashes)
+    );
+}
+
+/// Failure text for the golden gate: the final hash, then one `tick hash` line per checkpoint.
+fn checkpoint_report(final_hash: u64, hashes: &[(u64, u64)]) -> String {
+    let lines: Vec<String> = hashes
+        .iter()
+        .map(|&(tick, hash)| format!("  {tick:>6} {hash:#018x}"))
+        .collect();
+    format!(
+        "measured final hash: {final_hash}; checkpoints (tick, state_hash):\n{}",
+        lines.join("\n")
+    )
+}
+
+#[test]
+fn checkpoint_report_lists_every_checkpoint_in_order() {
+    let report = checkpoint_report(7, &[(600, 0xab), (10_000, 7)]);
+    assert_eq!(
+        report,
+        "measured final hash: 7; checkpoints (tick, state_hash):\n     600 0x00000000000000ab\n   \
+         10000 0x0000000000000007"
+    );
 }
