@@ -101,13 +101,19 @@ Offscreen-Test (roter Kreis in der Mitte, Ecke = Clear-Farbe) der ohne GPU mit k
 ## 7. `grimoire_ecs`
 
 ```rust
-pub struct Entity;            // Copy, Eq, Ord, Hash, Debug, StableHash
+pub struct Entity;            // Copy, Eq, Ord (Index vor Generation), Hash, Debug, Display, StableHash
                               // index() -> u32, generation() -> u32, to_bits() -> u64, from_bits(u64)
 pub trait Component: 'static + Send + Sync + Clone + StableHash {}   // Blanket-Impl
 pub trait Resource:  'static + Send + Sync + Clone + StableHash {}   // Blanket-Impl
-pub trait Bundle;             // Tupel (C1,) bis (C1, …, C8)
+pub trait Bundle;             // versiegelt; () und Tupel (C1,) bis (C1, …, C8)
+pub trait Query { type Item<'w>; }   // versiegelt; Element oder Tupel bis 8 aus:
+                              // Entity, &T, &mut T, Option<&T>, Option<&mut T>, With<T>, Without<T> (Item = ())
+pub trait ReadOnlyQuery: Query {}    // ohne &mut T / Option<&mut T>
+pub struct With<T>; pub struct Without<T>;
+pub struct QueryIter<'w, Q>;  // Iterator<Item = Q::Item<'w>>
+pub struct QueryIterMut<'w, Q>;
 
-impl World {
+impl World {                  // zusätzlich: Default, Debug, impl StableHash
     pub fn new() -> Self;
     pub fn register_component<C: Component>(&mut self);   // idempotent, ComponentId in Registrierungsreihenfolge
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity;
@@ -118,8 +124,8 @@ impl World {
     pub fn get<C: Component>(&self, entity: Entity) -> Option<&C>;
     pub fn get_mut<C: Component>(&mut self, entity: Entity) -> Option<&mut C>;
     pub fn entity_count(&self) -> usize;
-    pub fn query<Q: ReadOnlyQuery>(&self) -> /* Iterator<Item = Q::Item<'_>> */;   // z. B. (Entity, &Pos, &Vel)
-    pub fn query_mut<Q: Query>(&mut self) -> /* Iterator<Item = Q::Item<'_>> */;   // z. B. (&mut Pos, &Vel)
+    pub fn query<Q: ReadOnlyQuery>(&self) -> QueryIter<'_, Q>;      // z. B. (Entity, &Pos, &Vel)
+    pub fn query_mut<Q: Query>(&mut self) -> QueryIterMut<'_, Q>;   // z. B. (&mut Pos, &Vel)
     pub fn insert_resource<R: Resource>(&mut self, resource: R);
     pub fn resource<R: Resource>(&self) -> Option<&R>;
     pub fn resource_mut<R: Resource>(&mut self) -> Option<&mut R>;
@@ -129,23 +135,36 @@ impl World {
     pub fn restore(&mut self, snapshot: &WorldSnapshot);
 }
 
-pub struct CommandBuffer;     // new, spawn, despawn, insert, remove::<C>, is_empty, apply(&mut self, &mut World)
+pub struct CommandBuffer;     // new, spawn(B) -> (), despawn, insert, remove::<C>, len, is_empty,
+                              // apply(&mut self, &mut World) (leert den Puffer); Default, Debug
 pub trait System { fn name(&self) -> &str; fn run(&mut self, world: &mut World); }
 pub fn system_fn<F: FnMut(&mut World) + Send + 'static>(name: &'static str, f: F) -> impl System;
-pub struct Schedule;          // new, add_system(impl System + 'static) -> &mut Self, run(&mut self, &mut World), system_names()
-pub enum EcsError;            // mindestens NoSuchEntity(Entity)
+pub struct Schedule;          // new, add_system(impl System + 'static) -> &mut Self, run(&mut self, &mut World),
+                              // system_names() -> Vec<&str>, len, is_empty; Default, Debug
+pub enum EcsError;            // #[non_exhaustive]; NoSuchEntity(Entity); Display + Error
 ```
 
 **Semantik:**
 - Iterationsreihenfolge deterministisch: Archetypen in Erzeugungsreihenfolge, darin dichte Reihenfolge;
   Despawn per Swap-Remove verändert sie, aber reproduzierbar.
 - Doppelter mutabler Zugriff auf denselben Komponententyp in einer Query → Panic beim Erzeugen der Query mit klarer Meldung.
-- `stable_hash` speist: Entity-Allokator (Generationen, Freiliste in Reihenfolge), je Archetyp die Komponenten-IDs,
-  Entities und Komponentendaten in dichter Reihenfolge, Ressourcen in Registrierungsreihenfolge mit Präsenz-Tag.
+  Ebenso gleichzeitiger mutabler und lesender Zugriff (z. B. `(&mut Pos, &Pos)`); mehrfaches Lesen ist erlaubt.
+- Entity-Allokator: freie Slots werden in Freigabereihenfolge wiederverwendet (FIFO, ältester zuerst), mit um 1
+  erhöhter Generation; ein Slot, dessen Generation `u32::MAX` überschreiten würde, wird stillgelegt.
+- `spawn` mit doppeltem Komponententyp im Bundle → Panic. Entfernen der letzten Komponente lässt die Entity
+  im komponentenlosen Archetyp am Leben.
+- `stable_hash` speist in dieser Reihenfolge: Entity-Allokator (Slot-Anzahl; je Slot Generation und Lebend-Flag;
+  Freiliste in Wiederverwendungsreihenfolge), Anzahl registrierter Komponententypen, Archetypen in
+  Erzeugungsreihenfolge (Komponenten-IDs, Entities und Komponentendaten in dichter Reihenfolge), Ressourcen-Slots in
+  Registrierungsreihenfolge mit Präsenz-Tag (ein entfernter Typ behält seinen Slot).
   Typen werden über ihre Registrierungsnummer identifiziert, nie über `TypeId`.
-- `restore` stellt den vollständigen Zustand her (inkl. Allokator und Ressourcen); danach ist
+- `restore` stellt den vollständigen Zustand her (inkl. Allokator, Registries und Ressourcen); danach ist
   `stable_hash` identisch zum Snapshot-Zeitpunkt und gleiche Operationen liefern gleiche Entity-IDs.
-- Filter `With<T>`/`Without<T>` sind wünschenswert (Should).
+- `CommandBuffer::apply` wendet Befehle in Aufzeichnungsreihenfolge an; Befehle auf nicht lebende Entities
+  werden übersprungen.
+- Filter `With<T>`/`Without<T>` sind als Tupel-Elemente mit `Item = ()` umgesetzt.
+- `EcsError` implementiert `Display`/`Error` vorerst von Hand, weil `grimoire_ecs/Cargo.toml` kein `thiserror`
+  deklariert; der Umstieg auf `thiserror` ändert die API nicht.
 - Leistung: Query über 10.000 Entities mit zwei Komponenten ohne Allokation pro Entity.
 
 ## 8. `grimoire_sim`
