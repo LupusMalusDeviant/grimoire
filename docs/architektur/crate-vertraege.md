@@ -176,37 +176,65 @@ pub enum EcsError;            // #[non_exhaustive]; NoSuchEntity(Entity); Displa
 ```rust
 pub struct Tick(pub u64);                         // Resource: Index des laufenden Ticks (erster Schritt: 0)
 pub struct SimSeed(pub u64);                      // Resource
+                                                  // beide: Copy, Default, Eq, Ord, Hash, Debug, StableHash
 pub struct FixedTimestep;                         // new(tick_rate_hz: u32) (Panic bei 0),
-                                                  // with_max_ticks_per_frame(u32) (Default 8), tick_rate_hz(),
-                                                  // tick_duration() -> Duration, advance(Duration) -> StepPlan,
-                                                  // dropped_time() -> Duration, reset()
-pub struct StepPlan { pub ticks: u32, pub alpha: f32 }   // alpha ∈ [0, 1): nur fürs Rendering
-pub struct SimRng;                                // Clone, PartialEq, Debug, StableHash; eigener Algorithmus, dokumentiert
+                                                  // with_max_ticks_per_frame(u32) (Default 8, Panic bei 0),
+                                                  // tick_rate_hz(), max_ticks_per_frame(),
+                                                  // tick_duration() -> Duration (auf ns abgeschnitten),
+                                                  // advance(Duration) -> StepPlan, dropped_time() -> Duration, reset()
+                                                  // Clone, Debug, Eq
+pub struct StepPlan { pub ticks: u32, pub alpha: f32 }   // alpha ∈ [0, 1): nur fürs Rendering; Copy, Default, Debug
+pub struct SimRng;                                // Clone, Eq, Debug, StableHash; ALGORITHM_VERSION = 1
                                                   // new(seed), next_u32, next_u64, next_f32 ∈ [0,1),
                                                   // range_u32(low, high) (unverzerrt, high exklusiv), range_i32, range_f32, chance(p)
 pub fn derive_rng(seed: u64, tick: u64, stream: u64) -> SimRng;   // reihenfolgeunabhängige Ströme je Tick
 pub const MAX_INPUT_SLOTS: usize = 4;
-pub struct InputFrame { pub axes: [i16; 4], pub buttons: u32 }    // Copy, Default, Eq, StableHash
+pub struct InputFrame { pub axes: [i16; 4], pub buttons: u32 }    // Copy, Default, Eq, Debug, StableHash
                                                   // axis(i) -> f32 ∈ [-1, 1], is_pressed(bit: u8) -> bool
-pub struct TickInput { pub slots: [InputFrame; MAX_INPUT_SLOTS] } // Copy, Default, Eq, StableHash, Resource
+pub struct TickInput { pub slots: [InputFrame; MAX_INPUT_SLOTS] } // Copy, Default, Eq, Debug, StableHash, Resource
 pub struct InputLog { pub seed: u64, pub tick_rate_hz: u32, pub frames: Vec<TickInput> }
-                                                  // to_bytes() / from_bytes() -> Result<_, SimError>
+                                                  // MAGIC, FORMAT_VERSION, to_bytes() -> Vec<u8>,
+                                                  // from_bytes(&[u8]) -> Result<InputLog, SimError>; Clone, Eq, Debug
 pub struct Simulation;                            // new(seed), seed(), tick(), world(), world_mut(), schedule_mut(),
                                                   // step(&mut self, input: TickInput), state_hash() -> u64,
-                                                  // snapshot() -> SimSnapshot, restore(&SimSnapshot)
+                                                  // snapshot() -> SimSnapshot, restore(&SimSnapshot); Debug
+pub struct SimSnapshot;                           // Clone, Debug; tick(), seed()
 pub fn replay(sim: &mut Simulation, log: &InputLog, hash_every: u64) -> Vec<(u64, u64)>;
-pub enum SimError;
+pub enum SimError;                                // #[non_exhaustive], thiserror: UnexpectedEnd { offset, needed, available },
+                                                  // BadMagic, UnsupportedVersion(u32), InvalidTickRate,
+                                                  // FrameDataLength { frames, remaining }
 ```
 
 **Semantik:**
 - `FixedTimestep` akkumuliert exakt ganzzahlig in Einheiten `Nanosekunden × tick_rate_hz`
-  (ein Tick = 10⁹ Einheiten) — keine Drift. Mehr als `max_ticks_per_frame` Ticks werden verworfen und in `dropped_time` gezählt.
+  (ein Tick = 10⁹ Einheiten, intern `u128`, sättigend) — keine Drift. Mehr als `max_ticks_per_frame` fällige
+  ganze Ticks werden verworfen und in `dropped_time` gezählt (exakt summiert, erst bei der Abfrage auf ns
+  abgeschnitten); der Bruchteil bleibt erhalten. `alpha` = Bruchteil / 10⁹, auf den größten `f32` unter 1 begrenzt.
+- `SimRng` Version 1: PCG32 XSH-RR 64/32 (O'Neill, Referenz `pcg32_random_r`). `new(seed)` setzt
+  `initstate = splitmix64(seed)`, `initseq = splitmix64(seed + γ)` und seedet wie `pcg32_srandom_r`.
+  `next_u64` = `(next_u32 << 32) | next_u32`; `next_f32` = obere 24 Bits × 2⁻²⁴; `range_u32`/`range_i32` nach
+  Lemire (Multiplikation mit Verwerfen); `range_f32` liefert nie `high`; `chance(p)` = `next_f32() < p` und
+  verbraucht immer genau einen `next_u32`. Leere oder ungültige Bereiche (`low >= high`, nicht endliche
+  Spannweite) → Panic.
+- `derive_rng(seed, tick, stream)` = `SimRng::new(splitmix64(splitmix64(splitmix64(seed) ^ tick) ^ stream))`,
+  reine Funktion der Argumente.
 - `Simulation::new` legt `Tick(0)`, `SimSeed(seed)` und `TickInput::default()` als Ressourcen an.
-  `step`: `TickInput`-Ressource setzen → Schedule ausführen → `Tick` erhöhen.
-- `state_hash` = Hash über Tick, Seed und `World::stable_hash`.
-- Achsen sind auf ±32767 normiert; `axis(i)` teilt durch `32767.0` (exakt, deterministisch).
-- Replay-Binärformat: Magic `b"GRIMREPL"`, `u32` Version 1, danach Little-Endian-Felder; fehlerhafte
-  Eingaben liefern `SimError`, niemals Panic.
+  `step`: `Tick`, `SimSeed` und `TickInput` setzen → Schedule ausführen → Tick erhöhen und `Tick` erneut setzen.
+  Tick und Seed gehören der Simulation; Änderungen durch Systeme werden überschrieben. Systeme halten
+  simulationsrelevanten Zustand ausschließlich in der Welt (Closure-Zustand ist nicht snapshot-/hashbar).
+- `state_hash` speist in einen frischen `StableHasher`: Tick (`u64`), Seed (`u64`), dann `World::stable_hash`.
+- `snapshot`/`restore` umfassen Welt, Tick und Seed, nicht den Schedule.
+- `replay` führt je Frame einen `step` aus und notiert `(tick, state_hash)` nach jedem Schritt mit
+  `tick % hash_every == 0` sowie immer den Endzustand (ohne Duplikat; `hash_every == 0` → nur Endzustand;
+  leeres Log → aktueller Zustand). Der Seed wird nicht geprüft; der Aufrufer baut die Simulation mit `log.seed`.
+- Achsen sind auf ±32767 normiert; `axis(i)` teilt durch `32767.0` (exakt, deterministisch), `-32768` ergibt
+  `-1.0`. `axis(i >= 4)` → `0.0`, `is_pressed(bit >= 32)` → `false`, nie Panic.
+- Replay-Binärformat Version 1, Little-Endian: Magic `b"GRIMREPL"` (8), Version `u32`, `seed: u64`,
+  `tick_rate_hz: u32` (≠ 0), Frame-Anzahl `u64`, dann je Frame 4 Slots zu je 4 × `i16` Achsen + `u32` Buttons
+  (48 Byte). Die Nutzlast muss exakt `Anzahl × 48` Byte lang sein (keine Rest-Bytes). Fehlerhafte Eingaben
+  liefern `SimError`, niemals Panic; die Anzahl wird vor jeder Allokation gegen die Eingabelänge geprüft.
+- Determinismus-Gate: `tests/determinism.rs` (≥ 2 000 Entities, 10 000 Ticks) mit goldenem Endhash; Erneuerung
+  nur bei bewusster Änderung von Szenario, Hash-Layout oder RNG-/Hash-Algorithmusversion.
 
 ## 9. `grimoire` — Fassade (Integration nach dem Zusammenführen)
 
