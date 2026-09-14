@@ -159,7 +159,9 @@ den Offscreen-Test `failed_resize_is_returned_from_every_render_until_a_resize_s
 **GPU-Tests ohne Adapter (Ergänzung P0):** Die Meldung beim Überspringen ist eine GitHub-Actions-Warnung
 (`::warning::`), die direkt auf stdout geschrieben wird, damit die Ausgabeerfassung von libtest sie nicht
 verschluckt. Mit `GRIMOIRE_REQUIRE_GPU_ADAPTER=1` (oder `true`) scheitern die Tests stattdessen. Die CI setzt
-die Variable unter Windows (WARP) und Linux (lavapipe); macOS-Runner dürfen ohne Metal überspringen.
+die Variable unter Windows (WARP) und Linux (lavapipe); macOS-Runner dürfen ohne Metal überspringen. Dort läuft
+außerdem ein zweiter Schritt `cargo test -p grimoire_render --test offscreen` mit `GRIMOIRE_GPU_ADAPTER=software`,
+der den erzwungenen CPU-Adapter der lokalen Testläufe belegt.
 
 ## 7. `grimoire_ecs`
 

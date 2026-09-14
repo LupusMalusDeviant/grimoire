@@ -122,6 +122,14 @@ jobs:
         env:
           GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
         run: cargo test --workspace --locked --no-fail-fast
+      # Local test runs force the CPU adapter; prove that path (WARP on Windows, lavapipe on Linux).
+      # macOS has no CPU adapter.
+      - name: Test offscreen rendering on the CPU adapter
+        if: runner.os != 'macOS'
+        env:
+          GRIMOIRE_GPU_ADAPTER: software
+          GRIMOIRE_REQUIRE_GPU_ADAPTER: "1"
+        run: cargo test -p grimoire_render --test offscreen --locked
       # Examples open windows: build them, never run them in CI.
       - name: Build examples
         run: cargo build --workspace --examples --locked
