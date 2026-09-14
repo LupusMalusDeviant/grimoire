@@ -162,7 +162,7 @@ impl FixedTimestep {
         // The remainder is below 10⁹, so both conversions are exact; only the final narrowing
         // can round up to 1.0, which the clamp excludes.
         let fraction = self.accumulator as f64 / UNITS_PER_TICK as f64;
-        (fraction as f32).min(1.0f32.next_down())
+        grimoire_core::math::dmath::min(fraction as f32, 1.0f32.next_down())
     }
 }
 

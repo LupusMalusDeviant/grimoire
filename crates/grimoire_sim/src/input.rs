@@ -27,9 +27,9 @@ impl InputFrame {
     /// Returns `0.0` for `index >= 4`; never panics.
     #[must_use]
     pub fn axis(&self, index: usize) -> f32 {
-        self.axes
-            .get(index)
-            .map_or(0.0, |&value| (f32::from(value) / AXIS_SCALE).max(-1.0))
+        self.axes.get(index).map_or(0.0, |&value| {
+            grimoire_core::math::dmath::max(f32::from(value) / AXIS_SCALE, -1.0)
+        })
     }
 
     /// Whether button `bit` is held.
