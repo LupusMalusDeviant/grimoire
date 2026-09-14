@@ -89,14 +89,15 @@ jobs:
         env:
           # WARP (Windows) and lavapipe (Linux) guarantee an adapter; macOS may skip with a warning.
           GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
-        run: cargo test --workspace --release --locked
+        # --no-fail-fast: a red test binary must not stop the probes and golden tests after it.
+        run: cargo test --workspace --release --locked --no-fail-fast
       - name: Upload float probe
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: float-probe-release-${{ matrix.os }}
           path: target/float-probe/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   float-compare:
@@ -117,5 +118,8 @@ jobs:
           # Flat layout for any number of matches (a single match is never nested).
           merge-multiple: true
           path: float-probe
-      - name: Compare std-trig hashes across operating systems
+      - name: Compare float probes across operating systems
+        env:
+          # Missing core probes fail the comparison only if every test job succeeded.
+          TESTS_RESULT: ${{ needs.test-release.result }}
         run: bash .github/scripts/compare-float-probes.sh float-probe "Release-Build (Nightly)"

@@ -116,10 +116,12 @@ jobs:
       # rust-cache restores target/; drop probes from older runs so the artifact is this run's.
       - name: Remove stale float probes
         run: rm -rf target/float-probe
+      # --no-fail-fast: a red test binary must not stop the float probes and golden tests of the
+      # binaries after it (engine ADR 0004).
       - name: Test
         env:
           GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
       # Examples open windows: build them, never run them in CI.
       - name: Build examples
         run: cargo build --workspace --examples --locked
@@ -129,7 +131,7 @@ jobs:
         with:
           name: float-probe-${{ matrix.os }}
           path: target/float-probe/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   float-compare:
@@ -152,5 +154,10 @@ jobs:
           # Flat layout for any number of matches (a single match is never nested).
           merge-multiple: true
           path: float-probe
-      - name: Compare std-trig hashes across operating systems
+      - name: Self-test the float probe comparison
+        run: bash .github/scripts/test-compare-float-probes.sh
+      - name: Compare float probes across operating systems
+        env:
+          # Missing core probes fail the comparison only if every test job succeeded.
+          TESTS_RESULT: ${{ needs.test.result }}
         run: bash .github/scripts/compare-float-probes.sh float-probe "Debug-Build"

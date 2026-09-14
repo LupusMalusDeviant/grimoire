@@ -74,7 +74,8 @@ jobs:
       - name: Test
         env:
           GRIMOIRE_REQUIRE_GPU_ADAPTER: "1"
-        run: cargo test --workspace --locked
+        # --no-fail-fast: every golden verdict is reported, not only the first red binary's.
+        run: cargo test --workspace --locked --no-fail-fast
 
   release:
     name: GitHub release
