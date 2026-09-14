@@ -21,7 +21,7 @@ mod offscreen;
 mod readback;
 mod surface;
 
-pub use context::{ContextOptions, GpuContext};
+pub use context::{AdapterOverride, ContextOptions, ENV_GPU_ADAPTER, GpuContext};
 pub use error::GpuError;
 pub use offscreen::{OFFSCREEN_FORMAT, OffscreenTarget};
 pub use readback::{padded_bytes_per_row, strip_row_padding};

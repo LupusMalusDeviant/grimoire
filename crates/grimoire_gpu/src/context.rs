@@ -10,6 +10,59 @@ use grimoire_platform::raw_window_handle::{DisplayHandle, HandleError, HasDispla
 use crate::error::GpuError;
 use crate::surface::WindowSurface;
 
+/// Environment variable forcing the adapter kind of every context created in the process.
+///
+/// `software` (or `cpu`) restricts the instance to the backend that offers the platform's CPU
+/// adapter (WARP via DX12 on Windows, lavapipe via Vulkan on Linux) and accepts only an adapter of
+/// type CPU, so no rendering work reaches a hardware GPU. `auto` keeps the behaviour of
+/// [`ContextOptions`]. Unset or invalid values mean `auto`.
+pub const ENV_GPU_ADAPTER: &str = "GRIMOIRE_GPU_ADAPTER";
+
+#[cfg(windows)]
+const SOFTWARE_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
+#[cfg(all(unix, not(target_vendor = "apple")))]
+const SOFTWARE_BACKENDS: wgpu::Backends = wgpu::Backends::VULKAN;
+#[cfg(not(any(windows, all(unix, not(target_vendor = "apple")))))]
+const SOFTWARE_BACKENDS: wgpu::Backends = wgpu::Backends::all();
+
+/// Adapter kind forced through [`ENV_GPU_ADAPTER`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AdapterOverride {
+    /// Follow [`ContextOptions`].
+    #[default]
+    Auto,
+    /// Use a CPU adapter only; fail with [`GpuError::NoAdapter`] if there is none.
+    Software,
+}
+
+impl AdapterOverride {
+    /// Parses `auto`, `software` or `cpu` (case-insensitive).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "software" | "cpu" => Some(Self::Software),
+            _ => None,
+        }
+    }
+
+    /// Reads [`ENV_GPU_ADAPTER`] from the process environment.
+    #[must_use]
+    pub fn from_env() -> Self {
+        std::env::var(ENV_GPU_ADAPTER)
+            .ok()
+            .as_deref()
+            .and_then(Self::parse)
+            .unwrap_or_default()
+    }
+
+    fn restrict_backends(self, descriptor: &mut wgpu::InstanceDescriptor) {
+        if self == Self::Software {
+            descriptor.backends = SOFTWARE_BACKENDS;
+        }
+    }
+}
+
 /// Adapter selection parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextOptions {
@@ -69,19 +122,29 @@ impl fmt::Debug for GpuContext {
 impl GpuContext {
     /// Creates a context without any window, for offscreen rendering and tests.
     ///
+    /// Honours [`ENV_GPU_ADAPTER`].
+    ///
     /// # Errors
     /// [`GpuError::NoAdapter`] if no adapter exists, [`GpuError::RequestDevice`] if the device
     /// cannot be created.
     pub fn new_offscreen(options: ContextOptions) -> Result<Self, GpuError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        pollster::block_on(Self::from_instance(instance, None, options))
+        let adapter_override = AdapterOverride::from_env();
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        adapter_override.restrict_backends(&mut descriptor);
+        let instance = wgpu::Instance::new(descriptor);
+        pollster::block_on(Self::from_instance(
+            instance,
+            None,
+            options,
+            adapter_override,
+        ))
     }
 
     /// Creates a context and a configured surface presenting to `window`.
     ///
     /// The adapter is chosen to be compatible with the window surface. If the window currently
     /// has an empty size, the surface stays unconfigured until [`WindowSurface::resize`] is called
-    /// with a valid size.
+    /// with a valid size. Honours [`ENV_GPU_ADAPTER`].
     ///
     /// # Errors
     /// [`GpuError::CreateSurface`] if the window handles are unusable, [`GpuError::NoAdapter`] if
@@ -96,13 +159,20 @@ impl GpuContext {
         window: Arc<dyn PlatformWindow>,
         options: ContextOptions,
     ) -> Result<(Self, WindowSurface), GpuError> {
-        let descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
+        let adapter_override = AdapterOverride::from_env();
+        let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
             WindowDisplay(Arc::clone(&window)),
         ));
+        adapter_override.restrict_backends(&mut descriptor);
         let instance = wgpu::Instance::new(descriptor);
         // The surface owns an `Arc` of the window, so the handles outlive the surface.
         let surface = instance.create_surface(Arc::clone(&window))?;
-        let context = pollster::block_on(Self::from_instance(instance, Some(&surface), options))?;
+        let context = pollster::block_on(Self::from_instance(
+            instance,
+            Some(&surface),
+            options,
+            adapter_override,
+        ))?;
         let surface = WindowSurface::new(surface, window, &context, options.vsync)?;
         Ok((context, surface))
     }
@@ -111,6 +181,7 @@ impl GpuContext {
         instance: wgpu::Instance,
         surface: Option<&wgpu::Surface<'static>>,
         options: ContextOptions,
+        adapter_override: AdapterOverride,
     ) -> Result<Self, GpuError> {
         let power_preference = if options.high_performance {
             wgpu::PowerPreference::HighPerformance
@@ -119,18 +190,29 @@ impl GpuContext {
         };
         let mut request = wgpu::RequestAdapterOptions {
             power_preference,
-            force_fallback_adapter: false,
+            force_fallback_adapter: adapter_override == AdapterOverride::Software,
             compatible_surface: surface,
             apply_limit_buckets: false,
         };
-        let adapter = match instance.request_adapter(&request).await {
-            Ok(adapter) => adapter,
-            Err(hardware_error) if options.allow_software_fallback => {
+        let adapter = match (adapter_override, instance.request_adapter(&request).await) {
+            (AdapterOverride::Software, Ok(adapter)) => {
+                let info = adapter.get_info();
+                if info.device_type != wgpu::DeviceType::Cpu {
+                    return Err(GpuError::NoAdapter(format!(
+                        "{ENV_GPU_ADAPTER}=software, but the fallback adapter \"{}\" is a {:?} device",
+                        info.name, info.device_type
+                    )));
+                }
+                adapter
+            }
+            (AdapterOverride::Software, Err(error)) => return Err(error.into()),
+            (AdapterOverride::Auto, Ok(adapter)) => adapter,
+            (AdapterOverride::Auto, Err(hardware_error)) if options.allow_software_fallback => {
                 log::warn!("no hardware GPU adapter ({hardware_error}); trying software fallback");
                 request.force_fallback_adapter = true;
                 instance.request_adapter(&request).await?
             }
-            Err(error) => return Err(error.into()),
+            (AdapterOverride::Auto, Err(error)) => return Err(error.into()),
         };
 
         let info = adapter.get_info();
@@ -241,5 +323,40 @@ impl GpuContext {
             Some(error) => Err(error.into()),
             None => Ok(value),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_adapter_overrides() {
+        assert_eq!(
+            AdapterOverride::parse("software"),
+            Some(AdapterOverride::Software)
+        );
+        assert_eq!(
+            AdapterOverride::parse(" CPU "),
+            Some(AdapterOverride::Software)
+        );
+        assert_eq!(AdapterOverride::parse("Auto"), Some(AdapterOverride::Auto));
+        assert_eq!(AdapterOverride::parse("gpu"), None);
+        assert_eq!(AdapterOverride::parse(""), None);
+    }
+
+    #[test]
+    fn software_override_restricts_the_instance_to_the_cpu_adapter_backend() {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        AdapterOverride::Software.restrict_backends(&mut descriptor);
+        assert_eq!(descriptor.backends, SOFTWARE_BACKENDS);
+    }
+
+    #[test]
+    fn auto_override_keeps_the_default_backends() {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        let default_backends = descriptor.backends;
+        AdapterOverride::Auto.restrict_backends(&mut descriptor);
+        assert_eq!(descriptor.backends, default_backends);
     }
 }
