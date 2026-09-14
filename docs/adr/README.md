@@ -11,8 +11,9 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 |-----|--------------|
 | [0001](0001-winit-als-fenster-schicht.md) | winit als Fenster- und Event-Schicht |
 | [0002](0002-gpu-kapselungsgrenze.md) | Kapselungsgrenze für wgpu |
-| [0003](0003-scheduler-single-threaded.md) | Single-threaded, streng geordneter Scheduler mit Migrationspfad |
+| [0003](0003-scheduler-single-threaded.md) | Single-threaded, streng geordneter Scheduler mit Migrationspfad (abgelehnt, ersetzt durch 0006) |
 | [0004](0004-deterministische-gleitkommaarithmetik.md) | Deterministische Gleitkommaarithmetik |
 | [0005](0005-grimoire-core-als-blatt-crate.md) | `grimoire_core` als abhängigkeitsfreie Blatt-Crate |
+| [0006](0006-paralleler-scheduler-deterministische-zusammenfuehrung.md) | Paralleler Scheduler mit deterministischer Zusammenführung |
 
 Den aktuellen Status jeder Entscheidung nennt ihre Datei.

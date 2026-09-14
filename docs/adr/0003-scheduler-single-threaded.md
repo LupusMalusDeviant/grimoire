@@ -1,6 +1,7 @@
 # ADR-0003: Single-threaded, strikt geordneter Scheduler mit Migrationspfad zur Parallelität
 
-- **Status:** Vorgeschlagen
+- **Status:** Abgelehnt (2026-09-14; der PO wählte „Parallel von Anfang an“)
+- **Ersetzt durch:** [0006-paralleler-scheduler-deterministische-zusammenfuehrung.md](0006-paralleler-scheduler-deterministische-zusammenfuehrung.md)
 - **Datum:** 2026-09-14
 - **Entscheider:** Lupus Malus Deviant (PO), vorbereitet durch Claude
 - **Bezug:** Spiel-Repo PRD-0002 (FR-08, offene Frage OF-2.2), ADR-0004 (eigenes ECS), ADR-0005 (voll deterministische Simulation), Plan 0001 WP5.2/WP6.2, `docs/architektur/crate-vertraege.md` §7
