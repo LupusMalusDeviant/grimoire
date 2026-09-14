@@ -26,6 +26,9 @@ enum Call {
     WindowCreated {
         plugin: &'static str,
     },
+    Shutdown {
+        plugin: &'static str,
+    },
 }
 
 type Log = Rc<RefCell<Vec<Call>>>;
@@ -69,6 +72,27 @@ impl GamePlugin for Recorder {
             .borrow_mut()
             .push(Call::WindowCreated { plugin: self.name });
     }
+
+    fn shutdown(&mut self) {
+        self.log
+            .borrow_mut()
+            .push(Call::Shutdown { plugin: self.name });
+    }
+}
+
+/// Asserts that the log ends with one `shutdown` per plugin in registration order and that no
+/// other `shutdown` call occurred.
+fn assert_shut_down_once_in_order(calls: &[Call]) {
+    let shutdowns = calls
+        .iter()
+        .filter(|call| matches!(call, Call::Shutdown { .. }))
+        .count();
+    assert_eq!(shutdowns, NAMES.len(), "shutdown runs once per plugin");
+    let expected: Vec<Call> = NAMES
+        .iter()
+        .map(|&plugin| Call::Shutdown { plugin })
+        .collect();
+    assert_eq!(calls[calls.len() - NAMES.len()..], expected[..]);
 }
 
 const NAMES: [&str; 3] = ["first", "second", "third"];
@@ -117,7 +141,8 @@ fn frame_loop_builds_once_in_order_then_extracts_and_reports_every_frame() {
         "headless runs have no window"
     );
 
-    let per_frame = &calls[NAMES.len()..];
+    assert_shut_down_once_in_order(&calls);
+    let per_frame = &calls[NAMES.len()..calls.len() - NAMES.len()];
     assert_eq!(per_frame.len(), FRAMES * 2 * NAMES.len());
     let mut last_tick = 0;
     for (frame, chunk) in per_frame.chunks(2 * NAMES.len()).enumerate() {
@@ -174,11 +199,16 @@ fn max_frames_ends_the_frame_loop() {
         .run_headless_frames(100, Duration::from_millis(16))
         .expect("headless frame loop runs");
     assert_eq!(report.frames, 5);
+    assert_shut_down_once_in_order(&log.borrow());
 
-    let none = app_with_recorders(&Log::default())
+    let log = Log::default();
+    let none = app_with_recorders(&log)
         .max_frames(0)
         .run_headless_frames(100, Duration::from_millis(16))
         .expect("headless frame loop runs");
     assert_eq!(none.frames, 0);
     assert_eq!(none.final_tick, 0);
+    let calls = log.borrow();
+    assert_eq!(calls.len(), 2 * NAMES.len(), "only build and shutdown ran");
+    assert_shut_down_once_in_order(&calls);
 }

@@ -20,6 +20,8 @@
 //!    while frames keep going unpresented; any other render error ends the run with that error.
 //! 4. Every plugin receives the [`FrameStats`].
 //!
+//! When the loop ends, every plugin receives [`GamePlugin::shutdown`] once, in registration order.
+//!
 //! The clock is read only by the loop, never by the simulation, so the same seed and the same
 //! per-tick input give the same state hashes on the desktop, in the frame loop and in
 //! [`AppBuilder::run_headless`].

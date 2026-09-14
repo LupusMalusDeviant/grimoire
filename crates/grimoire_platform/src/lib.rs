@@ -15,6 +15,9 @@
 //! 4. [`AppHandler::shutdown`] exactly once when the loop ends (exit requested or window closed),
 //!    but only if `init` succeeded. A failed `init` ends the run with [`PlatformError::AppInit`].
 //!
+//! `shutdown` is the only end-of-run hook that is guaranteed: on macOS, Cmd+Q ends the process
+//! right after it, so [`run_desktop`] does not return there and no `CloseRequested` event arrives.
+//!
 //! On desktop, [`PlatformContext::request_exit`] is honoured after every callback; no further
 //! `event` or `frame` call follows it. Wheel deltas reported in pixels are converted to lines at
 //! 40 logical pixels per line.

@@ -281,6 +281,17 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             ctx.request_exit();
         }
     }
+
+    fn shutdown(&mut self) {
+        // Plugins are built only after the renderer exists, together with `running`.
+        if self.running.is_none() {
+            return;
+        }
+        for plugin in &mut self.plugins {
+            log::debug!("shutting down plugin {}", plugin.name());
+            plugin.shutdown();
+        }
+    }
 }
 
 /// Feeds scripted platform events to a loop before each frame, for headless runs.
@@ -512,13 +523,41 @@ mod tests {
         assert_eq!(report.map(|report| report.frames), Some(3));
     }
 
+    /// Counts `build` and `shutdown` calls.
+    #[derive(Default)]
+    struct Lifecycle(Rc<RefCell<(u32, u32)>>);
+
+    impl GamePlugin for Lifecycle {
+        fn name(&self) -> &str {
+            "lifecycle"
+        }
+
+        fn build(&mut self, _sim: &mut Simulation) {
+            self.0.borrow_mut().0 += 1;
+        }
+
+        fn shutdown(&mut self) {
+            self.0.borrow_mut().1 += 1;
+        }
+    }
+
     #[test]
-    fn renderer_creation_failure_is_kept_and_skips_build() {
+    fn renderer_creation_failure_is_kept_and_skips_build_and_shutdown() {
         let outcome = Outcome::default();
         let factory: RendererFactory<ScriptedRenderer> =
             Box::new(|_| Err(RenderError::NoAdapter.into()));
-        let mut game_loop = GameLoop::new(settings(), Vec::new(), factory, Rc::clone(&outcome));
+        let plugin = Lifecycle::default();
+        let counts = Rc::clone(&plugin.0);
+        let mut game_loop = GameLoop::new(
+            settings(),
+            vec![Box::new(plugin)],
+            factory,
+            Rc::clone(&outcome),
+        );
         let error = run_headless(&mut game_loop, 5, Duration::from_millis(16)).unwrap_err();
+        // A runner never calls `shutdown` after a failed `init`; the loop must not act on one.
+        game_loop.shutdown();
+        assert_eq!(*counts.borrow(), (0, 0), "neither build nor shutdown ran");
         assert!(matches!(
             error,
             grimoire_platform::PlatformError::AppInit(_)

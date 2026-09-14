@@ -103,7 +103,14 @@ Sobald das Fenster wieder sichtbar ist oder ein Frame präsentiert, gilt wieder 
 **Lebenszyklus:** `init` genau einmal (Desktop: nachdem das Fenster existiert) → Events stets vor dem
 nächsten Frame → `frame` fortlaufend → `shutdown` genau einmal nach erfolgreichem `init`.
 Schlägt `init` fehl, endet der Lauf mit `PlatformError::AppInit` ohne `shutdown`.
-`CloseRequested` wird an die App zugestellt, danach endet die Schleife.
+Schließt der Nutzer das Fenster, wird `CloseRequested` an die App zugestellt, danach endet die Schleife.
+
+**Beenden unter macOS (Ergänzung P0):** Das Standardmenü von winit 0.30 schickt bei „Beenden" (Cmd+Q)
+`terminate:` an AppKit. winit beendet die Schleife dann in `applicationWillTerminate:` (`exiting` →
+`shutdown`), danach ruft AppKit `exit()` auf. `run_desktop` kehrt in diesem Fall nicht zurück, `CloseRequested`
+wird nicht zugestellt, Destruktoren von App, Renderer und Plugins laufen nicht, und Code nach dem Aufruf entfällt.
+`AppHandler::shutdown` ist deshalb der einzige garantierte Haken am Laufende; Fehler darin werden geloggt, weil
+niemand einen Rückgabewert liest.
 
 **Umgesetzt:**
 - `run_desktop` mit `winit` 0.30 (`ApplicationHandler`): Fenster in `resumed` genau einmal erzeugen,
@@ -300,6 +307,7 @@ pub trait GamePlugin {
     fn extract(&mut self, world: &World, alpha: f32, frame: &mut RenderFrame) {}  // nur lesend
     fn on_frame(&mut self, stats: &FrameStats) {}                                 // reine Präsentation
     fn window_created(&mut self, window: &Arc<dyn PlatformWindow>) {}             // nur Desktop, z. B. für den Fenstertitel
+    fn shutdown(&mut self) {}                                                     // Laufende; einziger garantierter End-Haken
 }
 pub struct App;              // App::new(WindowConfig) -> AppBuilder; Debug, Clone, Copy
 pub struct AppBuilder;       // seed(u64) (Default 0), tick_rate(u32) (Default 60, Panic bei 0),
@@ -352,6 +360,11 @@ pub use grimoire_{core, ecs, platform, render, sim} as {core, ecs, platform, ren
   bleiben), `extract` je Plugin mit `alpha`, `render`. `RenderError::SurfaceLost` → Frame gilt als gerendert mit
   `RenderStats::default()` und wird per `ctx.frame_not_presented()` gemeldet, nächster Frame versucht es erneut; jeder andere Render-Fehler wird geloggt und beendet
   den Lauf mit diesem Fehler (ohne `on_frame`). Dann `FrameStats` und `on_frame` je Plugin.
+- `shutdown` (vom Runner genau einmal nach erfolgreichem `init`): `GamePlugin::shutdown` je Plugin genau einmal
+  in Registrierungsreihenfolge, auch wenn ein Render-Fehler oder `max_frames(0)` den Lauf beendet hat. Konnte der
+  Renderer nicht erzeugt werden, laufen weder `build` noch `shutdown`. Weil `run` unter macOS nach Cmd+Q nicht
+  zurückkehrt (Abschnitt 5), ist das der einzige garantierte Haken für Arbeit am Laufende; Plugins loggen Fehler
+  darin, statt sie zurückzugeben. `run_headless` ruft `shutdown` nie auf.
 - `fps` = Frames / Dauer des letzten abgeschlossenen Messfensters von mindestens 1 s; `0.0` bis dahin.
 - `frame` in `FrameStats` ist der 0-basierte Frame-Index, `sim_tick` der Tick-Zähler nach den Ticks des Frames.
 
@@ -378,14 +391,13 @@ Tests nicht zur Laufzeit geprüft; die Weiterleitung von `Resized` an `Renderer:
 `SurfaceLost` prüfen Unit-Tests der Hauptschleife mit einem Test-Renderer.
 
 **Bewusste Einengung von PRD-0002 FR-14 in P0:** FR-14 nennt die Plugin-Phasen init, fixed_update, render_extract
-und shutdown. P0 liefert `build` (init), `extract` (render_extract), `on_frame` und `window_created`; `fixed_update`
-und `shutdown` fehlen, und Plugins erhalten nach `build` weder `&mut Simulation` noch das `TickInput` eines Ticks.
+und shutdown. P0 liefert `build` (init), `extract` (render_extract), `on_frame`, `window_created` und `shutdown`;
+`fixed_update` fehlt, und Plugins erhalten nach `build` weder `&mut Simulation` noch das `TickInput` eines Ticks.
 Folgen: Die Frame-Schleife zeichnet kein `InputLog` auf (`LoopReport` enthält keine Eingaben), ein Fensterlauf ist
 daher nicht als Replay speicherbar (PRD-0002 FR-07, PRD-0013 FR-02/US-03); reproduzierbar ist nur `run_headless` mit
 seiner Eingabequelle. Rewind über `Simulation::snapshot`/`restore` (FR-06) ist aus der Fassade nicht steuerbar.
 Geplant (Signaturen nicht bindend) sind Default-Methoden, die bestehende Plugins nicht brechen: ein Hook nach jedem
-`step` in beiden Schleifen mit Simulation und `TickInput` (fixed_update), ein `shutdown` am Ende des Laufs und eine
-optionale Eingabeaufzeichnung (etwa `AppBuilder::record_input` mit `LoopReport::input_log: Option<InputLog>`) samt
+`step` in beiden Schleifen mit Simulation und `TickInput` (fixed_update) und eine optionale Eingabeaufzeichnung (etwa `AppBuilder::record_input` mit `LoopReport::input_log: Option<InputLog>`) samt
 Test, der das Log per `replay` gegen `hashes` prüft. Sie kommen, sobald ein Fensterlauf als Replay gespeichert
 werden soll, spätestens mit dem Rewind-Spike in P2 (PRD-0002 OF-2.3).
 

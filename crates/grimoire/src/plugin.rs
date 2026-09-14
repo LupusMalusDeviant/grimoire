@@ -15,6 +15,7 @@ use grimoire_sim::Simulation;
 /// 2. [`GamePlugin::window_created`] once per plugin on the desktop, after the renderer exists.
 /// 3. Per frame: all simulation ticks due, then [`GamePlugin::extract`] for every plugin in
 ///    registration order, rendering, then [`GamePlugin::on_frame`] for every plugin.
+/// 4. [`GamePlugin::shutdown`] once per plugin, in registration order, when the frame loop ends.
 ///
 /// Only `build` may shape simulation state (components, resources, systems, initial entities);
 /// the other hooks are presentation and must not influence it, or runs stop being reproducible.
@@ -48,6 +49,16 @@ pub trait GamePlugin {
     fn window_created(&mut self, window: &Arc<dyn PlatformWindow>) {
         let _ = window;
     }
+
+    /// Called once when the frame loop of [`crate::AppBuilder::run`] or
+    /// [`crate::AppBuilder::run_headless_frames`] ends after the plugins were built. Not called
+    /// when the renderer could not be created, and never by [`crate::AppBuilder::run_headless`].
+    ///
+    /// This is the only end-of-run hook guaranteed on every desktop platform: on macOS, quitting
+    /// through the application menu (Cmd+Q) ends the process right after this call, so
+    /// [`crate::AppBuilder::run`] does not return and destructors do not run. Nothing receives a
+    /// result from here, so failures (for example of a final save) must be logged.
+    fn shutdown(&mut self) {}
 }
 
 /// Measurements of one frame of the main loop.

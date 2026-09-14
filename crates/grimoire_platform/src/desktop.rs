@@ -38,6 +38,12 @@ pub(crate) const UNPRESENTED_FRAMES_BEFORE_THROTTLE: u32 = 3;
 ///
 /// Blocks the calling thread until the loop ends.
 ///
+/// On macOS this function may never return: quitting through the application menu (Cmd+Q)
+/// terminates the process inside AppKit. The loop still ends with [`AppHandler::shutdown`], but no
+/// [`crate::PlatformEvent::CloseRequested`] is delivered, destructors of `app` do not run, and code
+/// after the call is skipped. [`AppHandler::shutdown`] is therefore the only guaranteed
+/// end-of-run hook.
+///
 /// # Errors
 /// [`PlatformError::EventLoop`] or [`PlatformError::WindowCreation`] if the platform fails,
 /// [`PlatformError::AppInit`] if [`AppHandler::init`] fails. The native event loop can be created

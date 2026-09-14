@@ -23,10 +23,11 @@ Phase P0 — Fundament.
 ### Changed
 - `grimoire`: hängt in P0 nur noch von `core`, `ecs`, `platform`, `render` und `sim` ab; die Platzhalter-Crates folgen mit ihrer API.
 - Determinismus-Lint gilt auch für die Fassade `grimoire` (Hauptschleife, `InputMap`, Tests und Beispiel `sim_loop`): sie trägt dieselbe `clippy.toml`, jetzt sechs identische Kopien.
-- Dokumentation: Die Crate-Verträge nennen die `Vec2`-Konstanten, den Re-Export `raw_window_handle` als SemVer-Kopplung und die bewusste Einengung von PRD-0002 FR-14 in P0 (keine `fixed_update`- und `shutdown`-Phase, keine Eingabeaufzeichnung im Fensterlauf) samt geplanten Hooks; die umgesetzten Abschnitte heißen nicht mehr „Zu implementieren". ADR-0003 berücksichtigt die Thread-Sperren im Lint und das umgesetzte `derive_rng`.
+- Dokumentation: Die Crate-Verträge nennen die `Vec2`-Konstanten, den Re-Export `raw_window_handle` als SemVer-Kopplung und die bewusste Einengung von PRD-0002 FR-14 in P0 (keine `fixed_update`-Phase, keine Eingabeaufzeichnung im Fensterlauf) samt geplanten Hooks; die umgesetzten Abschnitte heißen nicht mehr „Zu implementieren". ADR-0003 berücksichtigt die Thread-Sperren im Lint und das umgesetzte `derive_rng`.
 
 ### Fixed
 - `grimoire_core`: `StableHasher` speist jedes NaN kanonisch ein (Bitmuster sind nicht portabel).
+- `grimoire`/`grimoire_platform`: Beenden per Cmd+Q unter macOS verliert kein Spielende mehr. AppKit beendet den Prozess dort direkt nach `AppHandler::shutdown`, ohne dass `run_desktop` zurückkehrt; `run_desktop`, `AppHandler::shutdown`, `App::run` und die Crate-Verträge dokumentieren das. Die Hauptschleife der Fassade implementiert `shutdown` und ruft die neue optionale Methode `GamePlugin::shutdown` genau einmal je Plugin in Registrierungsreihenfolge auf (nicht, wenn der Renderer nicht erzeugt werden konnte); Fehler darin werden geloggt.
 - `grimoire_render`: Surface wird bei `Lost` neu erzeugt, GPU-Validierungsfehler kommen aus `render` zurück, Kreisränder werden nicht mehr abgeschnitten.
 - `grimoire_sim`: `dropped_time` sättigt exakt bei `Duration::MAX`; `f32::min`/`max` durch `dmath` ersetzt (Werte und Golden-Hashes unverändert).
 - `grimoire_platform`: Lebenszyklus als testbare Zustandsmaschine, Temp-Dateinamen beim atomaren Schreiben gekürzt.

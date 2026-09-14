@@ -44,5 +44,9 @@ pub trait AppHandler {
     fn frame(&mut self, ctx: &mut dyn PlatformContext);
 
     /// Called exactly once when the loop ends after a successful `init`.
+    ///
+    /// The only end-of-run hook guaranteed on every platform: on macOS, quitting through the
+    /// application menu (Cmd+Q) ends the process right after this call, without returning from
+    /// [`crate::run_desktop`] and without running destructors. Failures here must be logged.
     fn shutdown(&mut self) {}
 }

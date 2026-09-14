@@ -180,6 +180,11 @@ impl AppBuilder {
     ///
     /// Must be called on the main thread (macOS requirement of the window and GPU layers).
     ///
+    /// On macOS, quitting through the application menu (Cmd+Q) ends the process inside the
+    /// platform layer after [`GamePlugin::shutdown`] ran for every plugin: this method does not
+    /// return and destructors do not run. Work that must happen at the end of a run belongs in
+    /// [`GamePlugin::shutdown`].
+    ///
     /// # Errors
     /// - [`GrimoireError::Platform`] if the event loop or the window cannot be created.
     /// - [`GrimoireError::Render`] if the renderer cannot be created or rendering fails with
