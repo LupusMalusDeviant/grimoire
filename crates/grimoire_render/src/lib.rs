@@ -7,11 +7,15 @@
 //!
 //! Coordinate convention: world space is a 2D plane with X right and Y up, measured in arbitrary
 //! world units. [`Camera2D`] maps world space to the screen.
+//!
+//! Colour convention: all colours ([`RenderFrame::clear_color`], [`SpriteInstance::color`]) are
+//! linear RGBA. [`WgpuRenderer`] renders into sRGB targets, so the GPU encodes on write and
+//! alpha blending happens in linear space; offscreen read-back returns sRGB-encoded bytes.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use grimoire_platform::PlatformWindow;
+mod sprite_pass;
+mod wgpu_renderer;
 
 mod instance {
     // bytemuck's derive macros expand to `unsafe impl` blocks.
@@ -174,8 +178,12 @@ pub enum RenderError {
     /// No GPU adapter matching the requirements exists.
     #[error("no suitable GPU adapter found")]
     NoAdapter,
-    /// The window surface was lost or became outdated and could not be recovered this frame.
-    #[error("surface lost or outdated")]
+    /// No frame could be presented this time: the window surface was lost or became outdated
+    /// (it has been recovered for the next frame), or no frame is available right now because
+    /// acquisition timed out or the window is occluded or minimised. Not a failure: skip the
+    /// frame and render again; an occluded window may report this every frame, so throttle
+    /// rather than log each occurrence.
+    #[error("surface lost, outdated or temporarily unavailable")]
     SurfaceLost,
     /// The GPU ran out of memory.
     #[error("GPU out of memory")]
@@ -234,61 +242,7 @@ impl Renderer for NullRenderer {
     }
 }
 
-/// GPU renderer based on `wgpu`.
-pub struct WgpuRenderer {
-    _private: (),
-}
-
-impl WgpuRenderer {
-    /// Creates a renderer presenting to `window`.
-    ///
-    /// # Errors
-    /// [`RenderError::NoAdapter`] if no adapter can present to the window.
-    pub fn new_for_window(
-        window: Arc<dyn PlatformWindow>,
-        config: RendererConfig,
-    ) -> Result<Self, RenderError> {
-        let _ = (window, config);
-        todo!("P0 stream render")
-    }
-
-    /// Creates a renderer drawing into an offscreen RGBA8 texture of the given size.
-    ///
-    /// # Errors
-    /// [`RenderError::NoAdapter`] if no adapter is available.
-    pub fn new_offscreen(
-        width: u32,
-        height: u32,
-        config: RendererConfig,
-    ) -> Result<Self, RenderError> {
-        let _ = (width, height, config);
-        todo!("P0 stream render")
-    }
-
-    /// Reads back the last rendered offscreen image as tightly packed RGBA8 rows, top row first.
-    ///
-    /// # Errors
-    /// [`RenderError::NotOffscreen`] for window renderers.
-    pub fn read_offscreen_rgba(&mut self) -> Result<Vec<u8>, RenderError> {
-        todo!("P0 stream render")
-    }
-}
-
-impl Renderer for WgpuRenderer {
-    fn resize(&mut self, width: u32, height: u32) {
-        let _ = (width, height);
-        todo!("P0 stream render")
-    }
-
-    fn render(&mut self, frame: &RenderFrame) -> Result<RenderStats, RenderError> {
-        let _ = frame;
-        todo!("P0 stream render")
-    }
-
-    fn backend_name(&self) -> &str {
-        todo!("P0 stream render")
-    }
-}
+pub use wgpu_renderer::WgpuRenderer;
 
 #[cfg(test)]
 mod tests {
