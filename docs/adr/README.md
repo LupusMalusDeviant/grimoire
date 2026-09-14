@@ -1,0 +1,18 @@
+# Architekturentscheidungen der Engine
+
+Engine-spezifische Entscheidungen von Grimoire. Projektweite Grundsatzentscheidungen (Rust + C#,
+eigenes Engine-Repo, wgpu, eigenes ECS, Determinismus, Sigil, Asset-Pipeline, Avalonia,
+Engine-Pin) stehen im Spiel-Repo `fiends-n-patrons` unter `docs/adr/`.
+
+Format: MADR auf Deutsch (Status, Kontext, Anforderungen, Optionen, Entscheidung, Konsequenzen).
+Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
+
+| Nr. | Entscheidung |
+|-----|--------------|
+| [0001](0001-winit-als-fenster-schicht.md) | winit als Fenster- und Event-Schicht |
+| [0002](0002-gpu-kapselungsgrenze.md) | Kapselungsgrenze für wgpu |
+| [0003](0003-scheduler-single-threaded.md) | Single-threaded, streng geordneter Scheduler mit Migrationspfad |
+| [0004](0004-deterministische-gleitkommaarithmetik.md) | Deterministische Gleitkommaarithmetik |
+| [0005](0005-grimoire-core-als-blatt-crate.md) | `grimoire_core` als abhängigkeitsfreie Blatt-Crate |
+
+Den aktuellen Status jeder Entscheidung nennt ihre Datei.
