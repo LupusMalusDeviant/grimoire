@@ -195,7 +195,15 @@ Patch-Version.
 
 ## Versionen der GitHub Actions
 
-Actions sind auf Major-Tags gepinnt (`actions/checkout@v7`, `actions/upload-artifact@v7`,
-`actions/download-artifact@v8`, `Swatinem/rust-cache@v2`, `orhun/git-cliff-action@v4`). Aktuelle
-Stände prüfen mit `gh api repos/<owner>/<repo>/releases/latest --jq .tag_name`. Ein Major-Wechsel ist
-ein eigener `ci:`-Commit, nachdem die Release-Notes auf Breaking Changes gelesen wurden.
+Die Actions von GitHub selbst sind auf Major-Tags gepinnt (`actions/checkout@v7`,
+`actions/upload-artifact@v7`, `actions/download-artifact@v8`). Actions von Drittanbietern sind auf den
+vollständigen Commit-SHA gepinnt, mit der Version als Kommentar dahinter, etwa
+`Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2` und
+`orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4.9.0`: Ein Tag lässt sich nachträglich
+auf anderen Code umhängen, ein SHA nicht.
+
+Aktuelle Stände prüfen mit `gh api repos/<owner>/<repo>/releases/latest --jq .tag_name`; den Commit-SHA
+eines Tags liefert `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` (auch bei annotierten Tags). Ein
+Versionswechsel einer SHA-gepinnten Action ersetzt SHA und Kommentar in allen Workflows (`ci.yml`,
+`nightly.yml`, `release.yml`) gemeinsam. Ein Major-Wechsel ist ein eigener `ci:`-Commit, nachdem die
+Release-Notes auf Breaking Changes gelesen wurden.
