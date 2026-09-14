@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 grimoire_core.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

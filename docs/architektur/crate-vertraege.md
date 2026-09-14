@@ -116,13 +116,19 @@ Offscreen-Test (roter Kreis in der Mitte, Ecke = Clear-Farbe) der ohne GPU mit k
 ## 7. `grimoire_ecs`
 
 ```rust
-pub struct Entity;            // Copy, Eq, Ord, Hash, Debug, StableHash
+pub struct Entity;            // Copy, Eq, Ord (Index vor Generation), Hash, Debug, Display, StableHash
                               // index() -> u32, generation() -> u32, to_bits() -> u64, from_bits(u64)
 pub trait Component: 'static + Send + Sync + Clone + StableHash {}   // Blanket-Impl
 pub trait Resource:  'static + Send + Sync + Clone + StableHash {}   // Blanket-Impl
-pub trait Bundle;             // Tupel (C1,) bis (C1, …, C8)
+pub trait Bundle;             // versiegelt; () und Tupel (C1,) bis (C1, …, C8)
+pub trait Query { type Item<'w>; }   // versiegelt; Element oder Tupel bis 8 aus:
+                              // Entity, &T, &mut T, Option<&T>, Option<&mut T>, With<T>, Without<T> (Item = ())
+pub trait ReadOnlyQuery: Query {}    // ohne &mut T / Option<&mut T>
+pub struct With<T>; pub struct Without<T>;
+pub struct QueryIter<'w, Q>;  // Iterator<Item = Q::Item<'w>>
+pub struct QueryIterMut<'w, Q>;
 
-impl World {
+impl World {                  // zusätzlich: Default, Debug, impl StableHash
     pub fn new() -> Self;
     pub fn register_component<C: Component>(&mut self);   // idempotent, ComponentId in Registrierungsreihenfolge
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity;
@@ -133,8 +139,8 @@ impl World {
     pub fn get<C: Component>(&self, entity: Entity) -> Option<&C>;
     pub fn get_mut<C: Component>(&mut self, entity: Entity) -> Option<&mut C>;
     pub fn entity_count(&self) -> usize;
-    pub fn query<Q: ReadOnlyQuery>(&self) -> /* Iterator<Item = Q::Item<'_>> */;   // z. B. (Entity, &Pos, &Vel)
-    pub fn query_mut<Q: Query>(&mut self) -> /* Iterator<Item = Q::Item<'_>> */;   // z. B. (&mut Pos, &Vel)
+    pub fn query<Q: ReadOnlyQuery>(&self) -> QueryIter<'_, Q>;      // z. B. (Entity, &Pos, &Vel)
+    pub fn query_mut<Q: Query>(&mut self) -> QueryIterMut<'_, Q>;   // z. B. (&mut Pos, &Vel)
     pub fn insert_resource<R: Resource>(&mut self, resource: R);
     pub fn resource<R: Resource>(&self) -> Option<&R>;
     pub fn resource_mut<R: Resource>(&mut self) -> Option<&mut R>;
@@ -144,23 +150,40 @@ impl World {
     pub fn restore(&mut self, snapshot: &WorldSnapshot);
 }
 
-pub struct CommandBuffer;     // new, spawn, despawn, insert, remove::<C>, is_empty, apply(&mut self, &mut World)
+pub struct CommandBuffer;     // new, spawn(B) -> (), despawn, insert, remove::<C>, len, is_empty,
+                              // apply(&mut self, &mut World) (leert den Puffer); Default, Debug
 pub trait System { fn name(&self) -> &str; fn run(&mut self, world: &mut World); }
 pub fn system_fn<F: FnMut(&mut World) + Send + 'static>(name: &'static str, f: F) -> impl System;
-pub struct Schedule;          // new, add_system(impl System + 'static) -> &mut Self, run(&mut self, &mut World), system_names()
-pub enum EcsError;            // mindestens NoSuchEntity(Entity)
+pub struct Schedule;          // new, add_system(impl System + 'static) -> &mut Self, run(&mut self, &mut World),
+                              // system_names() -> Vec<&str>, len, is_empty; Default, Debug
+pub enum EcsError;            // #[non_exhaustive]; NoSuchEntity(Entity); Display + Error
 ```
 
 **Semantik:**
 - Iterationsreihenfolge deterministisch: Archetypen in Erzeugungsreihenfolge, darin dichte Reihenfolge;
   Despawn per Swap-Remove verändert sie, aber reproduzierbar.
 - Doppelter mutabler Zugriff auf denselben Komponententyp in einer Query → Panic beim Erzeugen der Query mit klarer Meldung.
-- `stable_hash` speist: Entity-Allokator (Generationen, Freiliste in Reihenfolge), je Archetyp die Komponenten-IDs,
-  Entities und Komponentendaten in dichter Reihenfolge, Ressourcen in Registrierungsreihenfolge mit Präsenz-Tag.
+  Ebenso gleichzeitiger mutabler und lesender Zugriff (z. B. `(&mut Pos, &Pos)`); mehrfaches Lesen ist erlaubt.
+- Entity-Allokator: freie Slots werden in Freigabereihenfolge wiederverwendet (FIFO, ältester zuerst), mit um 1
+  erhöhter Generation; ein Slot, dessen Generation `u32::MAX` überschreiten würde, wird stillgelegt.
+- `spawn` mit doppeltem Komponententyp im Bundle → Panic. Entfernen der letzten Komponente lässt die Entity
+  im komponentenlosen Archetyp am Leben.
+- `stable_hash` speist in dieser Reihenfolge (jede Anzahl als `usize`):
+  1. Entity-Allokator: Slot-Anzahl; je Slot Generation (`u32`) und Lebend-Flag (`bool`); Länge der Freiliste,
+     dann ihre Slot-Indizes (`u32`) in Wiederverwendungsreihenfolge.
+  2. Anzahl registrierter Komponententypen.
+  3. Anzahl der Archetypen, dann je Archetyp in Erzeugungsreihenfolge: Anzahl und aufsteigende Komponenten-IDs
+     (`u32`); Anzahl und Bits (`u64`) der Entities in dichter Reihenfolge; danach je Spalte in aufsteigender
+     ID-Reihenfolge die Komponentenwerte in dichter Reihenfolge.
+  4. Anzahl der Ressourcen-Slots, dann je Slot in Registrierungsreihenfolge ein Präsenz-Tag (`u8`, 0 oder 1),
+     bei 1 gefolgt vom Wert (ein entfernter Typ behält seinen Slot).
+
   Typen werden über ihre Registrierungsnummer identifiziert, nie über `TypeId`.
-- `restore` stellt den vollständigen Zustand her (inkl. Allokator und Ressourcen); danach ist
+- `restore` stellt den vollständigen Zustand her (inkl. Allokator, Registries und Ressourcen); danach ist
   `stable_hash` identisch zum Snapshot-Zeitpunkt und gleiche Operationen liefern gleiche Entity-IDs.
-- Filter `With<T>`/`Without<T>` sind wünschenswert (Should).
+- `CommandBuffer::apply` wendet Befehle in Aufzeichnungsreihenfolge an; Befehle auf nicht lebende Entities
+  werden übersprungen.
+- Filter `With<T>`/`Without<T>` sind als Tupel-Elemente mit `Item = ()` umgesetzt.
 - Leistung: Query über 10.000 Entities mit zwei Komponenten ohne Allokation pro Entity.
 
 ## 8. `grimoire_sim`
@@ -168,37 +191,66 @@ pub enum EcsError;            // mindestens NoSuchEntity(Entity)
 ```rust
 pub struct Tick(pub u64);                         // Resource: Index des laufenden Ticks (erster Schritt: 0)
 pub struct SimSeed(pub u64);                      // Resource
+                                                  // beide: Copy, Default, Eq, Ord, Hash, Debug, StableHash
 pub struct FixedTimestep;                         // new(tick_rate_hz: u32) (Panic bei 0),
-                                                  // with_max_ticks_per_frame(u32) (Default 8), tick_rate_hz(),
-                                                  // tick_duration() -> Duration, advance(Duration) -> StepPlan,
-                                                  // dropped_time() -> Duration, reset()
-pub struct StepPlan { pub ticks: u32, pub alpha: f32 }   // alpha ∈ [0, 1): nur fürs Rendering
-pub struct SimRng;                                // Clone, PartialEq, Debug, StableHash; eigener Algorithmus, dokumentiert
+                                                  // with_max_ticks_per_frame(u32) (Default 8, Panic bei 0),
+                                                  // tick_rate_hz(), max_ticks_per_frame(),
+                                                  // tick_duration() -> Duration (auf ns abgeschnitten),
+                                                  // advance(Duration) -> StepPlan, dropped_time() -> Duration, reset()
+                                                  // Clone, Debug, Eq
+pub struct StepPlan { pub ticks: u32, pub alpha: f32 }   // alpha ∈ [0, 1): nur fürs Rendering; Copy, Default, Debug
+pub struct SimRng;                                // Clone, Eq, Debug, StableHash; ALGORITHM_VERSION = 1
                                                   // new(seed), next_u32, next_u64, next_f32 ∈ [0,1),
                                                   // range_u32(low, high) (unverzerrt, high exklusiv), range_i32, range_f32, chance(p)
 pub fn derive_rng(seed: u64, tick: u64, stream: u64) -> SimRng;   // reihenfolgeunabhängige Ströme je Tick
 pub const MAX_INPUT_SLOTS: usize = 4;
-pub struct InputFrame { pub axes: [i16; 4], pub buttons: u32 }    // Copy, Default, Eq, StableHash
+pub struct InputFrame { pub axes: [i16; 4], pub buttons: u32 }    // Copy, Default, Eq, Debug, StableHash
                                                   // axis(i) -> f32 ∈ [-1, 1], is_pressed(bit: u8) -> bool
-pub struct TickInput { pub slots: [InputFrame; MAX_INPUT_SLOTS] } // Copy, Default, Eq, StableHash, Resource
+pub struct TickInput { pub slots: [InputFrame; MAX_INPUT_SLOTS] } // Copy, Default, Eq, Debug, StableHash, Resource
 pub struct InputLog { pub seed: u64, pub tick_rate_hz: u32, pub frames: Vec<TickInput> }
-                                                  // to_bytes() / from_bytes() -> Result<_, SimError>
+                                                  // MAGIC, FORMAT_VERSION, to_bytes() -> Vec<u8>,
+                                                  // from_bytes(&[u8]) -> Result<InputLog, SimError>; Clone, Eq, Debug
 pub struct Simulation;                            // new(seed), seed(), tick(), world(), world_mut(), schedule_mut(),
                                                   // step(&mut self, input: TickInput), state_hash() -> u64,
-                                                  // snapshot() -> SimSnapshot, restore(&SimSnapshot)
+                                                  // snapshot() -> SimSnapshot, restore(&SimSnapshot); Debug
+pub struct SimSnapshot;                           // Clone, Debug; tick(), seed()
 pub fn replay(sim: &mut Simulation, log: &InputLog, hash_every: u64) -> Vec<(u64, u64)>;
-pub enum SimError;
+pub enum SimError;                                // #[non_exhaustive], thiserror: UnexpectedEnd { offset, needed, available },
+                                                  // BadMagic, UnsupportedVersion(u32), InvalidTickRate,
+                                                  // FrameDataLength { frames, remaining }
 ```
 
 **Semantik:**
 - `FixedTimestep` akkumuliert exakt ganzzahlig in Einheiten `Nanosekunden × tick_rate_hz`
-  (ein Tick = 10⁹ Einheiten) — keine Drift. Mehr als `max_ticks_per_frame` Ticks werden verworfen und in `dropped_time` gezählt.
+  (ein Tick = 10⁹ Einheiten, intern `u128`, sättigend) — keine Drift. Mehr als `max_ticks_per_frame` fällige
+  ganze Ticks werden verworfen und in `dropped_time` gezählt (exakt summiert, erst bei der Abfrage auf ns
+  abgeschnitten, sättigt bei `Duration::MAX`); der Bruchteil bleibt erhalten. Die Tick-Zahl ist nur ohne
+  Kappung (kein Frame über `max_ticks_per_frame`) unabhängig von der Aufteilung der Frame-Zeiten. `alpha` = Bruchteil / 10⁹, auf den größten `f32` unter 1 begrenzt.
+- `SimRng` Version 1: PCG32 XSH-RR 64/32 (O'Neill, Referenz `pcg32_random_r`). `new(seed)` setzt
+  `initstate = splitmix64(seed)`, `initseq = splitmix64(seed + γ)` und seedet wie `pcg32_srandom_r`.
+  `next_u64` = `(next_u32 << 32) | next_u32`; `next_f32` = obere 24 Bits × 2⁻²⁴; `range_u32`/`range_i32` nach
+  Lemire (Multiplikation mit Verwerfen); `range_f32` liefert nie `high`; `chance(p)` = `next_f32() < p` und
+  verbraucht immer genau einen `next_u32`. Leere oder ungültige Bereiche (`low >= high`, nicht endliche
+  Spannweite) → Panic.
+- `derive_rng(seed, tick, stream)` = `SimRng::new(splitmix64(splitmix64(splitmix64(seed) ^ tick) ^ stream))`,
+  reine Funktion der Argumente.
 - `Simulation::new` legt `Tick(0)`, `SimSeed(seed)` und `TickInput::default()` als Ressourcen an.
-  `step`: `TickInput`-Ressource setzen → Schedule ausführen → `Tick` erhöhen.
-- `state_hash` = Hash über Tick, Seed und `World::stable_hash`.
-- Achsen sind auf ±32767 normiert; `axis(i)` teilt durch `32767.0` (exakt, deterministisch).
-- Replay-Binärformat: Magic `b"GRIMREPL"`, `u32` Version 1, danach Little-Endian-Felder; fehlerhafte
-  Eingaben liefern `SimError`, niemals Panic.
+  `step`: `Tick`, `SimSeed` und `TickInput` setzen → Schedule ausführen → Tick erhöhen und `Tick` erneut setzen.
+  Tick und Seed gehören der Simulation; Änderungen durch Systeme werden überschrieben. Systeme halten
+  simulationsrelevanten Zustand ausschließlich in der Welt (Closure-Zustand ist nicht snapshot-/hashbar).
+- `state_hash` speist in einen frischen `StableHasher`: Tick (`u64`), Seed (`u64`), dann `World::stable_hash`.
+- `snapshot`/`restore` umfassen Welt, Tick und Seed, nicht den Schedule.
+- `replay` führt je Frame einen `step` aus und notiert `(tick, state_hash)` nach jedem Schritt mit
+  `tick % hash_every == 0` sowie immer den Endzustand (ohne Duplikat; `hash_every == 0` → nur Endzustand;
+  leeres Log → aktueller Zustand). Der Seed wird nicht geprüft; der Aufrufer baut die Simulation mit `log.seed`.
+- Achsen sind auf ±32767 normiert; `axis(i)` teilt durch `32767.0` (exakt, deterministisch), `-32768` ergibt
+  `-1.0`. `axis(i >= 4)` → `0.0`, `is_pressed(bit >= 32)` → `false`, nie Panic.
+- Replay-Binärformat Version 1, Little-Endian: Magic `b"GRIMREPL"` (8), Version `u32`, `seed: u64`,
+  `tick_rate_hz: u32` (≠ 0), Frame-Anzahl `u64`, dann je Frame 4 Slots zu je 4 × `i16` Achsen + `u32` Buttons
+  (48 Byte). Die Nutzlast muss exakt `Anzahl × 48` Byte lang sein (keine Rest-Bytes). Fehlerhafte Eingaben
+  liefern `SimError`, niemals Panic; die Anzahl wird vor jeder Allokation gegen die Eingabelänge geprüft.
+- Determinismus-Gate: `tests/determinism.rs` (≥ 2 000 Entities, 10 000 Ticks) mit goldenem Endhash; Erneuerung
+  nur bei bewusster Änderung von Szenario, Hash-Layout oder RNG-/Hash-Algorithmusversion.
 
 ## 9. `grimoire` — Fassade (Integration nach dem Zusammenführen)
 
