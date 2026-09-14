@@ -23,6 +23,7 @@ Phase P0 — Fundament.
 ### Changed
 - `grimoire`: hängt in P0 nur noch von `core`, `ecs`, `platform`, `render` und `sim` ab; die Platzhalter-Crates folgen mit ihrer API.
 - Determinismus-Lint gilt auch für die Fassade `grimoire` (Hauptschleife, `InputMap`, Tests und Beispiel `sim_loop`): sie trägt dieselbe `clippy.toml`, jetzt sechs identische Kopien.
+- Dokumentation: Die Crate-Verträge nennen die `Vec2`-Konstanten, den Re-Export `raw_window_handle` als SemVer-Kopplung und die bewusste Einengung von PRD-0002 FR-14 in P0 (keine `fixed_update`- und `shutdown`-Phase, keine Eingabeaufzeichnung im Fensterlauf) samt geplanten Hooks; die umgesetzten Abschnitte heißen nicht mehr „Zu implementieren". ADR-0003 berücksichtigt die Thread-Sperren im Lint und das umgesetzte `derive_rng`.
 
 ### Fixed
 - `grimoire_core`: `StableHasher` speist jedes NaN kanonisch ein (Bitmuster sind nicht portabel).

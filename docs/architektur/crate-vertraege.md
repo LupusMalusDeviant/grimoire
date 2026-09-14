@@ -66,7 +66,7 @@ Nur im Review prüfbar (Engine-ADR 0004):
 | `hash_of(&T) -> u64` | Hash eines Wertes mit frischem Hasher |
 | `impl_stable_hash!(Typ { feld, … })` | Makro für Structs |
 | `math::dmath` | `sin cos tan asin acos atan atan2 exp ln powf hypot sqrt min max`, Konstanten `PI TAU FRAC_PI_2`; `min`/`max` liefern bei gleichen Operanden (auch `±0.0`) den ersten, NaN wie `std` |
-| `Vec2` | `new splat from_angle dot perp_dot length(_squared) distance(_squared) normalize_or_zero perp angle rotate lerp to_array`, Operatoren `+ - * / neg` und Zuweisungsvarianten |
+| `Vec2` | Konstanten `ZERO ONE X Y`; `new splat from_angle dot perp_dot length(_squared) distance(_squared) normalize_or_zero perp angle rotate lerp to_array`, Operatoren `+ - * / neg` und Zuweisungsvarianten |
 
 ## 5. `grimoire_platform`
 
@@ -74,6 +74,12 @@ Nur im Review prüfbar (Engine-ADR 0004):
 `PlatformEvent`, `RawInputEvent`, `KeyCode`, `MouseButton`, `Clock`, `SystemClock`, `ManualClock`,
 `AppHandler`, `PlatformContext`, `AppResult`, `PlatformError`, `FileSystem`, `StdFileSystem`,
 `MemoryFileSystem`, `run_desktop`, `run_headless`.
+
+**Re-Export `raw_window_handle` (SemVer-Kopplung):** `grimoire_platform` re-exportiert `pub use raw_window_handle;`
+(Version 0.6), weil `PlatformWindow: HasWindowHandle + HasDisplayHandle` die Traits in der öffentlichen API verlangt.
+Über `grimoire::platform` und `PlatformWindow` im Prelude der Fassade gehört `raw-window-handle` damit zur
+SemVer-Oberfläche von `grimoire_platform` und `grimoire`: Ein Wechsel auf eine inkompatible Version (0.7) ist für
+beide ein Breaking Change.
 
 **Fensterplatzierung (Ergänzung P0):** `WindowConfig` hat zusätzlich `monitor: MonitorChoice`
 (`Default`, `Primary`, `Secondary` = erster nicht-primärer Monitor, `Index(n)`; nicht verfügbare
@@ -99,7 +105,7 @@ nächsten Frame → `frame` fortlaufend → `shutdown` genau einmal nach erfolgr
 Schlägt `init` fehl, endet der Lauf mit `PlatformError::AppInit` ohne `shutdown`.
 `CloseRequested` wird an die App zugestellt, danach endet die Schleife.
 
-**Zu implementieren:**
+**Umgesetzt:**
 - `run_desktop` mit `winit` 0.30 (`ApplicationHandler`): Fenster in `resumed` genau einmal erzeugen,
   als `Arc` in einer eigenen `PlatformWindow`-Implementierung kapseln; winit-Events auf
   `PlatformEvent` abbilden (`KeyCode` über physische Tasten); `frame` bei `RedrawRequested`,
@@ -127,7 +133,7 @@ zu belasten. `auto` (Standard) folgt `ContextOptions`.
 `RenderStats`, `RendererConfig`, `RenderError`, `Renderer` (objektsicher), `NullRenderer`,
 `WgpuRenderer::{new_for_window, new_offscreen, read_offscreen_rgba}`.
 
-**Zu implementieren:** Instanzierter Sprite-Pass mit **einem** Draw-Call für alle Sprites;
+**Umgesetzt:** Instanzierter Sprite-Pass mit **einem** Draw-Call für alle Sprites;
 WGSL-Shader mit kantengeglättetem Kreis (Signed Distance) und Rechteck, Rotation, Alpha-Blending;
 wachsender Instanzpuffer ohne Neuallokation pro Frame; Kamera-Uniform; `resize` mit Nullgrößen;
 Offscreen-Test (roter Kreis in der Mitte, Ecke = Clear-Farbe) der ohne GPU mit klarer Meldung
@@ -370,6 +376,18 @@ Buttons werden verodert. Diagonalen werden nicht normalisiert. Die Zielachsen 2 
 Fenster schließen). Der echte Fensterpfad (`run` mit winit-Fenster und wgpu-Surface) ist mangels Fenster in
 Tests nicht zur Laufzeit geprüft; die Weiterleitung von `Resized` an `Renderer::resize` und die Behandlung von
 `SurfaceLost` prüfen Unit-Tests der Hauptschleife mit einem Test-Renderer.
+
+**Bewusste Einengung von PRD-0002 FR-14 in P0:** FR-14 nennt die Plugin-Phasen init, fixed_update, render_extract
+und shutdown. P0 liefert `build` (init), `extract` (render_extract), `on_frame` und `window_created`; `fixed_update`
+und `shutdown` fehlen, und Plugins erhalten nach `build` weder `&mut Simulation` noch das `TickInput` eines Ticks.
+Folgen: Die Frame-Schleife zeichnet kein `InputLog` auf (`LoopReport` enthält keine Eingaben), ein Fensterlauf ist
+daher nicht als Replay speicherbar (PRD-0002 FR-07, PRD-0013 FR-02/US-03); reproduzierbar ist nur `run_headless` mit
+seiner Eingabequelle. Rewind über `Simulation::snapshot`/`restore` (FR-06) ist aus der Fassade nicht steuerbar.
+Geplant (Signaturen nicht bindend) sind Default-Methoden, die bestehende Plugins nicht brechen: ein Hook nach jedem
+`step` in beiden Schleifen mit Simulation und `TickInput` (fixed_update), ein `shutdown` am Ende des Laufs und eine
+optionale Eingabeaufzeichnung (etwa `AppBuilder::record_input` mit `LoopReport::input_log: Option<InputLog>`) samt
+Test, der das Log per `replay` gegen `hashes` prüft. Sie kommen, sobald ein Fensterlauf als Replay gespeichert
+werden soll, spätestens mit dem Rewind-Spike in P2 (PRD-0002 OF-2.3).
 
 ## 10. Platzhalter
 

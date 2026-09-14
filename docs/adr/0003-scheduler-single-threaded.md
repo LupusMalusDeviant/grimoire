@@ -22,8 +22,9 @@ jedes Parallelisierungsmodell prägt diese API tief.
 
 - Deterministische, explizit festgelegte Ausführungsreihenfolge der Systeme (ADR-0005).
 - Bit-identische Zustands-Hashes über 10.000 Ticks im Doppellauf (P0-Gate WP5.6).
-- Einfache, schnell lieferbare API für P0; keine Threads in Simulations-Crates (Vertrag §3; im Review
-  geprüft, denn `clippy.toml` erzwingt nur `HashMap`/`HashSet`-, Wanduhr- und libm-Verbote).
+- Einfache, schnell lieferbare API für P0; keine Threads in Simulations-Crates (Vertrag §3). Die
+  identischen `clippy.toml` sperren `thread::spawn`, `thread::Builder::spawn`/`spawn_scoped` und
+  `thread::scope`; andere Wege, Threads zu starten (etwa über Drittcrates), bleiben Review-Aufgabe.
 - Späteres Skalieren auf das Bullet-Budget, ohne dass Spiel-Systeme neu geschrieben werden müssen.
 - Keine `unsafe`-Aliasing-Tricks im Fundament (Vertrag §2, Risiko R2 im Plan 0001).
 
@@ -72,7 +73,8 @@ Strukturänderungen laufen über `CommandBuffer` in Aufzeichnungsreihenfolge.
    System**. Nach der Stufe werden die Puffer in der **Listenreihenfolge der Systeme**
    zusammengeführt und angewendet, nie in Fertigstellungsreihenfolge. Voraussetzung an
    `grimoire_sim`: Systeme ziehen Zufall ausschließlich über `derive_rng(seed, tick, stream)`
-   (Vertrag §8, noch nicht implementiert) mit einem fest pro System vergebenen `stream`, nie über
+   (Vertrag §8, umgesetzt in `grimoire_sim::rng` und durch `tests/rng.rs` eingefroren) mit einem fest
+   pro System vergebenen `stream`, nie über
    einen gemeinsam fortgeschalteten Generator. Nur dann sind die RNG-Ströme unabhängig von der
    Thread-Verteilung.
 4. **Datenparallele Queries.** Parallele Iteration über eine Query zerlegt Archetypen und Zeilen
