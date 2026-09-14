@@ -259,23 +259,86 @@ pub enum SimError;                                // #[non_exhaustive], thiserro
 - Determinismus-Gate: `tests/determinism.rs` (≥ 2 000 Entities, 10 000 Ticks) mit goldenem Endhash; Erneuerung
   nur bei bewusster Änderung von Szenario, Hash-Layout oder RNG-/Hash-Algorithmusversion.
 
-## 9. `grimoire` — Fassade (Integration nach dem Zusammenführen)
+## 9. `grimoire` — Fassade
+
+Abhängigkeiten in P0: `grimoire_core`, `grimoire_ecs`, `grimoire_platform`, `grimoire_render`,
+`grimoire_sim`; die P1+-Crates kommen hinzu, sobald sie eine API haben.
 
 ```rust
 pub trait GamePlugin {
     fn name(&self) -> &str;
-    fn build(&mut self, sim: &mut Simulation) {}                              // Komponenten, Systeme, Start-Entities
-    fn extract(&mut self, world: &World, alpha: f32, frame: &mut RenderFrame) {}   // nur lesend
-    fn on_frame(&mut self, stats: &FrameStats) {}                             // reine Präsentation
+    fn build(&mut self, sim: &mut Simulation) {}                                  // Komponenten, Ressourcen, Systeme, Start-Entities
+    fn extract(&mut self, world: &World, alpha: f32, frame: &mut RenderFrame) {}  // nur lesend
+    fn on_frame(&mut self, stats: &FrameStats) {}                                 // reine Präsentation
+    fn window_created(&mut self, window: &Arc<dyn PlatformWindow>) {}             // nur Desktop, z. B. für den Fenstertitel
 }
-pub struct App;              // App::new(WindowConfig) -> AppBuilder
-pub struct AppBuilder;       // seed, tick_rate, input_map, renderer_config, plugin,
-                             // run() -> Result<(), GrimoireError>,
-                             // run_headless(ticks, &mut dyn FnMut(u64) -> TickInput) -> HeadlessReport
-pub struct InputMap;         // Tasten → Achsen/Buttons; Default: WASD + Pfeiltasten → Achsen 0/1
-pub struct FrameStats;       // frame, sim_tick, ticks_this_frame, alpha, fps, render: RenderStats
-pub struct HeadlessReport;   // final_tick, final_hash, hashes: Vec<(u64, u64)>
+pub struct App;              // App::new(WindowConfig) -> AppBuilder; Debug, Clone, Copy
+pub struct AppBuilder;       // seed(u64) (Default 0), tick_rate(u32) (Default 60, Panic bei 0),
+                             // max_ticks_per_frame(u32) (Default 8, Panic bei 0), hash_every(u64) (Default 60),
+                             // input_map(InputMap), renderer_config(RendererConfig), plugin(impl GamePlugin + 'static),
+                             // max_frames(u64), exit_key(KeyCode); Debug
+                             // run(self) -> Result<(), GrimoireError>
+                             // run_headless(self, ticks, &mut dyn FnMut(u64) -> TickInput) -> HeadlessReport
+                             // run_headless_frames(self, frames, frame_delta: Duration) -> Result<LoopReport, GrimoireError>
+                             // run_headless_frames_with_events(self, frames, frame_delta,
+                             //     &mut dyn FnMut(u64, &mut Vec<PlatformEvent>)) -> Result<LoopReport, GrimoireError>
+pub const DEFAULT_TICK_RATE_HZ: u32 = 60; pub const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 8;
+pub const DEFAULT_HASH_EVERY: u64 = 60;
+pub struct HeadlessReport;   // final_tick, final_hash, hashes: Vec<(u64, u64)>; Clone, Eq, Debug
+pub struct LoopReport;       // frames, final_tick, final_hash, hashes: Vec<(u64, u64)>, dropped_time: Duration; Clone, Eq, Debug
+pub struct FrameStats;       // frame, sim_tick, ticks_this_frame, alpha, frame_time, fps: f64, dropped_time,
+                             // render: RenderStats; Copy, PartialEq, Debug
+pub enum InputSource;        // Key(KeyCode), Mouse(MouseButton); Copy, Ord, Hash, Debug
+pub enum InputAction;        // Button(u8), Axis { axis: usize, value: i16 }; Copy, Eq, Hash, Debug
+pub struct InputState;       // new, apply(&RawInputEvent), release_all, is_held(InputSource), is_empty; Clone, Eq, Default, Debug
+pub struct InputMap;         // new (leer), Default (Preset), bind(source, action) -> &mut Self, with(source, action) -> Self,
+                             // unbind(source), bindings() -> &[(InputSource, InputAction)], sample(&InputState) -> InputFrame
+pub const AXIS_MAX: i16 = 32_767; pub const AXIS_COUNT: usize = 4; pub const BUTTON_COUNT: u8 = 32;
+pub enum GrimoireError;      // #[non_exhaustive], thiserror: Platform(#[from] PlatformError), Render(#[from] RenderError)
+pub mod prelude;             // App, AppBuilder, GamePlugin, FrameStats, GrimoireError, InputMap, InputSource, InputAction,
+                             // World, Entity, CommandBuffer, Schedule, system_fn, Simulation, TickInput, InputFrame, Tick,
+                             // SimSeed, SimRng, derive_rng, Vec2, dmath, StableHash, StableHasher, impl_stable_hash,
+                             // RenderFrame, SpriteInstance, shape, Camera2D, RendererConfig, WindowConfig, KeyCode,
+                             // MouseButton, PlatformWindow
+pub use grimoire_{core, ecs, platform, render, sim} as {core, ecs, platform, render, sim};
 ```
+
+**Hauptschleife** (ein Schleifentyp, generisch über `Renderer`; `run` mit `WgpuRenderer::new_for_window`,
+`run_headless_frames` mit `NullRenderer` über `grimoire_platform::run_headless`):
+
+- `init`: Renderer erzeugen (Fehler → Lauf endet mit `GrimoireError::Render`, `build` entfällt), dann
+  `Simulation::new(seed)`, `build` je Plugin in Registrierungsreihenfolge, danach `window_created` je Plugin,
+  sofern ein Fenster existiert. `max_frames(0)` beendet den Lauf direkt nach `init`.
+- `event`: `Resized` → `Renderer::resize`; `Input` → `InputState` (Wiederhol-Events ändern nichts; `exit_key`
+  beendet den Lauf); `Focused(false)` → alle gehaltenen Eingaben loslassen (PRD-0013 Robustheit).
+- `frame`: Delta aus `ctx.clock()` (einziger Uhrzugriff, außerhalb der Simulation) → `FixedTimestep::advance`;
+  die `InputMap` wird einmal pro Frame abgetastet und für jeden fälligen Tick als Slot 0 eines `TickInput`
+  (übrige Slots Default) an `Simulation::step` übergeben. Danach `RenderFrame::clear` (Kamera und Clear-Farbe
+  bleiben), `extract` je Plugin mit `alpha`, `render`. `RenderError::SurfaceLost` → Frame gilt als gerendert mit
+  `RenderStats::default()`, nächster Frame versucht es erneut; jeder andere Render-Fehler wird geloggt und beendet
+  den Lauf mit diesem Fehler (ohne `on_frame`). Dann `FrameStats` und `on_frame` je Plugin.
+- `fps` = Frames / Dauer des letzten abgeschlossenen Messfensters von mindestens 1 s; `0.0` bis dahin.
+- `frame` in `FrameStats` ist der 0-basierte Frame-Index, `sim_tick` der Tick-Zähler nach den Ticks des Frames.
+
+**Headless:**
+- `run_headless` baut die Simulation wie `init` (ohne Plattform und Renderer), ruft je Tick
+  `input(sim.tick())` und `step` auf; `extract`/`on_frame` laufen nie.
+- `hashes` (beide Berichte) folgen der `replay`-Semantik: `(tick, state_hash)` nach jedem Tick mit
+  `tick % hash_every == 0`, zuletzt immer der Endzustand ohne Duplikat. Der Desktop-Lauf zeichnet keine Hashes auf.
+- `run_headless_frames_with_events` stellt vor Frame `n` (0-basiert) die vom Skript gelieferten Events in
+  Reihenfolge zu; fordert ein Event das Ende an, entfällt der Frame (wie auf dem Desktop).
+- Gleicher Seed und gleiche Eingabe je Tick ergeben in `run_headless` und in der Frame-Schleife dieselben Hashes.
+
+**InputMap-Preset** (`InputMap::default`): `D`/`ArrowRight` → Achse 0 `+32767`, `A`/`ArrowLeft` → Achse 0
+`-32767`, `W`/`ArrowUp` → Achse 1 `+32767` (Y nach oben positiv), `S`/`ArrowDown` → Achse 1 `-32767`,
+`Space` → Button 0, `ShiftLeft` → Button 1, linke Maustaste → Button 2. `sample` summiert die Beiträge gehaltener
+Quellen je Achse (in `i32`) und begrenzt auf `±32767`; Buttons werden verodert. Diagonalen werden nicht
+normalisiert. Die Zielachsen 2 und 3 bleiben in P0 0 (Mauszielen braucht die Kamera, kommt mit P1).
+`bind` mit Button-Bit `>= 32` oder Achse `>= 4` → Panic.
+
+**Bekannte Grenzen in P0:** Plugins können das Programm nicht selbst beenden (nur `max_frames`, `exit_key`,
+Fenster schließen); der Fensterpfad (`run`, Surface-Verlust, Resize) ist mangels Fenster in Tests nicht zur
+Laufzeit geprüft.
 
 ## 10. Platzhalter
 

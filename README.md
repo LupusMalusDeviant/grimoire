@@ -4,8 +4,70 @@ Eigenständige 2.5D-Engine in Rust, gebaut from scratch für massenhafte, determ
 Projektil-Simulationen. Erster Konsument ist das Spiel *Fiends n Patrons*; die Engine kennt
 das Spiel nicht und baut, testet und läuft ohne es.
 
-> Status: **Phase P0 — Fundament** (Fenster, instanzierte Sprites, eigenes ECS,
-> Fixed-Timestep-Simulation mit Determinismus-Beweis). Alle Rechte vorbehalten.
+> Status: **Phase P0 — Fundament, integriert.** Fenster, instanzierte Sprites (ein Draw-Call),
+> eigenes Archetyp-ECS, Fixed-Timestep-Simulation mit goldenem Determinismus-Hash und die Fassade
+> `grimoire` mit `App`, `GamePlugin`, `InputMap` und Hauptschleife stehen. Offen bis zum Tag `v0.1.0`:
+> erster grüner CI-Lauf auf Windows, Linux und macOS, danach Annahme von Engine-ADR-0004.
+> Alle Rechte vorbehalten.
+
+## Hello Grimoire
+
+Ein Spiel hängt nur von `grimoire` ab und beschreibt sich als `GamePlugin`: `build` legt Komponenten,
+Systeme und Start-Entities in der Simulation an, `extract` übersetzt den Weltzustand in Sprites.
+
+```rust
+use grimoire::prelude::*;
+
+#[derive(Clone)]
+struct Position {
+    at: Vec2,
+}
+impl_stable_hash!(Position { at });
+
+struct Hello;
+
+impl GamePlugin for Hello {
+    fn name(&self) -> &str {
+        "hello"
+    }
+
+    fn build(&mut self, sim: &mut Simulation) {
+        sim.world_mut().spawn((Position { at: Vec2::ZERO },));
+        sim.schedule_mut().add_system(system_fn("walk", |world| {
+            let input = world.resource::<TickInput>().copied().unwrap_or_default();
+            let step = Vec2::new(input.slots[0].axis(0), input.slots[0].axis(1));
+            for position in world.query_mut::<&mut Position>() {
+                position.at += step;
+            }
+        }));
+    }
+
+    fn extract(&mut self, world: &World, _alpha: f32, frame: &mut RenderFrame) {
+        for position in world.query::<&Position>() {
+            frame.sprites.push(SpriteInstance {
+                position: position.at.to_array(),
+                half_size: [1.0, 1.0],
+                shape: shape::CIRCLE,
+                color: [1.0, 0.8, 0.2, 1.0],
+                ..SpriteInstance::default()
+            });
+        }
+    }
+}
+
+fn main() -> Result<(), GrimoireError> {
+    App::new(WindowConfig::default())
+        .seed(42)
+        .exit_key(KeyCode::Escape)
+        .plugin(Hello)
+        .run()
+}
+```
+
+WASD oder die Pfeiltasten bewegen den Punkt. Ohne Fenster läuft dieselbe Simulation mit
+`run_headless(ticks, &mut |tick| TickInput::default())`, die echte Hauptschleife mit
+`run_headless_frames(frames, frame_delta)`. Das vollständige Beispiel mit 5.000 Entities und
+Interpolation liegt in [crates/grimoire/examples/sim_loop.rs](crates/grimoire/examples/sim_loop.rs).
 
 ## Crates
 
