@@ -1,0 +1,153 @@
+# Engine CI: format, standalone gate, docs, three-OS test matrix and float-probe comparison.
+# Every push that triggers this workflow is watched until it finishes:
+#   gh run watch --exit-status        (red run: gh run view --log-failed)
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+
+# Superseded pull request runs are cancelled. Runs on main are never cancelled: every main commit
+# gets a verdict, gh run watch --exit-status does not end as "cancelled", and the main-only cache
+# save is not lost.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  standalone-gate:
+    name: Standalone gate (no fnp_ references)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fail on fnp_ references (PRD-0002 FR-01)
+        run: |
+          set +e
+          git grep -n -I -e 'fnp_' -- Cargo.toml ':(glob)crates/**/Cargo.toml' ':(glob)crates/**/*.rs'
+          status=$?
+          set -e
+          case "$status" in
+            0)
+              echo "::error title=Standalone-Gate verletzt::Die Engine referenziert Spiel-Code (fnp_). Grimoire muss ohne das Spiel bauen und testen (PRD-0002 FR-01)."
+              exit 1
+              ;;
+            1)
+              echo "Keine fnp_-Referenzen in Cargo.toml oder crates/ gefunden."
+              ;;
+            *)
+              echo "::error title=Standalone-Gate defekt::git grep ist mit Status ${status} fehlgeschlagen."
+              exit "$status"
+              ;;
+          esac
+
+  docs:
+    name: rustdoc (deny warnings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps --locked
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # GPU tests skip themselves without an adapter. Lavapipe gives Linux a software Vulkan
+      # adapter; Windows runners have WARP; macOS runners may or may not expose Metal.
+      - name: Install software Vulkan (lavapipe)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # rust-cache restores target/; drop probes from older runs so the artifact is this run's.
+      - name: Remove stale float probes
+        run: rm -rf target/float-probe
+      - name: Test
+        run: cargo test --workspace --locked
+      # Examples open windows: build them, never run them in CI.
+      - name: Build examples
+        run: cargo build --workspace --examples --locked
+      - name: Upload float probe
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: float-probe-${{ matrix.os }}
+          path: target/float-probe/
+          if-no-files-found: warn
+          retention-days: 14
+
+  float-compare:
+    name: Float probe comparison
+    needs: test
+    # Compare whatever probes exist, even if one OS failed its tests.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+      - name: Download float probes
+        # A run without any probe must still reach the comparison step, which reports it.
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: float-probe-*
+          # Flat layout for any number of matches (a single match is never nested).
+          merge-multiple: true
+          path: float-probe
+      - name: Compare std-trig hashes across operating systems
+        run: bash .github/scripts/compare-float-probes.sh float-probe "Debug-Build"

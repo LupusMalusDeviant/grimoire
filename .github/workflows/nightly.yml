@@ -1,0 +1,118 @@
+# Nightly engine run: release-mode test suite on all three operating systems.
+# Scheduled runs are skipped when main had no commits in the last 24 hours.
+name: Nightly
+
+on:
+  schedule:
+    # 02:17 UTC, off the full hour to avoid scheduler congestion.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: Commits in the last 24 hours?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+      # Decides on when main last MOVED (pushes and merges from the repository activity API), not
+      # on commit dates: a commit made days ago and pushed today still counts as a change.
+      - name: Did main change in the last 24 hours?
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "Manueller Start: Nightly laeuft unabhaengig von Aenderungen."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if count=$(gh api "repos/${GITHUB_REPOSITORY}/activity?ref=refs/heads/main&time_period=day&per_page=100" \
+                --jq '[.[] | select(.activity_type != "branch_deletion")] | length') \
+             && [[ "$count" =~ ^[0-9]+$ ]]; then
+            echo "Aenderungen an main in den letzten 24 Stunden (Aktivitaets-API): ${count}"
+          else
+            # Fallback: committer date of HEAD (misses commits that were pushed long after creation).
+            echo "::warning title=Aktivitaets-API nicht verfuegbar::Entscheidung ueber das Committer-Datum von HEAD."
+            age=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+            count=$(( age < 86400 ? 1 : 0 ))
+          fi
+          if [ "$count" -gt 0 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Nightly uebersprungen::Keine Aenderungen an main in den letzten 24 Stunden."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test-release:
+    name: release tests (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install software Vulkan (lavapipe)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      - name: Remove stale float probes
+        run: rm -rf target/float-probe
+      - name: Test (release)
+        run: cargo test --workspace --release --locked
+      - name: Upload float probe
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: float-probe-release-${{ matrix.os }}
+          path: target/float-probe/
+          if-no-files-found: warn
+          retention-days: 14
+
+  float-compare:
+    name: Float probe comparison (release)
+    needs: [changes, test-release]
+    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+      - name: Download float probes
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: float-probe-release-*
+          # Flat layout for any number of matches (a single match is never nested).
+          merge-multiple: true
+          path: float-probe
+      - name: Compare std-trig hashes across operating systems
+        run: bash .github/scripts/compare-float-probes.sh float-probe "Release-Build (Nightly)"

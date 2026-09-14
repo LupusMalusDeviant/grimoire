@@ -1,0 +1,110 @@
+# Engine release: tag vX.Y.Z -> version check, test suite, git-cliff notes, GitHub release.
+# The engine ships source only, no binaries. Watch the run: gh run watch --exit-status
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify-version:
+    name: Tag matches workspace version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare [workspace.package] version with the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          with open("Cargo.toml", "rb") as fh:
+              version = tomllib.load(fh)["workspace"]["package"]["version"]
+          tag = os.environ["TAG"]
+          if tag != f"v{version}":
+              print(
+                  f"::error title=Version passt nicht zum Tag::Tag {tag}, aber Cargo.toml "
+                  f"[workspace.package] version = {version}. Tag loeschen, Version heben, neu taggen."
+              )
+              sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"version={version}\n")
+          print(f"Tag {tag} entspricht der Workspace-Version {version}.")
+          PY
+
+  test:
+    name: test suite (ubuntu)
+    needs: verify-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Install software Vulkan (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      - name: Test
+        run: cargo test --workspace --locked
+
+  release:
+    name: GitHub release
+    needs: [verify-version, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # The job token has contents: write; keep it out of .git/config, where the third-party
+          # git-cliff action could read it. gh release create gets it through GH_TOKEN only.
+          persist-credentials: false
+      - name: Generate release notes (git-cliff)
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4.9.0
+        with:
+          config: cliff.toml
+          args: --current --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          flags=(--verify-tag --title "Grimoire ${TAG}" --notes-file RELEASE_NOTES.md)
+          case "$VERSION" in
+            *-*) flags+=(--prerelease) ;;
+          esac
+          gh release create "$TAG" "${flags[@]}"
+          echo "Release ${TAG} erstellt: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
