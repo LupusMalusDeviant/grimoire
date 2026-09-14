@@ -52,13 +52,14 @@ Erzwungen durch `clippy.toml` in diesen Crates, zusätzlich im Review geprüft:
 Nur im Review prüfbar (Engine-ADR 0004):
 
 - NaN gelangt nie in Simulationszustand. Code verzweigt nie auf Vorzeichen oder Payload eines möglichen NaN (`to_bits`, `total_cmp`, `is_sign_negative`, `copysign`) — beides ist plattform- und optimierungsabhängig.
+  Debug-Builds prüfen das Verbot an jedem Hash-Punkt zusätzlich zur Laufzeit: `Simulation::state_hash` bricht mit Panic samt Tick ab, wenn der gehashte Zustand ein NaN enthält (`StableHasher::saw_nan`). Golden-Tests und `replay`-Checkpoints schlagen damit an. Release-Builds und NaN, das vor dem nächsten Hash wieder verschwindet, bleiben Review-Aufgabe.
 - Clippy ignoriert nicht auflösbare Pfade in `clippy.toml` stillschweigend: Neue Einträge werden mit einer temporären Lint-Probe verifiziert; die fünf `clippy.toml` bleiben identisch.
 
 ## 4. `grimoire_core` — fertig
 
 | Element | Vertrag |
 |---------|---------|
-| `StableHasher` | `new`, `with_seed`, `write_{u8…u64,i8…i64,usize,isize,bool,f32,f64,bytes,str}`, `finish` (setzt nicht zurück), `ALGORITHM_VERSION = 1`; `write_f32`/`write_f64` bitgenau, jedes NaN wird als kanonisches `0x7fc0_0000` bzw. `0x7ff8_0000_0000_0000` eingespeist; Version 1 eingefroren durch `tests/stable_hash_golden.rs` |
+| `StableHasher` | `new`, `with_seed`, `write_{u8…u64,i8…i64,usize,isize,bool,f32,f64,bytes,str}`, `finish` (setzt nicht zurück), `ALGORITHM_VERSION = 1`; `write_f32`/`write_f64` bitgenau, jedes NaN wird als kanonisches `0x7fc0_0000` bzw. `0x7ff8_0000_0000_0000` eingespeist; `saw_nan()` meldet, ob ein NaN eingespeist wurde (nicht Teil des Hashes, von `PartialEq` ignoriert); Version 1 eingefroren durch `tests/stable_hash_golden.rs` |
 | `StableHash` | `fn stable_hash(&self, &mut StableHasher)`; Impls für Primitive, `str`, `String`, `()`, Slices (längenpräfixiert), Arrays, `Vec`, `Option`, Tupel bis 8, `&T`, `Box<T>`, `Vec2` |
 | `hash_of(&T) -> u64` | Hash eines Wertes mit frischem Hasher |
 | `impl_stable_hash!(Typ { feld, … })` | Makro für Structs |
@@ -173,8 +174,9 @@ pub enum EcsError;            // #[non_exhaustive]; NoSuchEntity(Entity); Displa
   Ebenso gleichzeitiger mutabler und lesender Zugriff (z. B. `(&mut Pos, &Pos)`); mehrfaches Lesen ist erlaubt.
 - Entity-Allokator: freie Slots werden in Freigabereihenfolge wiederverwendet (FIFO, ältester zuerst), mit um 1
   erhöhter Generation; ein Slot, dessen Generation `u32::MAX` überschreiten würde, wird stillgelegt.
-- `spawn` mit doppeltem Komponententyp im Bundle → Panic. Entfernen der letzten Komponente lässt die Entity
-  im komponentenlosen Archetyp am Leben.
+- `spawn` mit doppeltem Komponententyp im Bundle → Panic, bevor sich die Welt ändert. `CommandBuffer::spawn` prüft
+  das schon beim Aufzeichnen (gleiche Meldung, Puffer unverändert), damit `apply` nie mittendrin abbricht.
+  Entfernen der letzten Komponente lässt die Entity im komponentenlosen Archetyp am Leben.
 - `stable_hash` speist in dieser Reihenfolge (jede Anzahl als `usize`):
   1. Entity-Allokator: Slot-Anzahl; je Slot Generation (`u32`) und Lebend-Flag (`bool`); Länge der Freiliste,
      dann ihre Slot-Indizes (`u32`) in Wiederverwendungsreihenfolge.
@@ -215,7 +217,7 @@ pub struct InputFrame { pub axes: [i16; 4], pub buttons: u32 }    // Copy, Defau
                                                   // axis(i) -> f32 ∈ [-1, 1], is_pressed(bit: u8) -> bool
 pub struct TickInput { pub slots: [InputFrame; MAX_INPUT_SLOTS] } // Copy, Default, Eq, Debug, StableHash, Resource
 pub struct InputLog { pub seed: u64, pub tick_rate_hz: u32, pub frames: Vec<TickInput> }
-                                                  // MAGIC, FORMAT_VERSION, to_bytes() -> Vec<u8>,
+                                                  // MAGIC, FORMAT_VERSION, to_bytes() -> Vec<u8> (Panic bei tick_rate_hz 0),
                                                   // from_bytes(&[u8]) -> Result<InputLog, SimError>; Clone, Eq, Debug
 pub struct Simulation;                            // new(seed), seed(), tick(), world(), world_mut(), schedule_mut(),
                                                   // step(&mut self, input: TickInput), state_hash() -> u64,
@@ -246,6 +248,8 @@ pub enum SimError;                                // #[non_exhaustive], thiserro
   Tick und Seed gehören der Simulation; Änderungen durch Systeme werden überschrieben. Systeme halten
   simulationsrelevanten Zustand ausschließlich in der Welt (Closure-Zustand ist nicht snapshot-/hashbar).
 - `state_hash` speist in einen frischen `StableHasher`: Tick (`u64`), Seed (`u64`), dann `World::stable_hash`.
+  In Debug-Builds Panic `NaN in simulation state at tick <tick>`, wenn dabei ein NaN eingespeist wurde; der Hashwert
+  selbst hängt davon nicht ab.
 - `snapshot`/`restore` umfassen Welt, Tick und Seed, nicht den Schedule.
 - `replay` führt je Frame einen `step` aus und notiert `(tick, state_hash)` nach jedem Schritt mit
   `tick % hash_every == 0` sowie immer den Endzustand (ohne Duplikat; `hash_every == 0` → nur Endzustand;
@@ -256,8 +260,10 @@ pub enum SimError;                                // #[non_exhaustive], thiserro
   `tick_rate_hz: u32` (≠ 0), Frame-Anzahl `u64`, dann je Frame 4 Slots zu je 4 × `i16` Achsen + `u32` Buttons
   (48 Byte). Die Nutzlast muss exakt `Anzahl × 48` Byte lang sein (keine Rest-Bytes). Fehlerhafte Eingaben
   liefern `SimError`, niemals Panic; die Anzahl wird vor jeder Allokation gegen die Eingabelänge geprüft.
-- Determinismus-Gate: `tests/determinism.rs` (≥ 2 000 Entities, 10 000 Ticks) mit goldenem Endhash; Erneuerung
-  nur bei bewusster Änderung von Szenario, Hash-Layout oder RNG-/Hash-Algorithmusversion.
+  `to_bytes` bricht bei `tick_rate_hz == 0` mit Panic ab, weil `from_bytes` ein solches Log nie laden könnte.
+- Determinismus-Gate: `tests/determinism.rs` (≥ 2 000 Entities, 10 000 Ticks) mit goldenem Endhash, in CI auf
+  Windows, Linux und macOS reproduziert; bei Abweichung listet die Meldung alle Checkpoint-Hashes, sodass der
+  Vergleich mit einer grünen Plattform den ersten abweichenden Tick zeigt. Erneuerung nur bei bewusster Änderung von Szenario, Hash-Layout oder RNG-/Hash-Algorithmusversion.
 
 ## 9. `grimoire` — Fassade
 

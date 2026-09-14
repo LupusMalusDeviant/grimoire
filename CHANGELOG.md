@@ -28,3 +28,6 @@ Phase P0 — Fundament.
 - `grimoire_render`: Surface wird bei `Lost` neu erzeugt, GPU-Validierungsfehler kommen aus `render` zurück, Kreisränder werden nicht mehr abgeschnitten.
 - `grimoire_sim`: `dropped_time` sättigt exakt bei `Duration::MAX`; `f32::min`/`max` durch `dmath` ersetzt (Werte und Golden-Hashes unverändert).
 - `grimoire_platform`: Lebenszyklus als testbare Zustandsmaschine, Temp-Dateinamen beim atomaren Schreiben gekürzt.
+- `grimoire_core`/`grimoire_sim`: NaN im Simulationszustand fällt in Debug-Builds auf (`StableHasher::saw_nan`, Debug-Assertion in `Simulation::state_hash`); Hashwerte und Golden-Hashes unverändert.
+- `grimoire_ecs`: `CommandBuffer::spawn` lehnt Bundles mit doppeltem Komponententyp schon beim Aufzeichnen ab, statt `apply` mittendrin abzubrechen.
+- `grimoire_sim`: `InputLog::to_bytes` verweigert `tick_rate_hz == 0`, das `from_bytes` nie laden könnte; das Determinismus-Gate listet bei Abweichung alle Checkpoint-Hashes.
