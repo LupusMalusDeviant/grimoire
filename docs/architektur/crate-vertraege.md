@@ -153,18 +153,22 @@ pub enum EcsError;            // #[non_exhaustive]; NoSuchEntity(Entity); Displa
   erhöhter Generation; ein Slot, dessen Generation `u32::MAX` überschreiten würde, wird stillgelegt.
 - `spawn` mit doppeltem Komponententyp im Bundle → Panic. Entfernen der letzten Komponente lässt die Entity
   im komponentenlosen Archetyp am Leben.
-- `stable_hash` speist in dieser Reihenfolge: Entity-Allokator (Slot-Anzahl; je Slot Generation und Lebend-Flag;
-  Freiliste in Wiederverwendungsreihenfolge), Anzahl registrierter Komponententypen, Archetypen in
-  Erzeugungsreihenfolge (Komponenten-IDs, Entities und Komponentendaten in dichter Reihenfolge), Ressourcen-Slots in
-  Registrierungsreihenfolge mit Präsenz-Tag (ein entfernter Typ behält seinen Slot).
+- `stable_hash` speist in dieser Reihenfolge (jede Anzahl als `usize`):
+  1. Entity-Allokator: Slot-Anzahl; je Slot Generation (`u32`) und Lebend-Flag (`bool`); Länge der Freiliste,
+     dann ihre Slot-Indizes (`u32`) in Wiederverwendungsreihenfolge.
+  2. Anzahl registrierter Komponententypen.
+  3. Anzahl der Archetypen, dann je Archetyp in Erzeugungsreihenfolge: Anzahl und aufsteigende Komponenten-IDs
+     (`u32`); Anzahl und Bits (`u64`) der Entities in dichter Reihenfolge; danach je Spalte in aufsteigender
+     ID-Reihenfolge die Komponentenwerte in dichter Reihenfolge.
+  4. Anzahl der Ressourcen-Slots, dann je Slot in Registrierungsreihenfolge ein Präsenz-Tag (`u8`, 0 oder 1),
+     bei 1 gefolgt vom Wert (ein entfernter Typ behält seinen Slot).
+
   Typen werden über ihre Registrierungsnummer identifiziert, nie über `TypeId`.
 - `restore` stellt den vollständigen Zustand her (inkl. Allokator, Registries und Ressourcen); danach ist
   `stable_hash` identisch zum Snapshot-Zeitpunkt und gleiche Operationen liefern gleiche Entity-IDs.
 - `CommandBuffer::apply` wendet Befehle in Aufzeichnungsreihenfolge an; Befehle auf nicht lebende Entities
   werden übersprungen.
 - Filter `With<T>`/`Without<T>` sind als Tupel-Elemente mit `Item = ()` umgesetzt.
-- `EcsError` implementiert `Display`/`Error` vorerst von Hand, weil `grimoire_ecs/Cargo.toml` kein `thiserror`
-  deklariert; der Umstieg auf `thiserror` ändert die API nicht.
 - Leistung: Query über 10.000 Entities mit zwei Komponenten ohne Allokation pro Entity.
 
 ## 8. `grimoire_sim`

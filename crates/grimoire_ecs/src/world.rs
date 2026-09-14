@@ -75,17 +75,18 @@ impl World {
     ///
     /// # Panics
     ///
-    /// If `bundle` contains the same component type more than once.
+    /// If `bundle` contains the same component type more than once. The check runs before any
+    /// registration, so the world (and its hash) is unchanged when the panic is caught.
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
-        let ids = B::register(&mut self.components);
-        let mut sorted = ids;
-        sorted.as_mut().sort_unstable();
-        if sorted.as_ref().windows(2).any(|pair| pair[0] == pair[1]) {
+        if B::has_duplicate_types() {
             panic!(
                 "bundle `{}` contains the same component type more than once",
                 std::any::type_name::<B>()
             );
         }
+        let ids = B::register(&mut self.components);
+        let mut sorted = ids;
+        sorted.as_mut().sort_unstable();
         let archetype_index = self.archetype_for(sorted.as_ref());
         let archetype = &mut self.archetypes[archetype_index];
         let location = EntityLocation {
@@ -226,10 +227,18 @@ impl World {
 
     /// Feeds the complete simulation state into `hasher`.
     ///
-    /// Order: entity allocator (slot count; per slot generation and liveness; free list in reuse
-    /// order), number of registered component types, archetypes in creation order (component
-    /// ids, entities and every column's rows in dense order), resource slots in registration
-    /// order with a presence tag. Types are identified by registration number only.
+    /// Order, with every count written as `usize`:
+    ///
+    /// 1. Entity allocator: slot count; per slot its generation (`u32`) and liveness (`bool`);
+    ///    free-list length, then the free slot indices (`u32`) in reuse order.
+    /// 2. Number of registered component types.
+    /// 3. Archetype count, then per archetype in creation order: component-id count and the
+    ///    ascending ids (`u32`); entity count and the entity bits (`u64`) in dense order; then
+    ///    per column in ascending id order the component values in dense order.
+    /// 4. Resource slot count, then per slot in registration order a presence tag (`u8`, 0 or 1)
+    ///    followed by the value when present.
+    ///
+    /// Types are identified by registration number only.
     pub fn stable_hash(&self, hasher: &mut StableHasher) {
         self.entities.stable_hash(hasher);
         hasher.write_usize(self.components.count());

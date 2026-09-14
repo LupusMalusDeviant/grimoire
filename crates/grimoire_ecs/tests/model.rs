@@ -92,59 +92,74 @@ fn spawn_with(world: &mut World, a: Option<u32>, b: Option<i64>, c: Option<u8>) 
     entity
 }
 
-/// Applies `op` to the world only. Returns the spawned entity, if any.
-fn apply(world: &mut World, spawned: &mut Vec<Entity>, op: &Op) {
+/// Observable result of one operation, compared between the world and the model.
+#[derive(Debug, PartialEq)]
+enum Obs {
+    /// No handle to pick yet, or the operation returns nothing.
+    Nothing,
+    Spawned(Entity),
+    Despawned(bool),
+    Inserted(bool),
+    RemovedA(Option<A>),
+    RemovedB(Option<B>),
+    RemovedC(Option<C>),
+    Got(Option<A>, Option<B>, Option<C>),
+    Mutated(bool),
+    RemovedRes(Option<Res>),
+}
+
+/// Applies `op` to the world only and returns what the world reported.
+fn apply(world: &mut World, spawned: &mut Vec<Entity>, op: &Op) -> Obs {
+    if let Op::Spawn { a, b, c } = *op {
+        let entity = spawn_with(world, a, b, c);
+        spawned.push(entity);
+        return Obs::Spawned(entity);
+    }
+    let target = match *op {
+        Op::Despawn(e)
+        | Op::InsertA(e, _)
+        | Op::InsertB(e, _)
+        | Op::InsertC(e, _)
+        | Op::RemoveA(e)
+        | Op::RemoveB(e)
+        | Op::RemoveC(e)
+        | Op::Get(e)
+        | Op::MutateA(e) => match pick(spawned, e) {
+            Some(entity) => Some(entity),
+            None => return Obs::Nothing,
+        },
+        _ => None,
+    };
+    let entity = || target.expect("entity operations picked a handle above");
     match *op {
-        Op::Spawn { a, b, c } => spawned.push(spawn_with(world, a, b, c)),
-        Op::Despawn(e) => {
-            if let Some(e) = pick(spawned, e) {
-                world.despawn(e);
-            }
+        Op::Spawn { .. } => unreachable!("handled above"),
+        Op::Despawn(_) => Obs::Despawned(world.despawn(entity())),
+        Op::InsertA(_, v) => Obs::Inserted(world.insert(entity(), A { v }).is_ok()),
+        Op::InsertB(_, v) => Obs::Inserted(world.insert(entity(), B { v }).is_ok()),
+        Op::InsertC(_, v) => Obs::Inserted(world.insert(entity(), C { v }).is_ok()),
+        Op::RemoveA(_) => Obs::RemovedA(world.remove::<A>(entity())),
+        Op::RemoveB(_) => Obs::RemovedB(world.remove::<B>(entity())),
+        Op::RemoveC(_) => Obs::RemovedC(world.remove::<C>(entity())),
+        Op::Get(_) => {
+            let e = entity();
+            Obs::Got(
+                world.get::<A>(e).cloned(),
+                world.get::<B>(e).cloned(),
+                world.get::<C>(e).cloned(),
+            )
         }
-        Op::InsertA(e, v) => {
-            if let Some(e) = pick(spawned, e) {
-                let _ = world.insert(e, A { v });
-            }
-        }
-        Op::InsertB(e, v) => {
-            if let Some(e) = pick(spawned, e) {
-                let _ = world.insert(e, B { v });
-            }
-        }
-        Op::InsertC(e, v) => {
-            if let Some(e) = pick(spawned, e) {
-                let _ = world.insert(e, C { v });
-            }
-        }
-        Op::RemoveA(e) => {
-            if let Some(e) = pick(spawned, e) {
-                world.remove::<A>(e);
-            }
-        }
-        Op::RemoveB(e) => {
-            if let Some(e) = pick(spawned, e) {
-                world.remove::<B>(e);
-            }
-        }
-        Op::RemoveC(e) => {
-            if let Some(e) = pick(spawned, e) {
-                world.remove::<C>(e);
-            }
-        }
-        Op::Get(e) => {
-            if let Some(e) = pick(spawned, e) {
-                let _ = (world.get::<A>(e), world.get::<B>(e), world.get::<C>(e));
-            }
-        }
-        Op::MutateA(e) => {
-            if let Some(a) = pick(spawned, e).and_then(|e| world.get_mut::<A>(e)) {
+        Op::MutateA(_) => match world.get_mut::<A>(entity()) {
+            Some(a) => {
                 a.v = a.v.wrapping_add(1);
+                Obs::Mutated(true)
             }
+            None => Obs::Mutated(false),
+        },
+        Op::InsertRes(v) => {
+            world.insert_resource(Res { v });
+            Obs::Nothing
         }
-        Op::InsertRes(v) => world.insert_resource(Res { v }),
-        Op::RemoveRes => {
-            world.remove_resource::<Res>();
-        }
+        Op::RemoveRes => Obs::RemovedRes(world.remove_resource::<Res>()),
     }
 }
 
@@ -179,8 +194,9 @@ impl Model {
         entity
     }
 
-    fn apply(&mut self, spawned: &mut Vec<Entity>, op: &Op) {
-        match *op {
+    /// Applies `op` to the model and returns what a correct world must report.
+    fn apply(&mut self, spawned: &mut Vec<Entity>, op: &Op) -> Obs {
+        let selector = match *op {
             Op::Spawn { a, b, c } => {
                 let entity = self.spawn(Row {
                     a: a.map(|v| A { v }),
@@ -188,35 +204,70 @@ impl Model {
                     c: c.map(|v| C { v }),
                 });
                 spawned.push(entity);
+                return Obs::Spawned(entity);
             }
-            Op::Despawn(e) => {
-                if let Some(e) = pick(spawned, e)
-                    && self.rows.remove(&e).is_some()
-                {
-                    self.generations[e.index() as usize] += 1;
-                    self.free.push_back(e.index());
-                }
+            Op::InsertRes(v) => {
+                self.resource = Some(Res { v });
+                return Obs::Nothing;
             }
-            Op::InsertA(e, v) => self.row(spawned, e, |row| row.a = Some(A { v })),
-            Op::InsertB(e, v) => self.row(spawned, e, |row| row.b = Some(B { v })),
-            Op::InsertC(e, v) => self.row(spawned, e, |row| row.c = Some(C { v })),
-            Op::RemoveA(e) => self.row(spawned, e, |row| row.a = None),
-            Op::RemoveB(e) => self.row(spawned, e, |row| row.b = None),
-            Op::RemoveC(e) => self.row(spawned, e, |row| row.c = None),
-            Op::Get(_) => {}
-            Op::MutateA(e) => self.row(spawned, e, |row| {
-                if let Some(a) = &mut row.a {
-                    a.v = a.v.wrapping_add(1);
-                }
-            }),
-            Op::InsertRes(v) => self.resource = Some(Res { v }),
-            Op::RemoveRes => self.resource = None,
+            Op::RemoveRes => return Obs::RemovedRes(self.resource.take()),
+            Op::Despawn(e)
+            | Op::InsertA(e, _)
+            | Op::InsertB(e, _)
+            | Op::InsertC(e, _)
+            | Op::RemoveA(e)
+            | Op::RemoveB(e)
+            | Op::RemoveC(e)
+            | Op::Get(e)
+            | Op::MutateA(e) => e,
+        };
+        let Some(entity) = pick(spawned, selector) else {
+            return Obs::Nothing;
+        };
+        if let Op::Despawn(_) = *op {
+            let alive = self.rows.remove(&entity).is_some();
+            if alive {
+                self.generations[entity.index() as usize] += 1;
+                self.free.push_back(entity.index());
+            }
+            return Obs::Despawned(alive);
         }
-    }
-
-    fn row(&mut self, spawned: &[Entity], selector: usize, f: impl FnOnce(&mut Row)) {
-        if let Some(row) = pick(spawned, selector).and_then(|e| self.rows.get_mut(&e)) {
-            f(row);
+        let Some(row) = self.rows.get_mut(&entity) else {
+            return match *op {
+                Op::InsertA(..) | Op::InsertB(..) | Op::InsertC(..) => Obs::Inserted(false),
+                Op::RemoveA(_) => Obs::RemovedA(None),
+                Op::RemoveB(_) => Obs::RemovedB(None),
+                Op::RemoveC(_) => Obs::RemovedC(None),
+                Op::Get(_) => Obs::Got(None, None, None),
+                Op::MutateA(_) => Obs::Mutated(false),
+                _ => unreachable!("other operations returned above"),
+            };
+        };
+        match *op {
+            Op::InsertA(_, v) => {
+                row.a = Some(A { v });
+                Obs::Inserted(true)
+            }
+            Op::InsertB(_, v) => {
+                row.b = Some(B { v });
+                Obs::Inserted(true)
+            }
+            Op::InsertC(_, v) => {
+                row.c = Some(C { v });
+                Obs::Inserted(true)
+            }
+            Op::RemoveA(_) => Obs::RemovedA(row.a.take()),
+            Op::RemoveB(_) => Obs::RemovedB(row.b.take()),
+            Op::RemoveC(_) => Obs::RemovedC(row.c.take()),
+            Op::Get(_) => Obs::Got(row.a.clone(), row.b.clone(), row.c.clone()),
+            Op::MutateA(_) => match &mut row.a {
+                Some(a) => {
+                    a.v = a.v.wrapping_add(1);
+                    Obs::Mutated(true)
+                }
+                None => Obs::Mutated(false),
+            },
+            _ => unreachable!("other operations returned above"),
         }
     }
 }
@@ -293,8 +344,9 @@ proptest! {
         let mut world_spawned = Vec::new();
         let mut model_spawned = Vec::new();
         for op in &ops {
-            apply(&mut world, &mut world_spawned, op);
-            model.apply(&mut model_spawned, op);
+            let observed = apply(&mut world, &mut world_spawned, op);
+            let expected = model.apply(&mut model_spawned, op);
+            prop_assert_eq!(observed, expected, "return value of {:?}", op);
             prop_assert_eq!(&world_spawned, &model_spawned, "entity ids follow the allocator model");
             check_against_model(&world, &model, &world_spawned)?;
         }

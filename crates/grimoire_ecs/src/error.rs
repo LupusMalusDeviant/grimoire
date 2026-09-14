@@ -1,29 +1,15 @@
 //! Error type of the crate.
 
-use std::fmt;
-
 use crate::entity::Entity;
 
 /// Errors reported by fallible [`World`](crate::World) operations.
-///
-/// `Display`/`Error` are implemented by hand with the same shape a `thiserror` derive would
-/// produce, because `grimoire_ecs` does not depend on `thiserror` yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EcsError {
     /// The entity was never spawned, has been despawned or the handle has a stale generation.
+    #[error("entity {0} does not exist")]
     NoSuchEntity(Entity),
 }
-
-impl fmt::Display for EcsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoSuchEntity(entity) => write!(f, "entity {entity} does not exist"),
-        }
-    }
-}
-
-impl std::error::Error for EcsError {}
 
 #[cfg(test)]
 mod tests {

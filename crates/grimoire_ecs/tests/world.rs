@@ -456,6 +456,150 @@ fn eight_element_query() {
     assert_eq!(count, 1);
 }
 
+#[test]
+fn wide_mutable_query_with_scrambled_ids() {
+    let mut world = World::new();
+    // Component ids deliberately disagree with the query's tuple order.
+    world.register_component::<u16>();
+    world.register_component::<Label>();
+    world.register_component::<Counter>();
+    world.register_component::<Health>();
+    let full = world.spawn((
+        Tag { id: 1 },
+        2u32,
+        pos(3.0),
+        4u16,
+        Label {
+            text: "five".into(),
+        },
+        vel(6.0),
+        Counter { value: 7 },
+        Health { value: 8 },
+    ));
+    let partial = world.spawn((vel(60.0), pos(30.0), Health { value: 80 }));
+
+    let mut visited = 0;
+    for (p, v, h, t, c, l, n, s) in world.query_mut::<(
+        &mut Pos,
+        &mut Vel,
+        &mut Health,
+        &mut Tag,
+        &mut Counter,
+        &mut Label,
+        &mut u32,
+        &mut u16,
+    )>() {
+        p.x += 1.0;
+        v.x += 1.0;
+        h.value += 1;
+        t.id += 1;
+        c.value += 1;
+        l.text.push('!');
+        *n += 1;
+        *s += 1;
+        visited += 1;
+    }
+    assert_eq!(visited, 1);
+    assert_eq!(world.get::<Pos>(full), Some(&Pos { x: 4.0, y: -3.0 }));
+    assert_eq!(world.get::<Vel>(full), Some(&vel(7.0)));
+    assert_eq!(world.get::<Health>(full), Some(&Health { value: 9 }));
+    assert_eq!(world.get::<Tag>(full), Some(&Tag { id: 2 }));
+    assert_eq!(world.get::<Counter>(full), Some(&Counter { value: 8 }));
+    assert_eq!(
+        world.get::<Label>(full).map(|l| l.text.as_str()),
+        Some("five!")
+    );
+    assert_eq!(world.get::<u32>(full), Some(&3));
+    assert_eq!(world.get::<u16>(full), Some(&5));
+    assert_eq!(world.get::<Pos>(partial), Some(&pos(30.0)));
+
+    let mut seen = Vec::new();
+    for (s, p, h, e, l, v, c, ()) in world.query_mut::<(
+        Option<&mut u16>,
+        &Pos,
+        &mut Health,
+        Entity,
+        Option<&mut Label>,
+        &Vel,
+        Option<&Counter>,
+        With<Vel>,
+    )>() {
+        h.value += p.x as i32 + v.x as i32;
+        if let Some(s) = s {
+            *s += 10;
+        }
+        if let Some(l) = l {
+            l.text.push('?');
+        }
+        seen.push((e, c.map(|c| c.value)));
+    }
+    assert_eq!(seen, vec![(full, Some(8)), (partial, None)]);
+    assert_eq!(world.get::<Health>(full), Some(&Health { value: 20 }));
+    assert_eq!(world.get::<Health>(partial), Some(&Health { value: 170 }));
+    assert_eq!(world.get::<u16>(full), Some(&15));
+    assert_eq!(
+        world.get::<Label>(full).map(|l| l.text.as_str()),
+        Some("five!?")
+    );
+    assert_eq!(world.get::<u16>(partial), None);
+}
+
+#[test]
+fn single_optional_mutable_query() {
+    let mut world = World::new();
+    let with = world.spawn((pos(1.0), Tag { id: 1 }));
+    let without = world.spawn((pos(2.0),));
+    let mut visited = 0;
+    let mut present = 0;
+    for tag in world.query_mut::<Option<&mut Tag>>() {
+        visited += 1;
+        if let Some(tag) = tag {
+            tag.id = 9;
+            present += 1;
+        }
+    }
+    assert_eq!((visited, present), (2, 1));
+    assert_eq!(world.get::<Tag>(with), Some(&Tag { id: 9 }));
+    assert_eq!(world.get::<Tag>(without), None);
+    assert_eq!(
+        world
+            .query_mut::<Option<&mut Counter>>()
+            .filter(Option::is_some)
+            .count(),
+        0,
+        "unregistered optional matches every entity with None"
+    );
+}
+
+#[test]
+fn caught_duplicate_bundle_panic_leaves_world_unchanged() {
+    #[derive(Clone)]
+    struct Fresh {
+        v: u8,
+    }
+    impl_stable_hash!(Fresh { v });
+
+    let mut world = World::new();
+    world.spawn((pos(1.0),));
+    let before = hash(&world);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        world.spawn((Fresh { v: 1 }, vel(1.0), Fresh { v: 2 }));
+    }));
+    assert!(result.is_err());
+    assert_eq!(hash(&world), before);
+    assert_eq!(world.entity_count(), 1);
+
+    let mut reference = World::new();
+    reference.spawn((pos(1.0),));
+    reference.spawn((vel(2.0), Fresh { v: 3 }));
+    world.spawn((vel(2.0), Fresh { v: 3 }));
+    assert_eq!(
+        hash(&world),
+        hash(&reference),
+        "registration order unaffected"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Resources
 
