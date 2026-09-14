@@ -850,6 +850,35 @@ fn commands_on_dead_entities_are_skipped() {
     assert_eq!(world.entity_count(), 0);
 }
 
+#[test]
+#[should_panic(expected = "contains the same component type more than once")]
+fn command_buffer_rejects_duplicate_bundle_when_recording() {
+    let mut commands = CommandBuffer::new();
+    commands.spawn((pos(1.0), vel(1.0), pos(2.0)));
+}
+
+#[test]
+fn caught_duplicate_bundle_panic_leaves_command_buffer_intact() {
+    let mut world = World::new();
+    let mut commands = CommandBuffer::new();
+    commands.spawn((pos(1.0),));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        commands.spawn((vel(1.0), vel(2.0)));
+    }));
+    assert!(result.is_err());
+    assert_eq!(commands.len(), 1, "the rejected spawn was not recorded");
+    assert_eq!(world.entity_count(), 0, "nothing applied while recording");
+
+    commands.spawn((pos(3.0),));
+    commands.apply(&mut world);
+    assert!(commands.is_empty());
+    assert_eq!(
+        world.entity_count(),
+        2,
+        "commands on both sides are applied"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Systems
 

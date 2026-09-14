@@ -78,12 +78,7 @@ impl World {
     /// If `bundle` contains the same component type more than once. The check runs before any
     /// registration, so the world (and its hash) is unchanged when the panic is caught.
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
-        if B::has_duplicate_types() {
-            panic!(
-                "bundle `{}` contains the same component type more than once",
-                std::any::type_name::<B>()
-            );
-        }
+        reject_duplicate_types::<B>();
         let ids = B::register(&mut self.components);
         let mut sorted = ids;
         sorted.as_mut().sort_unstable();
@@ -340,6 +335,17 @@ impl World {
                 archetype: target,
                 row: new_row,
             },
+        );
+    }
+}
+
+/// Panics if `B` names one component type more than once; shared by [`World::spawn`] and
+/// [`crate::CommandBuffer::spawn`] so both reject the same bundles with the same message.
+pub(crate) fn reject_duplicate_types<B: Bundle>() {
+    if B::has_duplicate_types() {
+        panic!(
+            "bundle `{}` contains the same component type more than once",
+            std::any::type_name::<B>()
         );
     }
 }

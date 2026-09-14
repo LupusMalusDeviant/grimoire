@@ -39,7 +39,14 @@ impl CommandBuffer {
     }
 
     /// Records spawning an entity with `bundle`.
+    ///
+    /// # Panics
+    ///
+    /// If `bundle` contains the same component type more than once, like [`World::spawn`]. The
+    /// check runs here, at recording time, so the buffer is unchanged when the panic is caught
+    /// and [`CommandBuffer::apply`] never panics halfway through.
     pub fn spawn<B: Bundle>(&mut self, bundle: B) {
+        crate::world::reject_duplicate_types::<B>();
         self.commands
             .push(Command::Deferred(Box::new(move |world: &mut World| {
                 world.spawn(bundle);
