@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+license-file.workspace = true
 publish.workspace = true
 
 # P1+ crates (collide, audio, ui, assets, sigil, debug) join once they have an API (contract §1).

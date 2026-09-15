@@ -5,6 +5,13 @@ Verbindliche Arbeitsregeln für Menschen und Coding-Agenten. Architektur: [READM
 Architekturentscheidungen liegen im Spiel-Repo (ADR-0002 Engine im eigenen Repo, PRD-0017 CI,
 PRD-0018 Teststrategie).
 
+## Beiträge von außen
+
+Pull Requests von außen werden **derzeit nicht angenommen**. Das Repo steht unter „Alle Rechte
+vorbehalten“ ([LICENSE](LICENSE), [Engine-ADR-0009](docs/adr/0009-lizenz-alle-rechte-vorbehalten.md));
+ohne eine Beitragsvereinbarung können keine Rechte eingeräumt werden. Issues bleiben offen: Hinweise
+und Fehlerberichte sind willkommen.
+
 ## Grundsätze
 
 - **Eigenständig:** Kein Crate, kein Test, kein Beispiel referenziert Spiel-Code (`fnp_*`). Die CI
@@ -90,6 +97,7 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
 | `nightly.yml` | täglich 02:17 UTC, manuell | Tests im Release-Modus auf drei Systemen plus Float-Vergleich; geplante Läufe entfallen, wenn `main` 24 h nicht bewegt wurde (Push oder Merge laut Aktivitäts-API, nicht Commit-Datum) |
 | `release.yml` | Tag `vX.Y.Z` | Versionsprüfung, Testsuite (Linux), Release-Notes per git-cliff, GitHub-Release (nur Quelltext) |
 
+- **Ruleset:** `main` ist gegen Force-Push und Löschen geschützt; direkte Pushes sind erlaubt.
 - Commits, die nur Markdown oder `docs/` ändern, lösen `ci.yml` nicht aus. **Achtung Branch-Schutz:**
   Ein per Pfadfilter übersprungener Workflow meldet keinen Status. Pull Requests, die ausschließlich
   Doku ändern, bleiben dann bei Pflicht-Checks auf „Expected“ stehen und brauchen einen manuellen
@@ -107,8 +115,13 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
   `core-<os>-<arch>.txt`. `float-compare` stellt die `std_trig_hash`-Werte nebeneinander. Eine
   Abweichung zwischen Systemen ist ein **Hinweis** (Eingabe für OF-2.1), kein roter Lauf; rot werden
   die Golden-Assertions in den Tests selbst.
-- **Kosten:** In privaten Repos zählen Linux-Minuten einfach, Windows doppelt, macOS zehnfach. Teure
-  Zusatzjobs gehören in die Nightly, nicht in `ci.yml`.
+- **Kosten:** Das Repo ist öffentlich; die gehosteten Standard-Runner (Linux, Windows, macOS)
+  verbrauchen keine Actions-Minuten. Größere Runner sind kostenpflichtig und werden nicht genutzt.
+  Teure Zusatzjobs gehören trotzdem in die Nightly, nicht in `ci.yml`, damit ein Standard-Push schnell
+  bleibt.
+- **Pull Requests aus Forks** starten Workflows erst, nachdem ein Maintainer sie freigegeben hat
+  (Repository-Einstellung). Pull Requests von außen werden derzeit ohnehin nicht angenommen (siehe
+  „Beiträge von außen“).
 
 ## CI-Überwachung (Pflicht)
 
@@ -188,11 +201,14 @@ Patch-Version.
 - **Vor 1.0 (`0.MINOR.PATCH`):** Eine inkompatible Änderung hebt **MINOR** (`0.3.2` → `0.4.0`) und
   braucht einen CHANGELOG-Eintrag mit Migrationshinweis. Kompatible Funktionen und Fehlerbehebungen
   heben **PATCH**.
+- **Während Phase P1 (PO-Entscheidung P-7):** Releases sind Patch-Versionen `0.1.x`. Additive
+  Änderungen gelten als kompatibel, auch neue Formatversionen, solange ältere Formate lesbar bleiben
+  (etwa Replay v2 neben v1); sie heben PATCH. `0.2.0` erscheint erst mit einer inkompatiblen Änderung.
 - **Ab 1.0:** reguläres SemVer (inkompatibel → MAJOR, Funktion → MINOR, Fehlerbehebung → PATCH).
 - **Als inkompatibel gilt:** Entfernen oder Signaturänderung öffentlicher API der `grimoire*`-Crates;
   geänderte deterministische Ergebnisse (Hash-Werte, RNG-Streams, Sim-Reihenfolge), weil sie Replays
-  und Golden-Master des Spiels brechen; geänderte Formate (Snapshots, Replays, Packs); ein höheres
-  `rust-version`; geänderte Standard-Features.
+  und Golden-Master des Spiels brechen; geänderte Formate (Snapshots, Replays, Packs), sofern ältere
+  Formate danach nicht mehr lesbar sind; ein höheres `rust-version`; geänderte Standard-Features.
 - Das Spiel pinnt exakte Tags; auch ein Patch-Release erreicht es erst durch einen bewussten
   Upgrade-Commit.
 
