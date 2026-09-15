@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
+grimoire_core.workspace = true
 grimoire_gpu.workspace = true
 grimoire_platform.workspace = true
 log.workspace = true

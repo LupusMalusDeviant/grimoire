@@ -33,6 +33,7 @@ graph TD
     FAC -.P2+.-> AUD[grimoire_audio] & UI[grimoire_ui]
     REN --> GPU[grimoire_gpu] --> PLT
     REN --> PLT
+    REN --> CORE
     SIM --> ECS --> CORE
     SIM --> CORE
     COL --> ECS & CORE
@@ -359,6 +360,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-15 | §6, §11.1, §11.3, §13, §14 | #3 | K | — | nein |
 | 2026-09-15 | §11.1, §11.2 | #3 | A (PO-Entscheid V-20) | — | nein |
 | 2026-09-15 | §8.4, §11.5 | #3 | A (PO-Entscheid V-20) | — | nein (WP5 noch nicht umgesetzt) |
+| 2026-09-15 | §6 (Kamera-, Mesh-, Material- und Licht-Kanäle) | #6 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -571,7 +573,8 @@ Texturreferenzen für Basisfarbe, Normalen und Occlusion-Roughness-Metallic; glT
 Spiel-ADR-0014, Wechsel von Toon/Cel-Shading zu PBR], `PointLight`, Key-Light, Ambient) nach denselben Regeln
 als weitere Felder von `StageFrame` hinzu; für `Camera25D::screen_to_ground` gilt zusätzlich die
 Arithmetik-Regel aus §9.4 (Determinismus). `BulletInstance` definiert WP2.2 nicht neu. Anpassungen nach dem Spike
-OF-3.3 (WP3.2) kommen nur per Vertrags-PR (§2b) und vor dem Start von WP5.3.
+OF-3.3 (WP3.2) kommen nur per Vertrags-PR (§2b) und vor dem Start von WP5.3. Die vollständigen Signaturen dieser
+Kanäle stehen im nächsten Unterabschnitt.
 
 **Trait-Entscheid „Renderer-Erweiterung“ (PRD-0002 FR-02, §2a):** Die P0-Typen bleiben unverändert. `RenderFrame`,
 `RenderStats` und `RendererConfig` haben nur öffentliche Felder und kein `#[non_exhaustive]`. Ein neues Feld bräche
@@ -670,6 +673,151 @@ pub enum RenderLayer { World, Vfx, PostFxResolve, Telegraphy, Bullets, PlayerMar
 - **Leistung:** 10.000 Instanzen je Frame ohne Allokation je Frame (wachsender Instanzpuffer wie beim Sprite-Pass).
   Das Layout ist eine flache Kopie ohne Indirektion und erlaubt die Extraktion in höchstens 0,5 ms bei 10.000
   Bullets (PRD-0004 NFR, WP5.3). `wgpu`-Typen erscheinen nicht in der API (Engine-ADR-0002).
+
+**Kamera-, Mesh-, Material- und Licht-Kanäle: Render-Vertrag v1 (Ergänzung P1, WP2.2)**
+
+*Freigegeben (PO, 2026-09-15; Stufe A nach PO-Entscheid V-20, §2b), einschließlich `ground_to_screen` und der
+Lesart, dass WP2.2 nur Lichtwerte prüft und die Licht-Anzahl (Low 32 / High 256) erst WP3.4 begrenzt. Das
+adversariale Review fand keine Blocker; offen vor WP3.4/WP3.5 bleibt, wie verbindlich `PointLight::is_bullet_light`
+aus dem Bullet-Kanal abgeleitet wird (PO-Entscheid ausstehend).*
+
+Additiv zu den P0-Typen (`Camera2D`, `SpriteInstance`, `RenderFrame` bleiben unverändert) und zum Bullet-Kanal
+oben. Realistischer PBR-Look statt Toon/Cel-Shading (Spiel-ADR-0014); Materialien sind glTF-Metallic-Roughness-
+kompatibel. Umgesetzt in `grimoire_render::stage3d` (neues Modul); `StageFrame` und `StageStats` wachsen additiv
+um die Felder und Zähler unten (contract §2 Regel 13, beide bereits `#[non_exhaustive]`). Dafür bekommt
+`grimoire_render` erstmals eine (in §1 bereits erlaubte, jetzt gezeichnete) normale Kante auf `grimoire_core`, nur
+für `grimoire_core::math::{Vec2, dmath}` — keine neuen Render-, Sigil- oder Formattypen wandern dorthin.
+
+```rust
+// grimoire_render::stage3d — Köpfe, vollständige Semantik unten.
+
+// Handles: einfache ID-Wrapper wie `UnitId`/`AssetId` (§11.1/§12), kein Trait-Objekt, keine Registrierung
+// in P1 (Registrierung ist WP2.3). Copy, Eq, Ord, Hash, Debug, Default.
+pub struct MeshHandle(pub u32);
+pub struct MaterialHandle(pub u32);      // Index in `StageFrame::materials`
+pub struct TextureHandle(pub u32);
+
+#[non_exhaustive]                        // wie jeder neue P1-Render-Typ: Default statt Konstruktor
+pub struct Camera25D {                   // Debug, Clone, Copy, PartialEq
+    pub target: [f32; 2],                // Boden-Zielpunkt, wie `Camera2D::center`
+    pub tilt_degrees: f32,                // 90 = senkrecht von oben; Serienlook 60.0..=75.0 (PRD-0003 FR-03), nicht erzwungen
+    pub fov_y_degrees: f32,
+    pub distance: f32,                    // Kameraabstand vom Ziel entlang der Blickrichtung
+    pub look_ahead_max: f32,              // Parameter für WP2.4, hier nur transportiert
+    pub look_ahead_smoothing: f32,        // Zeitkonstante der WP2.4-Feder, hier nur transportiert
+}
+impl Camera25D {
+    pub fn screen_to_ground(&self, pixel: [f32; 2], viewport: [f32; 2]) -> Option<[f32; 2]>;   // Strahl-Ebene-Schnitt, §9.4
+    pub fn ground_to_screen(&self, ground: [f32; 2], viewport: [f32; 2]) -> Option<[f32; 2]>;  // Umkehrung, additiv über §9.4 hinaus
+}
+
+#[non_exhaustive]
+pub struct MeshInstance {                // Debug, Clone, Copy, PartialEq
+    pub mesh: MeshHandle,
+    pub material: MaterialHandle,        // Index in `StageFrame::materials`
+    pub transform: [[f32; 4]; 4],        // Spaltenmajor wie `Camera2D::view_projection`
+    pub layer: RenderLayer,              // P1 akzeptiert nur `RenderLayer::World`
+}
+
+#[non_exhaustive]
+pub struct PbrMaterial {                 // Debug, Clone, Copy, PartialEq; glTF `pbrMetallicRoughness`
+    pub base_color_factor: [f32; 4],     // je Kanal 0.0..=1.0
+    pub metallic_factor: f32,            // 0.0..=1.0, glTF-Default 1.0
+    pub roughness_factor: f32,           // 0.0..=1.0, glTF-Default 1.0
+    pub emissive_factor: [f32; 3],       // je Kanal 0.0..=1.0 (glTF-Kern, keine HDR-Erweiterung in P1)
+    pub alpha_mode: AlphaMode,
+    pub base_color_texture: Option<TextureHandle>,                     // sRGB-kodiert, beim Abtasten linearisiert
+    pub normal_texture: Option<TextureHandle>,                         // linear, Tangentenraum, OpenGL-Konvention (+Y)
+    pub occlusion_roughness_metallic_texture: Option<TextureHandle>,   // linear; R=Occlusion, G=Roughness, B=Metallic
+}
+pub enum AlphaMode { Opaque, Mask { cutoff: f32 }, Blend }             // cutoff 0.0..=1.0; kein `#[non_exhaustive]` (§2 Regel 13 gilt nur für Structs mit öffentlichen Feldern und Fehler-Enums)
+
+#[non_exhaustive]
+pub struct PointLight {                  // Debug, Clone, Copy, PartialEq
+    pub position: [f32; 3],
+    pub color: [f32; 3],                  // linear, >= 0.0
+    pub intensity: f32,                   // >= 0.0
+    pub range: f32,                       // > 0.0
+    pub is_bullet_light: bool,            // FR-15-Haken, siehe unten
+}
+#[non_exhaustive]
+pub struct DirectionalLight { pub direction: [f32; 3], pub color: [f32; 3], pub intensity: f32 }   // Key-Light
+pub enum AmbientLight {                  // kein `#[non_exhaustive]`, s.o.
+    Flat { color: [f32; 3], intensity: f32 },
+    Hemisphere { sky_color: [f32; 3], ground_color: [f32; 3], intensity: f32 },
+}
+#[non_exhaustive]
+pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-0003 Regel 5 / FR-15
+
+// StageFrame (§6 oben) wächst additiv um:
+//   pub camera_25d: Option<Camera25D>,        pub meshes: Vec<MeshInstance>,
+//   pub materials: Vec<PbrMaterial>,          pub point_lights: Vec<PointLight>,
+//   pub key_light: Option<DirectionalLight>,  pub ambient: AmbientLight,
+//   pub bullet_light_cap: BulletLightCap,
+// StageStats (§6 oben) wächst additiv um Zähler: meshes_drawn, meshes_rejected_layer,
+//   meshes_rejected_invalid, materials_rejected_invalid, point_lights_drawn,
+//   point_lights_rejected_invalid, bullet_point_lights_drawn, key_light_rejected_invalid (bool),
+//   ambient_rejected_invalid (bool), bullet_light_cap_invalid (bool).
+```
+
+**Semantik:**
+
+- **Koordinaten:** Wie beim Bullet-Kanal X nach rechts, Y vom Betrachter weg (Bodenebene, `Z = 0`); neu ist die
+  Höhenachse Z nach oben. `Camera25D` blickt nie frei (kein Gieren/Rollen, PRD-0003 Non-Goal): sie neigt sich nur
+  um `tilt_degrees` gegen die Horizontale und folgt sonst nur `target` (und ab WP2.4 dem Look-Ahead).
+- **`Camera25D::screen_to_ground`/`ground_to_screen`:** Strahl-Ebene-Schnitt mit der Bodenebene bzw. seine
+  Umkehrung, ohne volle View-Projection-Matrix (die braucht Nah-/Fern-Ebenen und ist Sache von WP2.3/WP2.4, wenn
+  der Tiefenpuffer und das renderseitige Following feststehen). Randfälle **ohne NaN**: Horizont, Strahl parallel
+  zur Ebene, Blick über den Horizont, leerer oder negativer Viewport und nicht-endliche Eingaben liefern alle
+  `None`, nie NaN — geprüft per Tabellentest über einen weiten Pixel-Bereich und gezielte Grenzfälle. Für beide
+  Funktionen und die davon genutzten Basisvektoren gilt zusätzlich zu §9.4 die Arithmetik-Regel aus Engine-ADR-0004
+  (nur Grundrechenarten, `f32::sqrt`, `grimoire_core::math::dmath`; kein `std`-Trig, kein `mul_add`/`powi`, kein
+  `f32::min`/`max`), obwohl `grimoire_render` keine Determinismus-`clippy.toml` trägt — geprüft im Review.
+  `ground_to_screen` ist additiv über den in §9.4 geforderten Umfang hinaus (dort ist nur `screen_to_ground`
+  Vertrag), aber dieselbe Kamera-Basis liefert beide Richtungen konsistent und ermöglicht den Roundtrip-Test.
+- **`MeshInstance`:** `layer` akzeptiert in P1 nur `RenderLayer::World` (Ebenen 1-3 teilen sich Sprites und
+  Meshes); jeder andere Wert wird verworfen und gezählt (`meshes_rejected_layer`), analog zur
+  Palettenraum-Prüfung der Bullets, aber ohne deren `debug_assert!` — hier gibt es keine vorbestehende harte
+  Invariante, nur diese neue WP2.2-eigene Validierung. Eine Instanz mit nicht-endlichem `transform` oder einem
+  `material`-Index außerhalb von `StageFrame::materials` bzw. auf ein ungültiges Material wird ebenfalls verworfen
+  und gezählt (`meshes_rejected_invalid`), ohne Panic. `mesh` prüft P1 nicht gegen eine Registrierung — die gibt es
+  erst ab WP2.3.
+- **`PbrMaterial`:** Validierung (`is_valid`) prüft Wertebereiche (`base_color_factor`, `metallic_factor`,
+  `roughness_factor`, `emissive_factor` je 0.0..=1.0; `AlphaMode::Mask.cutoff` 0.0..=1.0) und Endlichkeit, nie
+  Panic. Ungültige Materialien werden gezählt (`materials_rejected_invalid`), unabhängig davon, ob und wie viele
+  `MeshInstance`s sie referenzieren (keine Doppelzählung mit `meshes_rejected_invalid`).
+- **`PointLight`/`DirectionalLight`/`AmbientLight`:** `is_valid` prüft Endlichkeit und Vorzeichen (`color`,
+  `intensity` >= 0.0; `range` > 0.0; `DirectionalLight::direction` zusätzlich ungleich Null), nie Panic. Ungültige
+  Punktlichter werden gezählt (`point_lights_rejected_invalid`) statt gezeichnet; ein ungültiges `key_light` bzw.
+  `ambient` setzt das jeweilige Bool-Flag. Ein Zähl-**Budget** (`Low 32`/`High 256`, PRD-0003 FR-11) gehört nach
+  Plan 0002 WP3.4 zum Clustered-Forward+-Pass und ist bewusst **nicht** Teil dieses Vertrags — `RendererConfig`
+  bleibt unverändert (§6, kein `#[non_exhaustive]`, ein neues Feld wäre inkompatibel), WP3.4 muss dafür einen
+  eigenen additiven Weg wählen, wie `StageFrame`/`StageStats` es hier vormachen.
+- **Bullet-Licht-Obergrenze (PRD-0003 Regel 5 / FR-15):** `PointLight::is_bullet_light` markiert Lichter aus dem
+  Bullet-Kanal; `StageFrame::bullet_light_cap` trägt den Obergrenzen-Parameter für ihren Bodenanteil
+  (`floor_contribution`, 0.0..=1.0). Dieser Vertrag definiert nur den Haken — *wie* er die Shading-Gleichung
+  begrenzt, legt die Stilbibel (WP2.7) fest und setzt der PBR-Pass um (WP3.4/WP3.5). `is_valid`/
+  `clamped_floor_contribution` prüfen bzw. klemmen den Parameter selbst: ein nicht-endlicher Wert fällt sicher auf
+  `0.0` zurück (kein Bodenbeitrag von Bullet-Licht) statt NaN weiterzureichen.
+- **Ambient:** `Flat` oder `Hemisphere` (PRD-0003 FR-01, „einfacher Umgebungsterm“); `StageFrame::ambient` ist
+  nicht optional (Nullintensität statt `None` für „kein Ambient“).
+- **Persistenz über `clear()`:** `camera_25d`, `key_light`, `ambient` und `bullet_light_cap` beschreiben die
+  aktuelle Szene, keine Instanzliste; `StageFrame::clear()` lässt sie unverändert (wie `base.camera`), leert aber
+  `meshes`, `materials` und `point_lights` wie die übrigen Kanäle.
+- **`NullRenderer`:** zieht Mesh-, Material- und Lichtkanäle über dieselbe geteilte Extraktion wie den Bullet-Kanal
+  (`stage::stage_stats_from_base`), zeichnet nichts, zählt aber jeden Kanal identisch zu `WgpuRenderer` (§2a).
+- **`WgpuRenderer`:** nimmt die neuen Kanäle in `StageFrame` entgegen und validiert/zählt sie identisch zu
+  `NullRenderer`, zeichnet Meshes und Lichter aber noch nicht — der Tiefenpuffer-Mesh-Pass ist WP2.3, die
+  PBR-Shading, die Lichter tatsächlich konsumiert, WP2.5/WP3.4. Bis dahin bleibt der GPU-Gerätezugriff auf das aus
+  P0 bekannte Maß beschränkt.
+- **wgpu-Sichtbarkeit:** Kein Typ in diesem Abschnitt referenziert `wgpu`- oder `grimoire_gpu`-Typen
+  (Engine-ADR-0002); alle Felder sind einfache Zahlen, Arrays, Handles oder andere Vertragstypen.
+- **Was WP2.3/WP2.4/WP3 umsetzen:** Mesh-Geometrie und ihr GPU-Upload samt Tiefenpuffer, prozedurale Testmeshes
+  (WP2.3); die volle gekippte View-Projection, renderseitiges Following mit kritisch gedämpfter Feder, Anwendung
+  von `look_ahead_max`/`look_ahead_smoothing` und der Replay-Hash-Test mit unterschiedlichen Kameraparametern
+  (WP2.4, siehe dort); PBR-Shading (GGX), Schatten, Spekular-Antialiasing (WP2.5/WP2.6); Clustered Forward+, das
+  Lichtbudget in `RendererConfig` (Low 32/High 256) und die tatsächliche Anwendung von `bullet_light_cap` in der
+  Shading-Gleichung (WP3.4/WP3.5).
 
 ## 7. `grimoire_ecs`
 

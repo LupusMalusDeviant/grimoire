@@ -1,0 +1,981 @@
+//! Camera, mesh, material and light channels of the stage frame (contract §6, "Bühnen-Frame,
+//! Ebenenreihenfolge und Bullet-Kanal", render contract v1, WP2.2).
+//!
+//! Purely additive on top of the sibling `stage` module's P1 bullet channel: every type here is new, and
+//! [`crate::StageFrame`]/[`crate::StageStats`] (already `#[non_exhaustive]`, contract §2 rule 13)
+//! simply grow further fields and counters. Nothing here changes [`crate::BulletInstance`], the
+//! palette-space constants or [`crate::RenderLayer`]'s draw order.
+//!
+//! Coordinate convention for everything here: X right, Y away from the viewer (the same ground
+//! plane as [`crate::Camera2D`] and [`crate::BulletInstance`]), Z up. [`Camera25D`] looks down at
+//! the ground (`Z = 0`) plane from a tilt-dependent height above [`Camera25D::target`].
+//!
+//! This module owns the realistic PBR look decided in the game's ADR-0014 (replacing the earlier
+//! toon/cel-shading direction): materials follow glTF metallic-roughness, consistent with the
+//! game's PRD-0003.
+//!
+//! **Deferred to later work packages:** actual mesh geometry and its GPU upload (WP2.3), the
+//! tilted view-projection wired into a following camera system and its replay-hash gate (WP2.4),
+//! the PBR shading itself including shadows and specular anti-aliasing (WP2.5/WP2.6), and the
+//! point-light *count* budget (`Low 32` / `High 256`) together with clustered forward+ lighting
+//! (WP3.4, plan 0002). This module defines only the data contract those steps consume.
+
+use grimoire_core::math::dmath;
+
+use crate::RenderLayer;
+
+/// Opaque reference to a mesh registered with the renderer. The registry itself (how a
+/// [`MeshHandle`] is created and what it points at) is WP2.3's job; P1 cannot yet check whether a
+/// given handle is registered, so [`MeshInstance`] validation checks only what this contract can
+/// see (`transform`, `layer` and `material`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct MeshHandle(pub u32);
+
+/// Index into a frame's [`crate::StageFrame::materials`] table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct MaterialHandle(pub u32);
+
+/// Opaque reference to a texture registered with the renderer, used by [`PbrMaterial`]'s optional
+/// texture slots. Like [`MeshHandle`], the registry is WP2.3's job; a handle's validity cannot yet
+/// be checked against a real texture table in P1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TextureHandle(pub u32);
+
+/// Column-major 4x4 identity matrix, in the same convention as [`crate::Camera2D::view_projection`].
+const IDENTITY_TRANSFORM: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+/// Converts an angle from degrees to radians using only basic arithmetic (no transcendental call),
+/// so it stays within the arithmetic rule this module follows for [`Camera25D`] (see the
+/// "Determinism" note on [`Camera25D::screen_to_ground`]).
+fn radians(degrees: f32) -> f32 {
+    degrees * (dmath::PI / 180.0)
+}
+
+/// Tilted perspective camera for the 2.5D stage (contract §6, PRD-0003 FR-03).
+///
+/// The camera never yaws or rolls: it always looks along `+Y` (world "away from the viewer") and
+/// down towards the ground plane `Z = 0`, pitched by [`Camera25D::tilt_degrees`] below horizontal.
+/// This matches the non-goal "no freely rotatable camera mode" (PRD-0003): only [`Camera25D::target`]
+/// and the derived look-ahead (WP2.4) move the view.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Camera25D {
+    /// Ground point (world/ground units, contract §6 `BulletInstance::position` convention) at
+    /// the centre of the view, before any look-ahead offset is applied.
+    pub target: [f32; 2],
+    /// Pitch of the view direction below horizontal, in degrees. `90.0` looks straight down;
+    /// smaller values look more towards the horizon. The shipped look (ADR-0014, PRD-0003 FR-03)
+    /// uses `60.0..=75.0`; this type accepts any finite value; extreme or non-finite values simply
+    /// make [`Camera25D::screen_to_ground`] and [`Camera25D::ground_to_screen`] return `None` more
+    /// often; they never produce NaN (see the "Determinism" note below).
+    pub tilt_degrees: f32,
+    /// Vertical field of view, in degrees.
+    pub fov_y_degrees: f32,
+    /// Distance from [`Camera25D::target`] to the camera's eye point, along the view direction (in
+    /// world units). Controls perceived zoom.
+    pub distance: f32,
+    /// Maximum offset the WP2.4 following system may apply ahead of the player's movement, in
+    /// world units. Carried here so the follow system and any renderer that visualises the camera
+    /// rig read one shared value; WP2.2 does not compute or apply a look-ahead offset itself.
+    pub look_ahead_max: f32,
+    /// Time constant (seconds) of the WP2.4 critically damped look-ahead spring. Carried here for
+    /// the same reason as [`Camera25D::look_ahead_max`]; WP2.2 does not run the spring itself.
+    pub look_ahead_smoothing: f32,
+}
+
+impl Default for Camera25D {
+    fn default() -> Self {
+        Self {
+            target: [0.0, 0.0],
+            // Midpoint of the shipped 60-75 degree range (ADR-0014, PRD-0003 FR-03).
+            tilt_degrees: 67.5,
+            fov_y_degrees: 50.0,
+            distance: 20.0,
+            look_ahead_max: 4.0,
+            look_ahead_smoothing: 0.25,
+        }
+    }
+}
+
+/// Orthonormal camera basis and derived projection quantities, shared by
+/// [`Camera25D::screen_to_ground`] and [`Camera25D::ground_to_screen`] so both stay consistent by
+/// construction.
+struct CameraBasis {
+    eye: [f32; 3],
+    forward: [f32; 3],
+    right: [f32; 3],
+    up: [f32; 3],
+    tan_half_fov_y: f32,
+}
+
+/// Builds the camera basis. Only basic arithmetic, `dmath::sin`/`dmath::cos`/`dmath::tan` and
+/// `dmath::sqrt`-free vector algebra are used here, per the arithmetic rule referenced by contract
+/// §9.4: no `std` transcendental functions, no `mul_add`/`powi`, no `f32::min`/`max`.
+fn camera_basis(camera: &Camera25D) -> CameraBasis {
+    let tilt = radians(camera.tilt_degrees);
+    let (sin_t, cos_t) = (dmath::sin(tilt), dmath::cos(tilt));
+    // Orthonormal for every finite `tilt`: `forward` and `up` are a rotation of `(0, 1, 0)` and
+    // `(0, 0, 1)` around the fixed `right = (1, 0, 0)` axis, so no singularity occurs (unlike a
+    // basis built from yaw *and* pitch, this camera never yaws).
+    let forward = [0.0, cos_t, -sin_t];
+    let right = [1.0, 0.0, 0.0];
+    let up = [0.0, sin_t, cos_t];
+    let eye = [
+        camera.target[0],
+        camera.target[1] - camera.distance * cos_t,
+        camera.distance * sin_t,
+    ];
+    let half_fov_y = radians(camera.fov_y_degrees) * 0.5;
+    CameraBasis {
+        eye,
+        forward,
+        right,
+        up,
+        tan_half_fov_y: dmath::tan(half_fov_y),
+    }
+}
+
+/// A ray from `eye` is parallel to the ground plane, or the intersection parameter would divide by
+/// a value this small, whenever the ray's Z (up-axis) component's magnitude is at or below this
+/// bound. Guards the division in [`Camera25D::screen_to_ground`] and the depth check in
+/// [`Camera25D::ground_to_screen`] against producing `inf`/NaN instead of a clean `None`.
+const GROUND_PLANE_EPSILON: f32 = f32::EPSILON;
+
+/// Whether `value` is a real (finite), strictly positive number. Used instead of the more direct
+/// `!(value > 0.0)` because that pattern trips `clippy::neg_cmp_op_on_partial_ord` (negating a
+/// `PartialOrd` comparison reads as "not greater", which for `f32` is subtly different from "less
+/// than or equal" once NaN is possible) even though this crate deliberately relies on NaN failing
+/// the comparison here — this helper says explicitly what is intended: NaN and non-positive values
+/// both fail.
+fn is_positive_and_finite(value: f32) -> bool {
+    value > 0.0 && value.is_finite()
+}
+
+impl Camera25D {
+    /// Casts a ray from the camera through a pixel and intersects it with the ground plane
+    /// (`Z = 0`), the inverse of [`Camera25D::ground_to_screen`].
+    ///
+    /// `pixel` has its origin at the top-left with Y down (like
+    /// [`crate::Camera2D::screen_to_world`]); `viewport` is the viewport size in the same units.
+    /// Returns ground coordinates (X right, Y away from the viewer, the same convention as
+    /// [`crate::BulletInstance::position`]).
+    ///
+    /// Returns `None` — never NaN — when no finite ground point exists for this pixel: the ray is
+    /// parallel to the ground plane (exactly at the horizon), points above the horizon (would
+    /// intersect the plane behind the camera), `viewport` is empty or negative, or any input or
+    /// intermediate value is non-finite.
+    ///
+    /// # Determinism
+    /// This function and the view/projection quantities it derives (the camera's basis vectors)
+    /// only use operations engine-ADR-0004 allows on every platform: basic arithmetic, `f32::sqrt`
+    /// (not used here) and [`grimoire_core::math::dmath`] — never `std` transcendental functions,
+    /// `mul_add`, `powi`, or `f32::min`/`max` — even though `grimoire_render` carries no
+    /// determinism `clippy.toml` itself (contract §9.4).
+    #[must_use]
+    pub fn screen_to_ground(&self, pixel: [f32; 2], viewport: [f32; 2]) -> Option<[f32; 2]> {
+        if !is_positive_and_finite(viewport[0]) || !is_positive_and_finite(viewport[1]) {
+            return None;
+        }
+        let basis = camera_basis(self);
+        let ndc_x = pixel[0] / viewport[0] * 2.0 - 1.0;
+        let ndc_y = 1.0 - pixel[1] / viewport[1] * 2.0;
+        let aspect = viewport[0] / viewport[1];
+        let sx = ndc_x * basis.tan_half_fov_y * aspect;
+        let sy = ndc_y * basis.tan_half_fov_y;
+        let dir = [
+            basis.forward[0] + basis.right[0] * sx + basis.up[0] * sy,
+            basis.forward[1] + basis.right[1] * sx + basis.up[1] * sy,
+            basis.forward[2] + basis.right[2] * sx + basis.up[2] * sy,
+        ];
+        if dir[2].abs() <= GROUND_PLANE_EPSILON {
+            return None; // Parallel to the ground plane: exactly at the horizon.
+        }
+        let t = -basis.eye[2] / dir[2];
+        if !is_positive_and_finite(t) {
+            return None; // `t <= 0`, infinite (above the horizon) or NaN (degenerate camera).
+        }
+        let ground = [basis.eye[0] + t * dir[0], basis.eye[1] + t * dir[1]];
+        if ground[0].is_finite() && ground[1].is_finite() {
+            Some(ground)
+        } else {
+            None
+        }
+    }
+
+    /// Projects a ground-plane point (`Z = 0`, same convention as
+    /// [`Camera25D::screen_to_ground`]'s result) to a pixel position, the inverse of
+    /// [`Camera25D::screen_to_ground`]. Both derive the same camera basis, so
+    /// `screen_to_ground(ground_to_screen(g, vp)?, vp) == Some(g)` up to floating-point rounding
+    /// for any `g` the camera can see.
+    ///
+    /// Returns `None` — never NaN — when the point lies at or behind the camera's view plane, when
+    /// `viewport` is empty or negative, or any intermediate value is non-finite (for example an
+    /// almost edge-on field of view).
+    ///
+    /// # Determinism
+    /// Same rule as [`Camera25D::screen_to_ground`].
+    #[must_use]
+    pub fn ground_to_screen(&self, ground: [f32; 2], viewport: [f32; 2]) -> Option<[f32; 2]> {
+        if !is_positive_and_finite(viewport[0]) || !is_positive_and_finite(viewport[1]) {
+            return None;
+        }
+        let basis = camera_basis(self);
+        let v = [
+            ground[0] - basis.eye[0],
+            ground[1] - basis.eye[1],
+            -basis.eye[2],
+        ];
+        let depth = v[0] * basis.forward[0] + v[1] * basis.forward[1] + v[2] * basis.forward[2];
+        if !depth.is_finite() || depth <= GROUND_PLANE_EPSILON {
+            return None; // At or behind the camera's view plane, or a non-finite input.
+        }
+        let right_component = v[0] * basis.right[0] + v[1] * basis.right[1] + v[2] * basis.right[2];
+        let up_component = v[0] * basis.up[0] + v[1] * basis.up[1] + v[2] * basis.up[2];
+        let aspect = viewport[0] / viewport[1];
+        let ndc_x = right_component / (depth * basis.tan_half_fov_y * aspect);
+        let ndc_y = up_component / (depth * basis.tan_half_fov_y);
+        if !ndc_x.is_finite() || !ndc_y.is_finite() {
+            return None;
+        }
+        let pixel = [
+            (ndc_x + 1.0) * 0.5 * viewport[0],
+            (1.0 - ndc_y) * 0.5 * viewport[1],
+        ];
+        if pixel[0].is_finite() && pixel[1].is_finite() {
+            Some(pixel)
+        } else {
+            None
+        }
+    }
+}
+
+/// glTF-compatible alpha coverage mode of a [`PbrMaterial`] (glTF 2.0 `alphaMode`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AlphaMode {
+    /// Fully opaque; the alpha channel of [`PbrMaterial::base_color_factor`] is ignored.
+    Opaque,
+    /// Alpha-tested: pixels with alpha below `cutoff` are discarded, the rest are opaque.
+    Mask {
+        /// Discard threshold, valid range `0.0..=1.0`.
+        cutoff: f32,
+    },
+    /// Alpha-blended (glTF `BLEND`).
+    Blend,
+}
+
+/// Physically based material, glTF metallic-roughness compatible (glTF 2.0
+/// `pbrMetallicRoughness`), consequence of the game's ADR-0014 (realistic PBR look instead of
+/// toon/cel-shading). Referenced by [`MeshInstance::material`] as an index into
+/// [`crate::StageFrame::materials`].
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PbrMaterial {
+    /// Linear RGBA base colour factor, multiplied with [`PbrMaterial::base_color_texture`] if
+    /// present. Each component's valid range is `0.0..=1.0`.
+    pub base_color_factor: [f32; 4],
+    /// Metalness, `0.0` (dielectric) to `1.0` (metal); glTF default is `1.0`.
+    pub metallic_factor: f32,
+    /// Perceptual roughness, `0.0` (mirror) to `1.0` (fully rough); glTF default is `1.0`.
+    pub roughness_factor: f32,
+    /// Linear RGB emissive colour, added regardless of lighting. Each component's valid range is
+    /// `0.0..=1.0` (glTF core; no HDR emissive-strength extension in P1).
+    pub emissive_factor: [f32; 3],
+    /// Alpha coverage mode (glTF `alphaMode`).
+    pub alpha_mode: AlphaMode,
+    /// Base colour (albedo) texture, glTF `baseColorTexture`. Its pixels are sRGB-encoded and are
+    /// linearised on sampling (an sRGB texture format), unlike the two data textures below.
+    pub base_color_texture: Option<TextureHandle>,
+    /// Tangent-space normal map, glTF `normalTexture` (OpenGL convention, +Y up). Linear data, never
+    /// sRGB-decoded.
+    pub normal_texture: Option<TextureHandle>,
+    /// Combined occlusion/roughness/metallic texture in glTF channel order (R = occlusion,
+    /// G = roughness, B = metallic), glTF `occlusionTexture` + `metallicRoughnessTexture` packed
+    /// into one image as the Blender-Skript-Pipeline (PRD-0016) produces it. Linear data, never
+    /// sRGB-decoded.
+    pub occlusion_roughness_metallic_texture: Option<TextureHandle>,
+}
+
+impl Default for PbrMaterial {
+    fn default() -> Self {
+        Self {
+            base_color_factor: [1.0, 1.0, 1.0, 1.0],
+            metallic_factor: 1.0,
+            roughness_factor: 1.0,
+            emissive_factor: [0.0, 0.0, 0.0],
+            alpha_mode: AlphaMode::Opaque,
+            base_color_texture: None,
+            normal_texture: None,
+            occlusion_roughness_metallic_texture: None,
+        }
+    }
+}
+
+impl PbrMaterial {
+    /// Whether every field is within its documented range and finite (contract §2 rule 9 style
+    /// validation; never panics). Invalid materials are rejected and counted, never drawn
+    /// (`StageStats::materials_rejected_invalid`).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let unit_range = |c: &f32| c.is_finite() && (0.0..=1.0).contains(c);
+        self.base_color_factor.iter().all(unit_range)
+            && unit_range(&self.metallic_factor)
+            && unit_range(&self.roughness_factor)
+            && self.emissive_factor.iter().all(unit_range)
+            && match self.alpha_mode {
+                AlphaMode::Mask { cutoff } => unit_range(&cutoff),
+                AlphaMode::Opaque | AlphaMode::Blend => true,
+            }
+    }
+}
+
+/// One mesh instance drawn on [`MeshInstance::layer`]. In P1 the bullet channel
+/// ([`crate::BulletInstance`]) is untouched and separate; meshes carry player, enemy, level and
+/// prop geometry on [`RenderLayer::World`] (contract §6 layer order).
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshInstance {
+    /// Which mesh to draw. The mesh registry is WP2.3's job; P1 cannot check whether a handle is
+    /// registered.
+    pub mesh: MeshHandle,
+    /// Index into [`crate::StageFrame::materials`]; validated against that frame's table length
+    /// (`StageStats::meshes_rejected_invalid` counts an out-of-range index).
+    pub material: MaterialHandle,
+    /// Column-major model-to-world transform (translation, rotation and scale combined), same
+    /// matrix convention as [`crate::Camera2D::view_projection`].
+    pub transform: [[f32; 4]; 4],
+    /// Layer this instance is drawn on. P1 accepts only [`RenderLayer::World`] (contract §6: the
+    /// mesh pass shares layers 1-3 with world sprites); any other value is rejected and counted
+    /// (`StageStats::meshes_rejected_layer`), analogous to the bullet pass's palette-space check.
+    pub layer: RenderLayer,
+}
+
+impl Default for MeshInstance {
+    fn default() -> Self {
+        Self {
+            mesh: MeshHandle::default(),
+            material: MaterialHandle::default(),
+            transform: IDENTITY_TRANSFORM,
+            layer: RenderLayer::World,
+        }
+    }
+}
+
+/// One point light (contract §6, PRD-0003 FR-02). In P1 nothing yet enforces the `>= 256` visible
+/// count from PRD-0003 FR-02 or a count budget — that is WP3.4's clustered forward+ pass and its
+/// `Low 32` / `High 256` budget, deliberately not part of this contract (plan 0002 places the
+/// budget in WP3.4). This type only carries per-light data and its own value validation.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointLight {
+    /// World position (X right, Y away from the viewer, Z up).
+    pub position: [f32; 3],
+    /// Linear RGB colour. Unbounded above (intensity carries the exposure scale); components must
+    /// be finite and non-negative.
+    pub color: [f32; 3],
+    /// Brightness scale; must be finite and non-negative.
+    pub intensity: f32,
+    /// Cutoff distance in world units; must be finite and strictly positive.
+    pub range: f32,
+    /// Bullet-light cap hook (PRD-0003 rule 5 / FR-15): `true` for a light that originates from
+    /// the bullet channel (a bullet or bullet cloud), rather than the environment or an actor. The
+    /// PBR pass (WP3.4/WP3.5) looks this flag up to apply
+    /// [`crate::StageFrame::bullet_light_cap`] to this light's contribution to the environment;
+    /// the light's contribution to the bullet's own glow is unaffected. The shading itself is not
+    /// part of this contract.
+    pub is_bullet_light: bool,
+}
+
+impl Default for PointLight {
+    fn default() -> Self {
+        Self {
+            position: [0.0, 0.0, 0.0],
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            range: 1.0,
+            is_bullet_light: false,
+        }
+    }
+}
+
+impl PointLight {
+    /// Whether every field is finite and within its documented range (never panics). Invalid
+    /// lights are rejected and counted, never drawn
+    /// (`StageStats::point_lights_rejected_invalid`).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.position.iter().all(|c| c.is_finite())
+            && self.color.iter().all(|c| c.is_finite() && *c >= 0.0)
+            && self.intensity.is_finite()
+            && self.intensity >= 0.0
+            && self.range.is_finite()
+            && self.range > 0.0
+    }
+}
+
+/// Directional "key light" (contract §6, PRD-0003 FR-01). At most one per frame
+/// ([`crate::StageFrame::key_light`] is `Option`); shadow casting is WP2.6's job.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DirectionalLight {
+    /// Direction the light travels (from the light towards the scene), in the same axes as
+    /// [`PointLight::position`]. Need not be pre-normalised; consumers normalise it. Must be
+    /// finite and non-zero.
+    pub direction: [f32; 3],
+    /// Linear RGB colour; components must be finite and non-negative.
+    pub color: [f32; 3],
+    /// Brightness scale; must be finite and non-negative.
+    pub intensity: f32,
+}
+
+impl Default for DirectionalLight {
+    fn default() -> Self {
+        Self {
+            direction: [0.0, 0.0, -1.0],
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+        }
+    }
+}
+
+impl DirectionalLight {
+    /// Whether every field is finite, within range and `direction` is non-zero (never panics).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let direction_finite = self.direction.iter().all(|c| c.is_finite());
+        let direction_length_squared = self.direction.iter().map(|c| c * c).sum::<f32>();
+        direction_finite
+            && direction_length_squared > 0.0
+            && self.color.iter().all(|c| c.is_finite() && *c >= 0.0)
+            && self.intensity.is_finite()
+            && self.intensity >= 0.0
+    }
+}
+
+/// Ambient/environment term (contract §6, PRD-0003 FR-01 "einfacher Umgebungsterm"). Exactly one
+/// per frame ([`crate::StageFrame::ambient`] is not optional; use zero intensity for "no ambient").
+///
+/// Not `#[non_exhaustive]`: contract §2 rule 13 requires that only for structs with public fields
+/// and error enums, not for a plain data enum like this one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AmbientLight {
+    /// Single flat ambient colour applied from every direction.
+    Flat {
+        /// Linear RGB colour; components must be finite and non-negative.
+        color: [f32; 3],
+        /// Brightness scale; must be finite and non-negative.
+        intensity: f32,
+    },
+    /// Two-colour hemisphere term (sky above, ground below), cheap analytic ambient with more
+    /// depth than a flat term.
+    Hemisphere {
+        /// Linear RGB colour for surfaces facing up.
+        sky_color: [f32; 3],
+        /// Linear RGB colour for surfaces facing down.
+        ground_color: [f32; 3],
+        /// Brightness scale; must be finite and non-negative.
+        intensity: f32,
+    },
+}
+
+impl Default for AmbientLight {
+    fn default() -> Self {
+        AmbientLight::Flat {
+            color: [1.0, 1.0, 1.0],
+            intensity: 0.1,
+        }
+    }
+}
+
+impl AmbientLight {
+    /// Whether every field is finite and within its documented range (never panics).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let channel = |c: &f32| c.is_finite() && *c >= 0.0;
+        match self {
+            AmbientLight::Flat { color, intensity } => {
+                color.iter().all(channel) && channel(intensity)
+            }
+            AmbientLight::Hemisphere {
+                sky_color,
+                ground_color,
+                intensity,
+            } => {
+                sky_color.iter().all(channel)
+                    && ground_color.iter().all(channel)
+                    && channel(intensity)
+            }
+        }
+    }
+}
+
+/// Bullet-light cap hook (PRD-0003 rule 5 / FR-15, ADR-0014): the render vertrag's structural
+/// enforcement point for "light from bullets or bullet clouds is limited in its contribution to
+/// the ground and environment". One per frame ([`crate::StageFrame::bullet_light_cap`]).
+///
+/// This type only carries the parameter through the contract; *how* it is mixed into the shading
+/// equation is decided by the stylebook (WP2.7, `docs/art/stilbibel.md`) and implemented in the
+/// PBR pass (WP3.4/WP3.5) — deliberately not part of this contract.
+///
+/// The point-light *count* budget (`Low 32` / `High 256`, PRD-0003 FR-11) is a separate concept
+/// (how many lights the frame may contain in total) and belongs to WP3.4 per plan 0002, not here.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BulletLightCap {
+    /// Upper bound on how much a [`PointLight`] with `is_bullet_light == true` may contribute to
+    /// the environment's (non-bullet) shading, as a fraction in `0.0..=1.0`. `0.0` mutes bullet
+    /// lights on the environment entirely; `1.0` applies no extra cap (same as any other light).
+    pub floor_contribution: f32,
+}
+
+impl Default for BulletLightCap {
+    fn default() -> Self {
+        Self {
+            floor_contribution: 1.0,
+        }
+    }
+}
+
+impl BulletLightCap {
+    /// Whether [`BulletLightCap::floor_contribution`] is finite and within `0.0..=1.0` (never
+    /// panics).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.floor_contribution.is_finite() && (0.0..=1.0).contains(&self.floor_contribution)
+    }
+
+    /// [`BulletLightCap::floor_contribution`] clamped into the valid shading range `0.0..=1.0`.
+    /// Falls back to `0.0` (mute bullet lights on the environment, the safe side of PRD-0003 rule
+    /// 5) when the configured value is not finite, rather than propagating NaN into the shading
+    /// pass.
+    #[must_use]
+    pub fn clamped_floor_contribution(&self) -> f32 {
+        if self.floor_contribution.is_finite() {
+            self.floor_contribution.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Camera25D: projection and ray round trip -------------------------------------------
+
+    #[test]
+    fn screen_to_ground_center_pixel_is_target() {
+        let camera = Camera25D {
+            target: [5.0, 7.0],
+            ..Camera25D::default()
+        };
+        let viewport = [800.0, 600.0];
+        let center = [viewport[0] * 0.5, viewport[1] * 0.5];
+        let ground = camera
+            .screen_to_ground(center, viewport)
+            .expect("the centre pixel always hits the ground under the target");
+        assert!((ground[0] - 5.0).abs() < 1e-4);
+        assert!((ground[1] - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ground_to_screen_and_back_round_trips() {
+        let camera = Camera25D {
+            target: [3.0, -2.0],
+            tilt_degrees: 65.0,
+            fov_y_degrees: 50.0,
+            distance: 15.0,
+            ..Camera25D::default()
+        };
+        let viewport = [1920.0, 1080.0];
+        for ground in [[0.0, 0.0], [3.0, -2.0], [10.0, 5.0], [-8.0, 20.0]] {
+            let pixel = camera
+                .ground_to_screen(ground, viewport)
+                .unwrap_or_else(|| panic!("{ground:?} should be in front of the camera"));
+            let back = camera
+                .screen_to_ground(pixel, viewport)
+                .unwrap_or_else(|| panic!("round trip of {ground:?} via {pixel:?} failed"));
+            assert!((back[0] - ground[0]).abs() < 1e-2, "{back:?} vs {ground:?}");
+            assert!((back[1] - ground[1]).abs() < 1e-2, "{back:?} vs {ground:?}");
+        }
+    }
+
+    #[test]
+    fn steeper_tilt_moves_the_eye_higher_and_closer() {
+        // Sanity check on the camera basis: a steeper (more top-down) tilt raises the eye and
+        // pulls it closer to being directly above the target, at the same `distance`.
+        let shallow = camera_basis(&Camera25D {
+            tilt_degrees: 60.0,
+            ..Camera25D::default()
+        });
+        let steep = camera_basis(&Camera25D {
+            tilt_degrees: 75.0,
+            ..Camera25D::default()
+        });
+        assert!(steep.eye[2] > shallow.eye[2], "steeper tilt is higher");
+        assert!(
+            steep.eye[1] > shallow.eye[1],
+            "steeper tilt sits closer to the target's Y"
+        );
+    }
+
+    // --- Camera25D: horizon and parallel-ray edge cases, never NaN --------------------------
+
+    #[test]
+    fn screen_to_ground_never_produces_nan_across_extreme_pixels() {
+        let camera = Camera25D::default();
+        let viewport = [800.0, 600.0];
+        for y in [
+            -1.0e6, -1.0e3, -600.0, -1.0, 0.0, 300.0, 600.0, 1200.0, 1.0e3, 1.0e6,
+        ] {
+            let result = camera.screen_to_ground([400.0, y], viewport);
+            if let Some(ground) = result {
+                assert!(
+                    ground[0].is_finite() && ground[1].is_finite(),
+                    "pixel y={y} produced a non-finite ground point: {ground:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn screen_to_ground_rejects_non_finite_and_degenerate_inputs_without_nan() {
+        let camera = Camera25D::default();
+        assert_eq!(
+            camera.screen_to_ground([f32::NAN, 0.0], [800.0, 600.0]),
+            None
+        );
+        assert_eq!(
+            camera.screen_to_ground([0.0, f32::INFINITY], [800.0, 600.0]),
+            None
+        );
+        assert_eq!(camera.screen_to_ground([400.0, 300.0], [0.0, 600.0]), None);
+        assert_eq!(camera.screen_to_ground([400.0, 300.0], [800.0, -1.0]), None);
+
+        let nan_camera = Camera25D {
+            tilt_degrees: f32::NAN,
+            ..Camera25D::default()
+        };
+        assert_eq!(
+            nan_camera.screen_to_ground([400.0, 300.0], [800.0, 600.0]),
+            None
+        );
+    }
+
+    #[test]
+    fn screen_to_ground_ray_exactly_parallel_to_the_ground_plane_returns_none() {
+        // tilt = 0 makes `forward` horizontal ((0, 1, 0)) and `up` vertical ((0, 0, 1)); at the
+        // vertical viewport centre (ndc_y = 0) the ray direction has no Z component at all,
+        // regardless of tilt or field of view, so this is an exact, non-approximate parallel ray.
+        let camera = Camera25D {
+            tilt_degrees: 0.0,
+            ..Camera25D::default()
+        };
+        let viewport = [800.0, 600.0];
+        let vertical_center = [123.0, viewport[1] * 0.5];
+        assert_eq!(camera.screen_to_ground(vertical_center, viewport), None);
+    }
+
+    #[test]
+    fn screen_to_ground_above_the_horizon_returns_none_not_a_behind_camera_point() {
+        // A very wide field of view lets some pixels look above the horizon even at a steep tilt.
+        let camera = Camera25D {
+            tilt_degrees: 60.0,
+            fov_y_degrees: 170.0,
+            ..Camera25D::default()
+        };
+        let viewport = [800.0, 600.0];
+        // Top row of pixels: steeply upward relative to the tilted forward direction.
+        assert_eq!(camera.screen_to_ground([400.0, 0.0], viewport), None);
+    }
+
+    #[test]
+    fn ground_to_screen_behind_the_camera_returns_none_not_nan() {
+        let camera = Camera25D::default();
+        let viewport = [800.0, 600.0];
+        let basis = camera_basis(&camera);
+        // A ground point exactly at the eye's projection has zero depth; move further "behind"
+        // along -forward from the target to guarantee a non-positive depth.
+        let behind = [
+            camera.target[0] - basis.forward[0] * 1000.0,
+            camera.target[1] - basis.forward[1] * 1000.0,
+        ];
+        assert_eq!(camera.ground_to_screen(behind, viewport), None);
+    }
+
+    // --- PbrMaterial validation boundaries ---------------------------------------------------
+
+    #[test]
+    fn pbr_material_default_is_valid() {
+        assert!(PbrMaterial::default().is_valid());
+    }
+
+    #[test]
+    fn pbr_material_accepts_unit_range_boundaries() {
+        let material = PbrMaterial {
+            base_color_factor: [0.0, 1.0, 0.0, 1.0],
+            metallic_factor: 0.0,
+            roughness_factor: 1.0,
+            emissive_factor: [0.0, 1.0, 0.0],
+            alpha_mode: AlphaMode::Mask { cutoff: 0.0 },
+            ..PbrMaterial::default()
+        };
+        assert!(material.is_valid());
+        let other = PbrMaterial {
+            alpha_mode: AlphaMode::Mask { cutoff: 1.0 },
+            ..material
+        };
+        assert!(other.is_valid());
+    }
+
+    #[test]
+    fn pbr_material_rejects_out_of_range_and_non_finite_fields() {
+        let base = PbrMaterial::default();
+        assert!(
+            !PbrMaterial {
+                metallic_factor: 1.000_1,
+                ..base
+            }
+            .is_valid(),
+            "metallic slightly above 1.0"
+        );
+        assert!(
+            !PbrMaterial {
+                roughness_factor: -0.000_1,
+                ..base
+            }
+            .is_valid(),
+            "roughness slightly below 0.0"
+        );
+        assert!(
+            !PbrMaterial {
+                base_color_factor: [f32::NAN, 1.0, 1.0, 1.0],
+                ..base
+            }
+            .is_valid(),
+            "NaN base colour component"
+        );
+        assert!(
+            !PbrMaterial {
+                emissive_factor: [f32::INFINITY, 0.0, 0.0],
+                ..base
+            }
+            .is_valid(),
+            "infinite emissive component"
+        );
+        assert!(
+            !PbrMaterial {
+                alpha_mode: AlphaMode::Mask { cutoff: 1.5 },
+                ..base
+            }
+            .is_valid(),
+            "mask cutoff above 1.0"
+        );
+        assert!(
+            !PbrMaterial {
+                alpha_mode: AlphaMode::Mask { cutoff: f32::NAN },
+                ..base
+            }
+            .is_valid(),
+            "NaN mask cutoff"
+        );
+    }
+
+    // --- Light value validation ("light budget clamping") -----------------------------------
+
+    #[test]
+    fn point_light_default_is_valid() {
+        assert!(PointLight::default().is_valid());
+    }
+
+    #[test]
+    fn point_light_rejects_invalid_values_without_panic() {
+        let base = PointLight::default();
+        assert!(
+            !PointLight {
+                intensity: -0.001,
+                ..base
+            }
+            .is_valid(),
+            "negative intensity"
+        );
+        assert!(
+            !PointLight {
+                intensity: f32::NAN,
+                ..base
+            }
+            .is_valid(),
+            "NaN intensity"
+        );
+        assert!(!PointLight { range: 0.0, ..base }.is_valid(), "zero range");
+        assert!(
+            !PointLight {
+                range: f32::INFINITY,
+                ..base
+            }
+            .is_valid(),
+            "infinite range"
+        );
+        assert!(
+            !PointLight {
+                position: [0.0, f32::NAN, 0.0],
+                ..base
+            }
+            .is_valid(),
+            "NaN position component"
+        );
+        assert!(
+            !PointLight {
+                color: [-1.0, 0.0, 0.0],
+                ..base
+            }
+            .is_valid(),
+            "negative colour component"
+        );
+    }
+
+    #[test]
+    fn directional_light_rejects_zero_and_non_finite_direction() {
+        let base = DirectionalLight::default();
+        assert!(base.is_valid());
+        assert!(
+            !DirectionalLight {
+                direction: [0.0, 0.0, 0.0],
+                ..base
+            }
+            .is_valid(),
+            "zero-length direction"
+        );
+        assert!(
+            !DirectionalLight {
+                direction: [f32::NAN, 0.0, -1.0],
+                ..base
+            }
+            .is_valid(),
+            "NaN direction component"
+        );
+        assert!(
+            !DirectionalLight {
+                intensity: -1.0,
+                ..base
+            }
+            .is_valid(),
+            "negative intensity"
+        );
+    }
+
+    #[test]
+    fn ambient_light_variants_validate_every_field() {
+        assert!(AmbientLight::default().is_valid());
+        assert!(
+            AmbientLight::Hemisphere {
+                sky_color: [0.2, 0.2, 0.3],
+                ground_color: [0.05, 0.05, 0.05],
+                intensity: 0.2,
+            }
+            .is_valid()
+        );
+        assert!(
+            !AmbientLight::Flat {
+                color: [1.0, 1.0, 1.0],
+                intensity: -0.1,
+            }
+            .is_valid(),
+            "negative intensity"
+        );
+        assert!(
+            !AmbientLight::Hemisphere {
+                sky_color: [f32::NAN, 0.0, 0.0],
+                ground_color: [0.0, 0.0, 0.0],
+                intensity: 0.1,
+            }
+            .is_valid(),
+            "NaN sky colour component"
+        );
+    }
+
+    // --- Bullet-light-cap parameter validation ------------------------------------------------
+
+    #[test]
+    fn bullet_light_cap_accepts_boundaries_and_clamps_for_shading() {
+        assert!(
+            BulletLightCap {
+                floor_contribution: 0.0
+            }
+            .is_valid()
+        );
+        assert!(
+            BulletLightCap {
+                floor_contribution: 1.0
+            }
+            .is_valid()
+        );
+        assert!(BulletLightCap::default().is_valid());
+        assert!(
+            (BulletLightCap {
+                floor_contribution: 0.4
+            }
+            .clamped_floor_contribution()
+                - 0.4)
+                .abs()
+                < 1e-6
+        );
+    }
+
+    #[test]
+    fn bullet_light_cap_rejects_out_of_range_and_falls_back_to_the_safe_value_when_clamped() {
+        let too_high = BulletLightCap {
+            floor_contribution: 1.5,
+        };
+        assert!(!too_high.is_valid());
+        assert!((too_high.clamped_floor_contribution() - 1.0).abs() < 1e-6);
+
+        let negative = BulletLightCap {
+            floor_contribution: -0.5,
+        };
+        assert!(!negative.is_valid());
+        assert!(negative.clamped_floor_contribution().abs() < 1e-6);
+
+        let nan = BulletLightCap {
+            floor_contribution: f32::NAN,
+        };
+        assert!(!nan.is_valid());
+        assert_eq!(
+            nan.clamped_floor_contribution(),
+            0.0,
+            "non-finite cap fails closed to 0.0, the safe side of PRD-0003 rule 5"
+        );
+    }
+
+    // --- MeshInstance defaults ----------------------------------------------------------------
+
+    #[test]
+    fn mesh_instance_default_uses_identity_transform_and_world_layer() {
+        let mesh = MeshInstance::default();
+        assert_eq!(mesh.transform, IDENTITY_TRANSFORM);
+        assert_eq!(mesh.layer, RenderLayer::World);
+    }
+}

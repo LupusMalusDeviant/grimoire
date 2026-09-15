@@ -866,6 +866,7 @@ version = "0.1.1"
 dependencies = [
  "bytemuck",
  "env_logger",
+ "grimoire_core",
  "grimoire_gpu",
  "grimoire_platform",
  "log",

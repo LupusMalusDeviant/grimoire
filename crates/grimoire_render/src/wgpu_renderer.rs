@@ -300,14 +300,19 @@ impl Renderer for WgpuRenderer {
     }
 
     /// Applies the full stage semantics of contract §6 for extraction and counting, but — unlike
-    /// the name might suggest — does **not yet draw bullet, marker or debug pixels**: it only
-    /// forwards `frame.base` to the existing sprite pipeline via [`Renderer::render`], exactly as
-    /// [`crate::NullRenderer`]'s `render_stage` does. Bullets are validated (palette space, finiteness,
-    /// `radius > 0`) and counted into [`StageStats`] — including the debug-only
+    /// the name might suggest — does **not yet draw bullet, mesh, light, marker or debug pixels**:
+    /// it only forwards `frame.base` to the existing sprite pipeline via [`Renderer::render`],
+    /// exactly as [`crate::NullRenderer`]'s `render_stage` does. Bullets are validated (palette
+    /// space, finiteness, `radius > 0`) and counted into [`StageStats`] — including the debug-only
     /// `debug_assert!` on a foreign palette space — but never rasterised: a real GPU bullet pass
     /// is WP3.5's job, built on the OF-3.3 ADR. `marker_sprites` and `debug_sprites` are likewise
-    /// only counted into `base.sprites_drawn`, not drawn, because no pipeline for them exists
-    /// yet. This method therefore never touches the GPU device beyond what `render` already does.
+    /// only counted into `base.sprites_drawn`, not drawn, because no pipeline for them exists yet.
+    /// The WP2.2 mesh, material and light channels (`meshes`, `materials`, `point_lights`,
+    /// `key_light`, `ambient`, `bullet_light_cap`) are accepted and validated the same way — this
+    /// renderer only needs to *accept* that frame data, per WP2.2's scope — but likewise not yet
+    /// rasterised: the mesh pass with a depth buffer is WP2.3's job, and the PBR shading that
+    /// actually consumes the lights is WP2.5/WP3.4's. This method therefore never touches the GPU
+    /// device beyond what `render` already does.
     ///
     /// # Errors
     /// Same as [`Renderer::render`], applied to `frame.base`.
