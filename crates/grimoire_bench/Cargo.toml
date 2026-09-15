@@ -9,11 +9,27 @@ repository.workspace = true
 license-file.workspace = true
 publish.workspace = true
 
-# May depend on any runtime crate and on grimoire_exec (contract §1); nothing depends on it. Kept
-# empty for now: WP1.3 adds only a JSON-encoding helper that needs no grimoire_* or third-party
-# crate. Real benches (WP6) will add grimoire_exec plus serde/serde_json (already declared in the
-# workspace [workspace.dependencies] for that later role).
+# May depend on any runtime crate and on grimoire_exec (contract §1); nothing depends on it.
+# WP6.2 (plan 0002) adds the P0 baseline benches (`ecs_query_10k`, `sim_step_600`) plus the JSON
+# schema types for bench results (contract §15.1). Those two benches only exercise ECS queries
+# and one simulation step, so this depends on `grimoire_ecs`, `grimoire_sim` and `grimoire_core`
+# directly rather than on the `grimoire` facade: the facade also pulls in `grimoire_render`,
+# `grimoire_gpu`, `grimoire_platform`, `grimoire_collide`, `grimoire_sigil`, `grimoire_assets` and
+# `grimoire_debug`, none of which either bench touches, and the crate map (contract §1) permits
+# any runtime crate, not specifically the facade — pulling in the whole facade here would cost
+# CI build time (OP-5) for no coverage gained. `grimoire_exec` is not yet a dependency: WP6.2's
+# two P0 benches are single-threaded (engine ADR-0010 scopes the Callgrind gate to single-threaded
+# benches; Valgrind serialises threads); an N-thread wall-clock trend bench would add it later.
 [dependencies]
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+grimoire_sim.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

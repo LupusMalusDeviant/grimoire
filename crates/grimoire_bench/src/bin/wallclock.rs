@@ -1,0 +1,212 @@
+//! Wall-clock trend measurement (Plan-0002 WP6.2 scope item 2) for the two P0 baseline benches.
+//!
+//! Wall clock is a **trend only** (engine ADR-0010: measured noise band 95-129% job-to-job on
+//! shared Linux runners, "als scharfes Gate auf Linux ungeeignet") — this binary never feeds a
+//! gate decision, it only emits `BenchResult` lines with `metric = "wall_time"` for the trend
+//! branch (P-12). Sample count and warmup match the WP6.1 spike's own trimmed values
+//! (`spikes/bench-noise/src/bin/wallclock.rs`: 2 warmup, 15 recorded), which already measured an
+//! acceptably small effect from further warmup on these same two bench bodies.
+//!
+//! Usage: `wallclock --sha <40 hex> --os <os> --arch <arch> --logical-cpus <n> [--dirty]
+//!   [--image <img>] [--cpu-model <model>] [--fingerprint k=v,...] [--run-id <id> --run-attempt <n>]`
+//! Prints two JSON Lines (`ecs_query_10k`, `sim_step_600`) to stdout.
+
+use std::collections::BTreeMap;
+use std::process::ExitCode;
+use std::time::Instant;
+
+use grimoire_bench::scenarios::{
+    ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, SIM_ENTITIES, SIM_SCENARIO,
+    SIM_WALLCLOCK_TICKS, build_ecs_world, build_sim, run_ecs_rounds, run_sim_ticks,
+};
+use grimoire_bench::schema::{
+    BenchResult, CommitRef, ExecutorInfo, ParamValue, RunKey, RunnerInfo, ValueOrigin, median,
+};
+
+/// Unmeasured samples discarded before recording (matches the WP6.1 spike's trimmed warmup).
+const WARMUP_SAMPLES: u32 = 2;
+/// Recorded samples per bench (matches the WP6.1 spike's trimmed sample count).
+const SAMPLES: u32 = 15;
+
+struct Meta {
+    sha: String,
+    dirty: bool,
+    os: String,
+    arch: String,
+    image: Option<String>,
+    cpu_model: Option<String>,
+    logical_cpus: u32,
+    fingerprint: BTreeMap<String, String>,
+    run: Option<RunKey>,
+}
+
+fn parse_meta() -> Result<Meta, String> {
+    let mut sha = None;
+    let mut dirty = false;
+    let mut os = None;
+    let mut arch = None;
+    let mut image = None;
+    let mut cpu_model = None;
+    let mut logical_cpus = None;
+    let mut fingerprint = BTreeMap::new();
+    let mut run_id = None;
+    let mut run_attempt = None;
+
+    let mut it = std::env::args().skip(1);
+    while let Some(flag) = it.next() {
+        let mut next = || it.next().ok_or_else(|| format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--sha" => sha = Some(next()?),
+            "--dirty" => dirty = true,
+            "--os" => os = Some(next()?),
+            "--arch" => arch = Some(next()?),
+            "--image" => image = Some(next()?),
+            "--cpu-model" => cpu_model = Some(next()?),
+            "--logical-cpus" => {
+                logical_cpus = Some(
+                    next()?
+                        .parse()
+                        .map_err(|e| format!("invalid --logical-cpus: {e}"))?,
+                );
+            }
+            "--fingerprint" => {
+                fingerprint = next()?
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|pair| pair.split_once('='))
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+            }
+            "--run-id" => run_id = Some(next()?),
+            "--run-attempt" => {
+                run_attempt = Some(
+                    next()?
+                        .parse()
+                        .map_err(|e| format!("invalid --run-attempt: {e}"))?,
+                );
+            }
+            other => return Err(format!("unknown flag {other:?}")),
+        }
+    }
+    let run = match (run_id, run_attempt) {
+        (Some(id), Some(attempt)) => Some(RunKey { id, attempt }),
+        (None, None) => None,
+        _ => return Err("--run-id and --run-attempt must be given together".to_string()),
+    };
+    Ok(Meta {
+        sha: sha.ok_or("--sha is required")?,
+        dirty,
+        os: os.ok_or("--os is required")?,
+        arch: arch.ok_or("--arch is required")?,
+        image,
+        cpu_model,
+        logical_cpus: logical_cpus.ok_or("--logical-cpus is required")?,
+        fingerprint,
+        run,
+    })
+}
+
+fn measure_ecs() -> Vec<f64> {
+    let mut world = build_ecs_world();
+    for _ in 0..WARMUP_SAMPLES {
+        run_ecs_rounds(&mut world, ECS_WALLCLOCK_ROUNDS, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run_ecs_rounds(&mut world, ECS_WALLCLOCK_ROUNDS, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
+fn measure_sim() -> Vec<f64> {
+    let mut sim = build_sim(0xB5_11_C1_0C_C0_FF_EE_00);
+    for _ in 0..WARMUP_SAMPLES {
+        run_sim_ticks(&mut sim, SIM_WALLCLOCK_TICKS, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run_sim_ticks(&mut sim, SIM_WALLCLOCK_TICKS, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
+fn result_for(
+    meta: &Meta,
+    scenario: &str,
+    samples: Vec<f64>,
+    params: BTreeMap<String, ParamValue>,
+) -> BenchResult {
+    let computed_median = median(&samples).unwrap_or(0.0);
+    BenchResult {
+        scenario: scenario.to_string(),
+        metric: "wall_time".to_string(),
+        unit: "ns".to_string(),
+        median: computed_median,
+        samples,
+        commit: CommitRef {
+            sha: meta.sha.clone(),
+            dirty: meta.dirty,
+        },
+        runner: RunnerInfo {
+            os: meta.os.clone(),
+            arch: meta.arch.clone(),
+            image: meta.image.clone(),
+            cpu_model: meta.cpu_model.clone(),
+            logical_cpus: meta.logical_cpus,
+            fingerprint: meta.fingerprint.clone(),
+        },
+        executor: ExecutorInfo {
+            kind: "sequential".to_string(),
+            threads: 1,
+        },
+        params,
+        value_origin: ValueOrigin::Runner,
+        injected_regression_percent: 0,
+        run: meta.run.clone(),
+    }
+}
+
+fn main() -> ExitCode {
+    let meta = match parse_meta() {
+        Ok(meta) => meta,
+        Err(err) => {
+            eprintln!("wallclock: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let ecs_params = BTreeMap::from([
+        ("entities".to_string(), ParamValue::Int(ECS_ENTITIES as i64)),
+        (
+            "rounds".to_string(),
+            ParamValue::Int(i64::from(ECS_WALLCLOCK_ROUNDS)),
+        ),
+    ]);
+    let sim_params = BTreeMap::from([
+        ("entities".to_string(), ParamValue::Int(SIM_ENTITIES as i64)),
+        (
+            "ticks".to_string(),
+            ParamValue::Int(i64::from(SIM_WALLCLOCK_TICKS)),
+        ),
+    ]);
+
+    let results = [
+        result_for(&meta, ECS_SCENARIO, measure_ecs(), ecs_params),
+        result_for(&meta, SIM_SCENARIO, measure_sim(), sim_params),
+    ];
+
+    for result in &results {
+        match result.to_json_line() {
+            Ok(line) => println!("{line}"),
+            Err(err) => {
+                eprintln!("wallclock: refused to write an invalid line: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}

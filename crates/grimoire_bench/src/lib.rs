@@ -9,15 +9,30 @@
 //! clock samples never enter simulation state or subsystem hashes. It deliberately carries no
 //! `clippy.toml`.
 //!
-//! **Status:** skeleton (Plan-0002 WP1.3). Bench scenarios under `benches/`, the full
-//! `BenchResult` (contract §15.1) and `GoldenMaster` (§15.2) schema types, and wall-clock
-//! measurement with 1 and N threads via `grimoire_exec` all land in WP6.
+//! **Status:** Plan-0002 WP6.2 adds the P0 baseline benches ([`scenarios::build_ecs_world`] /
+//! [`scenarios::run_ecs_rounds`] for `ecs_query_10k`, [`scenarios::build_sim`] /
+//! [`scenarios::run_sim_ticks`] for `sim_step_600`), the `BenchResult` schema (contract §15.1,
+//! module [`schema`]) and the engine-ADR-0010 regression gate (module [`gate`]). `GoldenMaster`
+//! (contract §15.2) is not part of this work package — no golden-master benches exist yet — and
+//! is left for whichever WP first needs it; the size-limit constants below cover only the
+//! bench-result half of §15.
 //!
 //! Contract §2 rule 11 requires every `u64` hash, id or seed that crosses a JSON interface to be
 //! encoded as exactly 16 lowercase hex digits, never as a JSON number (a JSON number can only
 //! round-trip integers up to 2^53 - 1 through a typical parser). [`u64_as_hex16`] and
-//! [`u64_from_hex16`] are that one rule as a small, reusable primitive; the full schema types that
-//! use it land in WP6.
+//! [`u64_from_hex16`] are that one rule as a small, reusable primitive; [`schema::hash_to_json`]
+//! and [`schema::hash_from_json`] wrap them with a [`schema::SchemaError`] for the schema types.
+
+pub mod gate;
+pub mod scenarios;
+pub mod schema;
+
+pub use gate::{GateError, GateOutcome, gate_decision, warn_threshold_percent_x100};
+pub use schema::{
+    BenchResult, CommitRef, ExecutorInfo, MAX_BENCH_LINE_BYTES, MAX_FINGERPRINT_ENTRIES,
+    MAX_PARAMS, MAX_SAMPLES, MAX_TEXT_BYTES, ParamValue, RESULT_SCHEMA, RESULT_SCHEMA_VERSION,
+    RunKey, RunnerInfo, SchemaError, ValueOrigin, median,
+};
 
 use std::fmt;
 
