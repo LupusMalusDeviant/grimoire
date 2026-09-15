@@ -266,3 +266,153 @@ rohe Callgrind-`summary:`-Zeile statt `gungraun`.
   aufbewahrt
 - Valgrind/Callgrind: https://valgrind.org/docs/manual/cl-manual.html
 - `gungraun` (vormals `iai-callgrind`): https://github.com/gungraun/gungraun
+
+## Nachtrag (WP6.2-Vorbereitung, 2026-09-15)
+
+Ergänzung zu den beiden unter „Vor der Umsetzung in WP6.2" offen gelassenen Punkten (Kalibrierung
+der Einspeisung; `gungraun` gegen die rohe Callgrind-Zeile). Beide sind jetzt gemessen; der Text
+oben (Optionen, Entscheidung, Konsequenzen) bleibt unverändert.
+
+### Kalibrierte Einspeisung
+
+**Methode:** `bench_noise::run_calibration_units` (Spike-Crate, Branch `p1/wp6.1-bench-spike`)
+ersetzt "N weitere ganze Runden/Ticks der echten Bench-Arbeit" durch eine homogene, feingranulare
+Einheit ohne den fixen Pro-Runde/Pro-Tick-Overhead, der die alte Einspeisung verwässert hat.
+`scripts/calibrate_injection.sh` misst auf dem Runner, im selben Job wie die Zielmessung: einen
+Basislauf (0 Einheiten) und einen Referenzlauf (2.000.000 Einheiten), daraus die Steigung (`Ir` je
+Einheit), löst daraus die Einheitenzahl für die Zielprozente und misst das Ergebnis nach —
+durchgehend exakte 64-Bit-Ganzzahlarithmetik wie das Gate selbst (Plan §4.3). `src/bin/
+calibration_check.rs` prüft automatisiert, ob jede Zielprozentzahl auf ±1 Prozentpunkt trifft und
+ob das exakte Ganzzahl-Gate (`gate_decision`) wie erwartet urteilt; der neue CI-Job `calibration`
+bricht bei Abweichung ab.
+
+**Gemessen** (CI-Lauf 35022362362, `ubuntu-24.04`, Commit `15ccb08`; bit-genau identisch
+reproduziert in Lauf 35020976939, Commit `92e2fa2`):
+
+| Bench | Ziel % | Basis-`Ir` | Einheiten | End-`Ir` | Gemessen % | \|Δ\| pp | Gate | Erwartet |
+|---|---|---|---|---|---|---|---|---|
+| `ecs_query_10k` | +5 % | 74.179.857 | 285.306 | 77.888.899 | 5,00 % | 0,00 | warn | nicht rot |
+| `ecs_query_10k` | +12 % | 74.179.857 | 684.735 | 83.081.476 | 12,00 % | 0,00 | rot | rot |
+| `ecs_query_10k` | +20 % | 74.179.857 | 1.141.224 | 89.015.863 | 20,00 % | 0,00 | rot | rot |
+| `sim_step_600` | +5 % | 97.293.940 | 374.206 | 102.158.682 | 5,00 % | 0,00 | warn | nicht rot |
+| `sim_step_600` | +12 % | 97.293.940 | 898.095 | 108.969.239 | 12,00 % | 0,00 | rot | rot |
+| `sim_step_600` | +20 % | 97.293.940 | 1.496.824 | 116.752.746 | 20,00 % | 0,00 | rot | rot |
+
+Alle sechs Punkte treffen ihr Ziel auf 0,00 Prozentpunkte (weit innerhalb der ±1-pp-Vorgabe) und
+urteilen exakt wie gefordert — insbesondere `sim_step_600` `+12 %`, das mit der alten,
+unkalibrierten Einspeisung nur `+8,19 %` maß und **nicht** rot wurde (offener Punkt oben, Option 2
+„Negativ"): mit der kalibrierten Einspeisung wird es korrekt rot.
+
+Ein Zusatzbefund aus dem Vergleichsjob (unten) relativiert, wie stabil der alte, unkalibrierte
+Nennwert-Anteil selbst ist: **derselbe** unkalibrierte `+12 %`-Einspeisungscode maß im Job
+`gungraun-vs-raw` auf `ubuntu-latest` für `sim_step_600` nur `+5,36 %` — weder die ursprünglich
+beobachteten `+8,19 %` noch `+12 %`. Der Pool mischt CPU-Modelle (Vorbereitung §2), und Callgrinds
+feste Guest-CPUID schaltet je nach Host unterschiedliche `hwcaps` frei (Vorbereitung §2 K4) — ein
+plausibler, hier nicht weiter verifizierter Erklärungsansatz. Das bestätigt den gewählten Ansatz:
+Kalibrierung muss **im selben Lauf** wie die Zielmessung geschehen, nicht einmalig ermittelt und
+fest verdrahtet werden.
+
+### gungraun gegen die rohe Callgrind-Zeile
+
+**Aufbau:** `benches/gungraun_bench.rs` (neue `[dev-dependencies]`-Abhängigkeit
+`gungraun = "0.19.4"`, ausschließlich im Spike-Crate, nie im Engine-Workspace oder
+`grimoire_bench`) misst dieselben zwei Benches (`baseline`, nominelle `+12 %`) über
+`#[library_benchmark]`/`library_benchmark_group!`/`main!`. Der CI-Job `gungraun-vs-raw`
+(`ubuntu-latest`, gepinnte Toolchain 1.98.1) führt beide Pfade zweimal im selben Job aus, damit der
+Vergleich nicht durch Umgebungsdrift verfälscht wird.
+
+**Setup-Aufwand:**
+
+- Roh: `scripts/measure_ir.sh` (~45 Zeilen Bash) + `src/bin/ir_probe.rs`; keine zusätzliche
+  Cargo-Abhängigkeit, keine zusätzliche Action.
+- `gungraun`: zieht 19 zusätzliche Crates (u. a. `syn`, `gungraun-macros`, `gungraun-runner`,
+  `indexmap`, `hashbrown`, `bincode-next`); zusätzlich die Action `gungraun/setup-gungraun` (per
+  SHA gepinnt). **Reale Stolperfalle angetroffen:** `runner-version: auto` schlug im ersten
+  Versuch fehl (Lauf 35020976939, Job „gungraun vs. raw Callgrind": „Unable to detect
+  gungraun-runner version"). Die Action liest `Cargo.lock`, um die passende
+  `gungraun-runner`-Version zu erkennen, aber `defaults.run.working-directory:
+  spikes/bench-noise` gilt nur für `run:`-Schritte, nicht für `uses:`-Actions — die Erkennung lief
+  am Repo-Root (Engine-Workspace ohne `gungraun`-Abhängigkeit) ins Leere. Behoben durch
+  `runner-version: "0.19.4"` explizit passend zum Lockfile.
+
+**CI-Zeit** (derselbe Job, `ubuntu-latest`, zwei Wiederholungen je Pfad):
+
+| Pfad | Lauf 1 | Lauf 2 |
+|---|---|---|
+| roh (`measure_ir.sh`, 2 Benches × 4 Varianten = 8 Callgrind-Läufe) | 5 s | 5 s |
+| `gungraun` (2 Benches × 2 Varianten = 4 Callgrind-Läufe) | 16 s | 5 s |
+
+Job `gungraun-vs-raw` insgesamt (Checkout, Toolchain, Valgrind, zwei Builds, beide Pfade zweimal):
+79 s. Zum Vergleich: Job `calibration` (Checkout, Toolchain, Valgrind, ein Build, sechs
+Kalibrierungsziele über zehn Callgrind-Läufe): 42 s. `gungraun`s erster Lauf brauchte trotz halb so
+vieler Varianten gut dreimal so lang wie der volle rohe Lauf — einmaliger Kompilierkosten für die
+Proc-Macro-Kette (`syn`, `gungraun-macros`) bei kaltem Cache; im zweiten (warmen) Lauf gleichauf
+mit dem rohen Pfad.
+
+**Stabilität:** Innerhalb desselben Jobs zeigte der rohe Pfad auf `ubuntu-latest` eine winzige,
+aber reale Lauf-zu-Lauf-Abweichung (`ecs_query_10k`-Basis 74.179.329 → 74.179.967,
+`sim_step_600`-Basis 97.293.411 → 97.294.049; je ≈ 0,0009 %) — kleiner als je zuvor gemessen, aber
+ungleich null, anders als das exakte 0,0-%-Band der ursprünglichen 10er-Matrix auf
+`ubuntu-24.04` (dort wich ebenfalls nur eine von zehn Wiederholungen in der zehnten
+Nachkommastelle ab, siehe oben). `gungraun`s eigener Vergleich beider Läufe meldete für alle vier
+Benchmarks wörtlich „No change" (bitgenau gleiche `Ir`). Beide Abweichungen liegen weit unterhalb
+der 10-%-Schwelle und sind nicht gate-relevant; `gungraun`s eingebauter Lauf-gegen-Lauf-Vergleich
+zeigt das aber ohne Zusatzwerkzeug an.
+
+**Toolchain/Image:** Beide Pfade bauten und liefen anstandslos mit der gepinnten Toolchain 1.98.1
+und Valgrind 3.22.0 (`apt`/`system`-Strategie für beide, für einen fairen Vergleich) auf
+`ubuntu-latest` — keine Inkompatibilität, abgesehen von der oben genannten
+`runner-version`-Stolperfalle.
+
+**Setup-Ausschluss-Nuance:** `gungraun`s `#[bench::id(ausdruck)]`-Argumentausdrücke laufen vor
+Callgrinds Standard-Einstiegspunkt und schließen daher Aufbaukosten aus der Messung aus — anders
+als `ir_probe`, das den ganzen Prozess zählt. Im selben Job gemessen macht das bei `ecs_query_10k`
+≈ 6,9 % des rohen Basiswerts aus (74.179.329 roh gegen 69.055.375 `gungraun`), bei `sim_step_600`
+nur ≈ 1,5 % (97.293.411 gegen 95.823.888) — der 600-Tick-Rumpf dominiert dort ohnehin gegenüber
+dem Aufbau von 2.000 Entities. Das verkleinert die Verwässerung durch Fixkosten etwas, ersetzt die
+Kalibrierung oben aber nicht: `gungraun`s eigene *unkalibrierte* `+12 %`-Einspeisung maß `+12,00 %`
+bei `ecs_query_10k` (durch den Ausschluss zufällig sehr nah dran) und nur `+5,44 %` bei
+`sim_step_600` (nahe am rohen Pfad in demselben Job, `+5,36 %`, siehe oben) — WP6.2 braucht die
+kalibrierte Einspeisung unabhängig von der Werkzeugwahl.
+
+### Entscheidung: roh bleibt, vorerst
+
+**Empfehlung:** Für das produktive `grimoire_bench` in WP6.2 **bei der rohen
+Callgrind-`summary:`-Zeile dieses Spikes bleiben**, `gungraun` (noch) nicht einführen — abweichend
+von der eingangs skizzierten Tendenz dieses ADR („schlägt dieses ADR gungraun … vor, wo seine
+Regressionswerkzeuge den Mehraufwand wert sind"), jetzt mit echten statt angenommenen Zahlen
+unterlegt:
+
+- Die eigentlich harte Arbeit — akzeptierte Basis statt letztem Push (§4.2), exakter
+  Ganzzahlvergleich, Warn-/Rot-Schwellen, Exitcode-Tabelle (§4.3) — ist bereits geschrieben,
+  unit-getestet und in drei CI-Läufen grün. `gungraun`s eingebaute Regressionsprüfung vergleicht
+  gegen den *eigenen letzten lokalen Lauf*, nicht gegen eine verwaltete akzeptierte Basis auf
+  einem Datenzweig (P-12) — sie ersetzt diese Vergleicherlogik nicht, sie käme zusätzlich dazu.
+- `gungraun` kostet: 19 zusätzliche Crates (Audit-Fläche für ein determinismus-empfindliches
+  Engine-Repo, `crate-vertraege.md` §2 Regel 4), eine zusätzliche gepinnte Action mit einer
+  bereits angetroffenen Konfigurationsfalle, und einen realen Kaltstart-Zeitaufschlag beim ersten
+  Lauf nach einer Cache-Invalidierung.
+- Der Setup-Ausschluss-Vorteil ist real, aber ungleichmäßig (6,9 % gegenüber 1,5 % zwischen den
+  zwei Benches) und löst die Kalibrierungsfrage nicht.
+- Was `gungraun` bringt und die rohe Zeile nicht — Lauf-gegen-Lauf-Diffing ohne Zusatzwerkzeug,
+  DHAT/Massif/Cachegrind, lokale Entwicklerergonomie (`cargo bench` statt manuell Valgrind
+  aufrufen) — wird für die P0-Benches in WP6.2 (nur `Ir`, nur Gate) nicht gebraucht. Es wird
+  relevant, sobald WP6.5+ Kollisions- oder N-Thread-Arbeit Cache-Simulation, DHAT oder
+  Multi-Tool-Auswertung braucht; dann lohnt sich ein erneuter Blick mit denselben Kriterien.
+
+**Offen für WP6.2 selbst:** Die Kalibrierung hier lief gegen den Spike-eigenen
+`run_calibration_units`; WP6.2 muss dieselbe Methode (oder eine äquivalente) in `grimoire_bench`
+selbst verdrahten, nicht die konkreten Einheitenzahlen aus dieser Tabelle übernehmen — die
+Steigung ist bench- und hostabhängig (siehe oben, `sim_step_600` driftete zwischen zwei Läufen).
+
+### Referenzen (Nachtrag)
+
+- CI-Läufe: 35020976939 (Kalibrierung grün, `gungraun-vs-raw` rot durch Setup-Fehler, Commit
+  `92e2fa2`), 35022362362 (alle Jobs grün nach Fix, Commit `15ccb08`) auf Branch
+  `p1/wp6.1-bench-spike`; Rohdaten (`calibration-*.jsonl`, `ir-raw-ubuntu-latest-run*.jsonl`,
+  `gungraun-run*.txt`, `target/gungraun/**/callgrind.*.out`) als Lauf-Artefakte
+  `wp62-calibration` und `wp62-gungraun-vs-raw`, 30 Tage aufbewahrt
+- Spike-Ergänzung: `spikes/bench-noise/src/lib.rs` (`run_calibration_units`),
+  `src/bin/ir_probe.rs` (`calibrated`-Modus), `src/bin/calibration_check.rs`,
+  `scripts/calibrate_injection.sh`, `benches/gungraun_bench.rs`, CI-Jobs `calibration` und
+  `gungraun-vs-raw`
