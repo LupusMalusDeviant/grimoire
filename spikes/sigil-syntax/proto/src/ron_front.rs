@@ -17,6 +17,22 @@ pub fn parse(src: &str) -> Result<RonSigil, Diag> {
         .map_err(|e| from_spanned(src, &e))
 }
 
+/// The verbatim `ron` error of a file and the position `ron` reports, without any adapter.
+pub fn raw_error(src: &str) -> Option<(String, Pos)> {
+    ron::Options::default()
+        .from_str::<RonSigil>(src)
+        .err()
+        .map(|e| {
+            (
+                e.code.to_string(),
+                Pos {
+                    line: e.span.start.line,
+                    col: e.span.start.col,
+                },
+            )
+        })
+}
+
 pub fn from_spanned(src: &str, e: &SpannedError) -> Diag {
     let pos = Pos {
         line: e.span.start.line,
@@ -27,7 +43,83 @@ pub fn from_spanned(src: &str, e: &SpannedError) -> Diag {
     let mut d = from_code(&e.code);
     d.pos = Some(pos);
     d.node_path = path;
+    match &e.code {
+        E::MissingStructField { field, outer } => {
+            relocate_missing_field(src, &mut d, field, outer.as_deref());
+        }
+        E::ExpectedDifferentStructName { expected, found } => {
+            name_unit_field(src, offset, &mut d, expected, found);
+        }
+        _ => {}
+    }
     d
+}
+
+/// `ron` reports a missing field at the end of its struct. The scanner already knows the owner
+/// (path of the struct), so point at the owner instead (for a named list element: its `name`
+/// value), extend the path by the field and name the owner in cause and hint.
+fn relocate_missing_field(src: &str, d: &mut Diag, field: &str, outer: Option<&str>) {
+    let Some(owner) = d.node_path.clone() else {
+        return;
+    };
+    let Some(tree) = ron_cst::Tree::parse(src) else {
+        return;
+    };
+    let Some(node) = tree.locate(&owner) else {
+        return;
+    };
+    let text = &src[node.start..node.end];
+    let outer = outer.unwrap_or("struct");
+    let who = match node.kind {
+        ron_cst::RKind::Scalar if text.starts_with('"') => {
+            format!("{outer} `{}`", text.trim_matches('"'))
+        }
+        _ => format!("`{outer}` at `{owner}`"),
+    };
+    let value = match model::field_newtype(field) {
+        Some(nt) => format!("{nt}(<value>)"),
+        None => "<value>".to_string(),
+    };
+    if let Some(ron_pos) = d.pos {
+        d.related = Some(diag::Related {
+            label: "`ron` reports the end of the struct".to_string(),
+            pos: ron_pos,
+        });
+    }
+    d.pos = Some(diag::pos_of_offset(src, node.start));
+    d.node_path = Some(format!("{owner}.{field}"));
+    d.cause = format!("{who} is missing the required field `{field}`.");
+    d.hint = Some(format!("Add `{field}: {value},` to {who}."));
+}
+
+/// `ron` names both newtypes but not the field. The path from the scanner does, and the value
+/// inside the wrong newtype can be carried over.
+fn name_unit_field(src: &str, offset: usize, d: &mut Diag, expected: &str, found: &str) {
+    let Some(field) = d
+        .node_path
+        .as_deref()
+        .and_then(|p| p.rsplit('.').next())
+        .filter(|f| !f.contains('['))
+        .map(str::to_string)
+    else {
+        return;
+    };
+    d.cause = format!("Field `{field}` expects `{expected}(..)`, found `{found}(..)`.");
+    let rest = &src[offset.min(src.len())..];
+    let inner = rest
+        .strip_prefix(found)
+        .map(str::trim_start)
+        .and_then(|r| r.strip_prefix('('))
+        .and_then(|r| r.split_once(')'))
+        .map(|(v, _)| v.trim())
+        .filter(|v| !v.is_empty() && v.parse::<f64>().is_ok());
+    d.hint = Some(match inner {
+        Some(v) if expected != "Ticks" && !v.contains(['.', 'e', 'E']) => {
+            format!("Write `{field}: {expected}({v}.0),`.")
+        }
+        Some(v) => format!("Write `{field}: {expected}({v}),`."),
+        None => format!("Write `{field}: {expected}(..)` instead of `{found}(..)`."),
+    });
 }
 
 /// Maps a `ron` error code to a diagnostic. `cause` is the verbatim `ron` message.

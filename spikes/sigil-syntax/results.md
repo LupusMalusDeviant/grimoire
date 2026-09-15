@@ -13,13 +13,16 @@ lassen sich jederzeit neu erzeugen und werden von `cargo test` gegen den Code ge
 1. **Beide Prototyp-Parser lesen alle fünf Korpus-Muster fehlerfrei** und erzeugen nach Auflösung der
    Komposition dasselbe Modell (Abschnitt 1). Der Korpus ist damit erstmals maschinell gegen einen echten
    RON-Parser und einen echten Parser für die eigene Grammatik geprüft.
-2. **Diagnosen:** Die eigene Grammatik trifft in allen zehn Fehlerfällen Soll-Position und Knotenpfad und
-   liefert je Datei genau eine Diagnose. RON mit `ron` 0.12.2 kommt auf 27/30 Punkte bei der Position,
-   22/30 bei der Ursache, 19/30 beim Fix-Hinweis und 28/30 beim Knotenpfad (Abschnitt 2.3), und das nur
-   mit einer eigenen Zusatzschicht für Hinweise und Pfade. Schwach sind in RON die Syntaxfehler:
-   `3.5` statt Ganzzahl meldet `ron` als „Expected comma“, eine fehlende Klammer als unbekanntes Feld
-   `Bullet`, ein doppeltes Komma als fehlende Struktur `Key`, ein fehlendes Pflichtfeld zeigt auf das
-   Strukturende statt auf den Emitter.
+2. **Diagnosen:** Die eigene Grammatik trifft in allen zehn Fehlerfällen des Korpus Soll-Position und
+   Knotenpfad und liefert je Datei genau eine Diagnose. Das gilt nur für diese zehn Fälle: Syntaxspezifische
+   Sonden wie `count: 24` oder zwei Felder auf einer Zeile ergeben zwei bis drei Diagnosen, darunter ein
+   falsches „fehlendes Pflichtfeld“ (Abschnitt 2.7). RON mit `ron` 0.12.2 kommt auf 29/30 Punkte bei der
+   Position, 24/30 bei der Ursache, 20/30 beim Fix-Hinweis und 29/30 beim Knotenpfad (Abschnitt 2.3), und
+   das nur mit einer eigenen Zusatzschicht für Hinweise, Pfade und Positionen. Der verbleibende Abstand
+   liegt ganz bei den Syntaxfehlern, und dort an `ron` selbst: `3.5` statt Ganzzahl meldet `ron` als
+   „Expected comma“, eine fehlende Klammer als unbekanntes Feld `Bullet`, ein doppeltes Komma als fehlende
+   Struktur `Key`. Fehlendes Pflichtfeld (e03) und falsche Einheit (e07) behebt die Zusatzschicht mit
+   wenigen Zeilen; in der ersten Fassung fehlten diese Zeilen, und RON lag 6 Punkte tiefer (96/120).
 3. **Einheiten:** Entgegen der Befürchtung im Korpus-README prüft `ron` 0.12.2 Newtype-Namen
    (`Ticks(12)` statt `Deg` wird erkannt). **Aber** `ron::Value` verliert die Namen: Über `ron::Value`
    gelesen wird `Ticks(240)` stillschweigend zu `Deg(240.0)`. Overrides müssen deshalb als `RawValue`
@@ -29,10 +32,11 @@ lassen sich jederzeit neu erzeugen und werden von `cargo test` gegen den Code ge
    (Modell ändern, neu serialisieren) verliert alle Kommentare (11 → 0) und schreibt rund 40 Zeilen um
    (Abschnitt 3).
 5. **Länge:** sigil 1 braucht 87 % der Zeilen, 56 % der signifikanten Tokens und 69 % der Zeichen von RON
-   (Abschnitt 5.1).
+   (Abschnitt 5.1). Die Token-Differenz stammt zu 40 % aus Trennkommas und zu 31 % aus Einheiten-Hüllen;
+   die Token-Zahl ist nur ein Richtwert.
 6. **Aufwand:** Die eigene Grammatik kostet im Prototyp gut 2 200 Codezeilen (Lexer, CST, Parser mit
    Wiederaufsetzen, Deserializer mit Spans). Die RON-Seite braucht für gleichwertige Pfade, Positionen und
-   verlustfreies Editieren ebenfalls rund 630 Zeilen eigenen Code; der Vorteil „kein eigener Parser“
+   verlustfreies Editieren ebenfalls rund 710 Zeilen eigenen Code; der Vorteil „kein eigener Parser“
    gilt für RON also nur, solange niemand Knotenpfade, Positionen für Validierungsbefunde oder
    `sigilc set` braucht (Abschnitt 5.4).
 7. **Generierbarkeit ist nicht belastbar gemessen.** Codex war zweimal nicht verfügbar; es
@@ -81,7 +85,11 @@ cargo run -- set ../corpus/sigil/04-mirrored-spiral.sigil emitters.bloom.speed 0
   Syntax.
 - **Fairness gegenüber RON.** Die Fix-Hinweise für RON erzeugt eine dünne eigene Schicht aus den
   strukturierten Fehlercodes von `ron` (etwa „Did you mean“ aus `NoSuchStructField`), die Knotenpfade der
-  eigene Scanner. Ohne diese Schicht liefert `ron` nur Rohmeldung und Position (Tabelle 2.2).
+  eigene Scanner. Ohne diese Schicht liefert `ron` nur Rohmeldung und Position (Tabelle 2.2). Seit dem
+  Review vom 2026-09-15 verlegt die Schicht außerdem ein fehlendes Pflichtfeld über den Scanner vom
+  Strukturende auf den Besitzer und nennt bei einer falschen Einheit Feld und Wert. Vorher hatte die
+  RON-Seite deutlich weniger Diagnoseaufwand bekommen als die sigil-Seite, und e03 und e07 lagen zusammen
+  6 Punkte tiefer.
 - **Soll-Werte** stammen aus `corpus/errors/expected.json`. Fehlerkopien, die importieren (e06, e08),
   werden gegen das Verzeichnis ihres Basismusters aufgelöst.
 - **Bewertung 0–3.** *Position:* 3 exakt, 2 richtige Zeile, 1 andere Zeile, 0 keine (automatisch).
@@ -120,7 +128,7 @@ Erste Diagnose je Datei, Ist gegen Soll.
 | e01 | sigil 1 | 1 | 30:5 (30:5) | schema (schema) | Unknown field `cuont` in block `ring`. | Did you mean `count`? Allowed fields of block `ring`: count, start. | `emitters.burst.block.cuont` (`emitters.burst.block.cuont`) |
 | e02 | RON | 1 | 43:25 (43:24) | parse (schema) | Expected comma. | – | `emitters.stream.block.count` (`emitters.stream.block.count`) |
 | e02 | sigil 1 | 1 | 39:13 (39:13) | schema (schema) | Field `count` expects an integer, found the float `3.5`. | Use a whole number, e.g. `count = 3`. | `emitters.stream.block.count` (`emitters.stream.block.count`) |
-| e03 | RON | 1 | 55:9 (27:19) | schema (schema) | Unexpected missing field named `speed` in `Emitter`. | Add `speed: UnitsPerTick(<value>),` to `Emitter`. | `emitters.bloom` (`emitters.bloom.speed`) |
+| e03 | RON | 1 | 27:19 (27:19) | schema (schema) | Emitter `bloom` is missing the required field `speed`. | Add `speed: UnitsPerTick(<value>),` to Emitter `bloom`. | `emitters.bloom.speed` (`emitters.bloom.speed`) |
 | e03 | sigil 1 | 1 | 23:9 (23:9) | schema (schema) | Emitter `bloom` is missing the required field `speed`. | Add a line `speed = <value>u/t`. | `emitters.bloom.speed` (`emitters.bloom.speed`) |
 | e04 | RON | 1 | 33:9 (33:9) | schema (parse) | Unexpected field named `Bullet` in `Bullet`, expected one of `name`, `silhouette`, `palette`, `glow`, `radius`, `damage`, `flags`, `despawn_vfx`, `behaviour`, or `transforms` instead. | Allowed fields of `Bullet`: name, silhouette, palette, glow, radius, damage, flags, despawn_vfx, behaviour, transforms. | `bullets.seed` (`bullets.seed`) |
 | e04 | sigil 1 | 1 | 30:1 (30:1) | parse (parse) | `bullet` cannot start a member inside `bullet seed`; the `{` opened at line 17 is not closed. | Insert `}` on its own line before this line. | `bullets.seed` (`bullets.seed`) |
@@ -128,7 +136,7 @@ Erste Diagnose je Datei, Ist gegen Soll.
 | e05 | sigil 1 | 1 | 30:13 (30:13) | validate (validate) | `count` of block `ring` must be in 1..=512, found 0; a block of 0 bullets fires nothing and has no defined angle step. | Use 1 to 512 bullets, e.g. `count = 24`. | `emitters.burst.block.count` (`emitters.burst.block.count`) |
 | e06 | RON | 1 | 43:24 (43:24) | validate (validate) | Unknown behaviour `seek_target_weak2`; registered behaviours: orbit_parent, seek_target_weak. | Did you mean `seek_target_weak`? New behaviours must be registered in Rust first (FR-10). | `bullets.satellite.behaviour` (`bullets.satellite.behaviour`) |
 | e06 | sigil 1 | 1 | 38:15 (38:15) | validate (validate) | Unknown behaviour `seek_target_weak2`; registered behaviours: orbit_parent, seek_target_weak. | Did you mean `seek_target_weak`? New behaviours must be registered in Rust first (FR-10). | `bullets.satellite.behaviour` (`bullets.satellite.behaviour`) |
-| e07 | RON | 1 | 44:25 (44:25) | schema (schema) | Expected struct `Deg` but found `Ticks`. | Write `Deg(..)` instead of `Ticks(..)`. | `emitters.stream.block.spread` (`emitters.stream.block.spread`) |
+| e07 | RON | 1 | 44:25 (44:25) | schema (schema) | Field `spread` expects `Deg(..)`, found `Ticks(..)`. | Write `spread: Deg(12.0),`. | `emitters.stream.block.spread` (`emitters.stream.block.spread`) |
 | e07 | sigil 1 | 1 | 40:14 (40:14) | schema (schema) | Field `spread` expects an angle in `deg`, found the tick quantity `12t`. | Write `spread = 12deg`. | `emitters.stream.block.spread` (`emitters.stream.block.spread`) |
 | e08 | RON | 1 | 66:19 (66:19) | validate (validate) | Duplicate emitter name `tide`; first defined at line 48. | Rename one of the emitters; emitter names must be unique within a unit. | `emitters[1].name` (`emitters[1].name`) |
 | e08 | sigil 1 | 1 | 57:9 (57:9) | validate (validate) | Duplicate emitter name `tide`; first defined at line 41. | Rename one of the emitters; emitter names must be unique within a unit. | `emitters[1].name` (`emitters[1].name`) |
@@ -164,32 +172,34 @@ Das liefert `ron` 0.12.2 ohne jede Zusatzschicht. Knotenpfade und Fix-Hinweise g
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | e01 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
 | e02 | 2 | 3 | 1 | 3 | 0 | 3 | 3 | 3 |
-| e03 | 1 | 3 | 2 | 3 | 2 | 2 | 2 | 3 |
+| e03 | 3 | 3 | 3 | 3 | 2 | 2 | 3 | 3 |
 | e04 | 3 | 3 | 1 | 3 | 0 | 3 | 3 | 3 |
 | e05 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
 | e06 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
-| e07 | 3 | 3 | 2 | 3 | 2 | 3 | 3 | 3 |
+| e07 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
 | e08 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
 | e09 | 3 | 3 | 1 | 3 | 0 | 3 | 2 | 3 |
 | e10 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 |
-| **Summe (max. 30)** | **27** | **30** | **22** | **30** | **19** | **29** | **28** | **30** |
+| **Summe (max. 30)** | **29** | **30** | **24** | **30** | **20** | **29** | **29** | **30** |
 <!-- END GENERATED: qualitaet -->
 
-Begründung der von Hand bewerteten Spalten, wo RON schlechter liegt:
+Begründung der von Hand bewerteten Spalten, wo RON schlechter liegt oder lag. Nur e02, e04 und e09 liegen
+noch unter sigil 1. Alle drei sind Syntaxfehler, bei denen `ron` Fehlerklasse oder Ursache verfehlt; der
+Fehlercode enthält nicht, was eine Zusatzschicht für eine bessere Meldung bräuchte.
 
 - **e02:** „Expected comma“ nennt weder Typ noch Feld und klassifiziert einen Typfehler als Syntaxfehler
   (Ursache 1). `ron` liest `3` als Ganzzahl und stolpert dann über `.5`. Einen Hinweis gibt der Fehlercode
   nicht her (0).
-- **e03:** Die Meldung nennt Feld und Strukturtyp `Emitter`, aber nicht den betroffenen Emitter `bloom`;
-  die Position liegt am Strukturende, 28 Zeilen unter dem Emitter-Namen (Ursache 2, Position 1). Der
-  Hinweis nennt den Newtype, aber nicht den Emitter (2). In sigil 1 ist der Hinweis ebenfalls nur 2, weil
-  er keinen Beispielwert nennt.
+- **e03:** `ron` selbst nennt nur Feld und Strukturtyp `Emitter` und meldet am Strukturende, 28 Zeilen unter
+  dem Emitter-Namen (Tabelle 2.2). Die Zusatzschicht verlegt die Meldung über den Scanner auf den Emitter
+  `bloom`, nennt ihn und verweist auf die Position von `ron` (Ursache 3; vor dem Review Ursache 2 und
+  Position 1). Der Hinweis nennt keinen Beispielwert (2), genau wie in sigil 1.
 - **e04:** Die fehlende Klammer erscheint als „unbekanntes Feld `Bullet` in `Bullet`“; die öffnende
   Klammer bleibt unerwähnt (Ursache 1). Der Hinweis zählt die erlaubten Felder auf und führt damit in die
   falsche Richtung (0). Die Position stimmt nur, weil die nächste Struktur zufällig an der Soll-Stelle
   beginnt.
-- **e07:** Die Meldung nennt die beiden Typen, aber nicht das Feld (Ursache 2); der Hinweis nennt keinen
-  Wert (2).
+- **e07:** `ron` nennt nur die beiden Typen. Die Zusatzschicht ergänzt das Feld aus dem Knotenpfad und den
+  Wert aus dem Quelltext (`spread: Deg(12.0)`), daher Ursache 3 und Hinweis 3 (vor dem Review je 2).
 - **e09:** „Expected opening `(` for struct `Key`“ trifft die Position exakt, erklärt aber nicht, dass ein
   Komma doppelt steht (Ursache 1, Hinweis 0). Der Pfad zeigt auf das nicht vorhandene Element `keys[3]`
   (2).
@@ -209,12 +219,15 @@ Begründung der von Hand bewerteten Spalten, wo RON schlechter liegt:
   Für Overrides ist `ron::Value` damit ungeeignet; der Prototyp hält sie als `Box<RawValue>` und dekodiert
   sie erst gegen das Zielfeld. In sigil 1 bleibt die Einheit im Literal und wird genauso gegen das
   Zielfeld geprüft.
-- **e03 (fehlendes Feld):** bestätigt. `ron` meldet am Strukturende (55:9 statt 27:19).
+- **e03 (fehlendes Feld):** für `ron` selbst bestätigt: Es meldet am Strukturende (55:9 statt 27:19,
+  Tabelle 2.2). Die Zusatzschicht korrigiert das über den Scanner; das ist keine Grenze von RON.
 - **e04 (Klammer):** bestätigt. `Bullet` wird als Feldname gelesen, der Öffner geht verloren.
 - **e02, e01 (Knotenpfad):** bestätigt. `ron` liefert keine Pfade; der eigene Scanner rekonstruiert sie
   aus der Position und funktioniert auch auf nicht parsebaren Dateien.
-- **e10 (Version):** bestätigt. RON prüft die Version erst nach der vollständigen Deserialisierung mit dem
-  v1-Schema. Eine echte v2-Datei mit neuen Feldern würde zuerst Schemafehler melden; das ist **nicht
+- **e10 (Version):** Der Prototyp prüft in RON die Version erst nach der vollständigen Deserialisierung mit
+  dem v1-Schema. Das ist ein Artefakt des Prototyps, keine Eigenschaft von RON: Ein Vorab-Scan der
+  Kopfzeile (ADR-Vorschlag, Versions-Header) prüft sie auch in RON vor allem anderen; umgesetzt ist er
+  nicht. Ohne ihn würde eine echte v2-Datei mit neuen Feldern zuerst Schemafehler melden; das ist **nicht
   gemessen**, weil der Korpus keine solche Datei enthält. sigil 1 prüft die Kopfzeile vor allem anderen
   und meldet genau einen Befund.
 - **Phasen:** `ron` trennt Syntax- und Schemafehler nicht sauber. e04 und e09 (Soll: Syntax) landen im
@@ -270,13 +283,14 @@ error[schema/type]: Field `count` expects an integer, found the float `3.5`.
 **e03, RON**
 
 ```text
-error[schema/missing-field]: Unexpected missing field named `speed` in `Emitter`.
-  --> corpus/errors/e03-missing-field.ron:55:9
+error[schema/missing-field]: Emitter `bloom` is missing the required field `speed`.
+  --> corpus/errors/e03-missing-field.ron:27:19
    |
-55 |         ),
-   |         ^
-  = path: emitters.bloom
-  = help: Add `speed: UnitsPerTick(<value>),` to `Emitter`.
+27 |             name: "bloom",
+   |                   ^
+  = note: `ron` reports the end of the struct at 55:9
+  = path: emitters.bloom.speed
+  = help: Add `speed: UnitsPerTick(<value>),` to Emitter `bloom`.
 ```
 
 **e03, sigil 1**
@@ -319,13 +333,13 @@ error[parse/unclosed-brace]: `bullet` cannot start a member inside `bullet seed`
 **e07, RON**
 
 ```text
-error[schema/unit]: Expected struct `Deg` but found `Ticks`.
+error[schema/unit]: Field `spread` expects `Deg(..)`, found `Ticks(..)`.
   --> corpus/errors/e07-wrong-unit.ron:44:25
    |
 44 |                 spread: Ticks(12), // total spread of the volley around the aim line
    |                         ^
   = path: emitters.stream.block.spread
-  = help: Write `Deg(..)` instead of `Ticks(..)`.
+  = help: Write `spread: Deg(12.0),`.
 ```
 
 **e07, sigil 1**
@@ -363,6 +377,42 @@ error[parse/comma]: Unexpected `,` in list `keys`: expected a value or `]`.
   = help: Remove the extra comma; a single trailing comma is allowed.
 ```
 <!-- END GENERATED: modder -->
+
+### 2.7 Sonden außerhalb des Fehlerkorpus
+
+<!-- BEGIN GENERATED: sonden -->
+| Sonde | Fehlerbild | Syntax | Diagnosen | Meldungen (Position) | Fix-Hinweis der ersten Meldung |
+|---|---|---|---:|---|---|
+| p01 | RON-Gewohnheit: `:` statt `=` | sigil 1 | 3 | Expected a field `name = value` or a nested `block`, `modifier` or `transform` inside `block ring`, found `count`. (30:5); Unexpected character `:`. (30:10); Block `ring` is missing the required field `count`. (29:9) | Fields are written `name = value`, one per line. |
+| p02 | zwei Felder auf einer Zeile | sigil 1 | 2 | Expected end of line, found `start`. (30:16); Block `ring` is missing the required field `start`. (29:9) | Write one member per line. |
+| p03 | Leerzeichen vor der Einheit | sigil 1 | 2 | Expected end of line, found `u`. (17:17); Field `radius` expects a distance in `u`, found the plain number `0.25`. (17:12) | Write one member per line. |
+| p04 | Wallclock-Einheit `30s` | sigil 1 | 2 | Expected a value for `delay`, found `30s`. (25:11); Unknown unit `s`. (25:13) | – |
+| p05 | Einheit fehlt | sigil 1 | 1 | Field `speed` expects a speed in `u/t`, found the plain number `0.05`. (28:11) | Add the unit: `speed = 0.05u/t`. |
+| p06 | Newtype fehlt | RON | 1 | Expected opening `(` for struct `UnitsPerTick`. (32:19) | – |
+| p07 | Strukturname fehlt | RON | 1 | Expected identifier. (33:20) | – |
+| p08 | reservierte Einheit `beats` | sigil 1 | 1 | The unit in `30beats` is reserved: beat time is not available in sigil 1. (25:11) | Use ticks (`t`) until the beat clock arrives (P2). |
+| p08 | reservierte Einheit `beats` | RON | 1 | Field `delay` expects `Ticks(..)`, found `Beats(..)`. (29:20) | Write `delay: Ticks(30),`. |
+| p09 | Kaskadenzyklus (`mote` platzt in `seed`) | sigil 1 | 1 | Transform cycle: seed -> shard -> ember -> mote -> seed. (90:12) | Break the cycle; a bullet may not turn back into an earlier type. |
+| p09 | Kaskadenzyklus (`mote` platzt in `seed`) | RON | 1 | Transform cycle: seed -> shard -> ember -> mote -> seed. (102:21) | Break the cycle; a bullet may not turn back into an earlier type. |
+| p10 | Kaskadentiefe 4 (`dust` platzt in neues `grain`) | sigil 1 | 1 | Cascade depth 4 starting at emitter `seeds` exceeds the v1 maximum of 3. (108:12) | Remove a `burst` or `become_emitter` stage. |
+| p10 | Kaskadentiefe 4 (`dust` platzt in neues `grain`) | RON | 1 | Cascade depth 4 starting at emitter `seeds` exceeds the v1 maximum of 3. (122:21) | Remove a `burst` or `become_emitter` stage. |
+<!-- END GENERATED: sonden -->
+
+Der Fehlerkorpus enthält nur Mutationen, die in beiden Syntaxen gleich aussehen. Die Sonden ergänzen
+Fehlerbilder, die es nur in einer Syntax gibt, und die Ablehnungen aus FR-08 (Kaskadentiefe über 3,
+Zyklus) sowie `beats`. Jede Sonde ändert eine Kopie eines Korpus-Musters im Speicher (`PROBES` in
+`src/measure.rs`). Sie haben keine Soll-Werte und gehen nicht in die Punkte von Abschnitt 2.3 ein.
+
+- **sigil 1:** `:` statt `=` (p01) ergibt drei Diagnosen, zwei Felder auf einer Zeile (p02) zwei. Beide
+  enden mit einem falschen Befund „fehlendes Pflichtfeld“, obwohl das Feld dasteht, weil der Parser den Rest
+  der Zeile verwirft. Leerzeichen vor der Einheit (p03) und `30s` (p04) ergeben je zwei Diagnosen, `30s`
+  ohne Hinweis. Nur die fehlende Einheit (p05) und `beats` (p08) ergeben eine gute Einzeldiagnose. Die
+  Aussage „genau eine Diagnose je Datei“ gilt also nur für die zehn Korpusfälle.
+- **RON:** Ein fehlender Newtype (p06) meldet `ron` als „Expected opening `(` for struct `UnitsPerTick`“,
+  ein fehlender Strukturname (p07) als „Expected identifier“, beide ohne Hinweis. `Beats(30)` (p08) fängt
+  die Zusatzschicht wie e07 ab.
+- **FR-08:** Zyklus (p09) und Tiefe 4 (p10) meldet der gemeinsame Validator in beiden Syntaxen mit genau
+  einer Diagnose. Vorher lief dieser Code in keinem Test und keinem Fehlerfall.
 
 ## 3 Text→Parameter-Rundreise
 
@@ -428,7 +478,8 @@ sehen können, gab es nicht.
 Claude hat Grammatik, Schema, Aufgabentexte und Prüfer selbst geschrieben; das ist keine Messung der
 Generierbarkeit durch einen fremden Autor. Aussagekräftig wird die Tabelle erst mit den Codex-Dateien.
 
-**Nachholen.** Sobald Codex verfügbar ist, die Prompts aus dem unbeaufsichtigten Lauf erneut an Codex geben, die Antworten
+**Nachholen.** Sobald Codex verfügbar ist, die Prompts aus `generability/prompts/` (unverändert aus dem
+unbeaufsichtigten Lauf übernommen, Aufruf im README dort) erneut an Codex geben, die Antworten
 als `generability/codex/g1-pendulum-fan.ron`, `….sigil` usw. ablegen und `cargo run -- report --write`
 ausführen. Die Messung zählt dann Diagnosen nach Phase und Art und prüft, ob RON- und sigil-Fassung
 desselben Autors dasselbe Modell ergeben.
@@ -450,9 +501,22 @@ desselben Autors dasselbe Modell ergeben.
 Prozentwerte: sigil 1 relativ zu RON.
 <!-- END GENERATED: laenge -->
 
-Die Token-Differenz stammt vor allem aus den Einheiten: `Ticks(20)` sind in RON vier Tokens, `20t` in
-sigil 1 eines. Dazu kommen Anführungszeichen um offene Bezeichner, `name:`-Felder und die Kopfzeile
-`#![enable(implicit_some)]` (neun Tokens). Kommentarzeilen sind in beiden Varianten gleich.
+<!-- BEGIN GENERATED: token-arten -->
+| Tokenart (alle fünf Muster) | RON | sigil 1 | Differenz | Anteil an der Differenz |
+|---|---:|---:|---:|---:|
+| Trennkommas `,` | 298 | 18 | 280 | 40 % |
+| Einheiten-Hüllen (`Ticks` `(` `)` usw., je 3 Tokens) | 216 | 0 | 216 | 31 % |
+| Kopfzeile (`#![enable(implicit_some)]` bzw. `sigil 1`) | 40 | 10 | 30 | 4 % |
+| übrige (Namen, Werte, Klammern, `:`/`=`, Schlüsselwörter) | 1034 | 855 | 179 | 25 % |
+| **Summe** | **1588** | **883** | **705** | **100 %** |
+<!-- END GENERATED: token-arten -->
+
+Die Token-Differenz stammt vor allem aus Trennkommas (40 %) und Einheiten-Hüllen (31 %): `Ticks(20)` sind
+in RON vier Tokens, `20t` in sigil 1 eines, und RON trennt jedes Feld und jedes Listenelement mit einem
+Komma. Die Kopfzeile `#![enable(implicit_some)]` zählt acht Tokens je Datei. Der Rest verteilt sich auf
+`name:`-Felder, Strukturnamen und Klammern. Anführungszeichen um offene Bezeichner ändern die Token-Zahl
+nicht, nur die Zeichenzahl. Kommentarzeilen sind in beiden Varianten gleich. Die Aufteilung ordnet Tokens
+nach ihrem Text zu (`token_kinds` in `src/measure.rs`) und ist wie die Gesamtzahl nur ein Richtwert.
 
 ### 5.2 Lesbarkeit: Spirale mit Tempokurve (Muster 04)
 
@@ -502,12 +566,14 @@ Beobachtungen (vorläufige Einschätzung von Claude):
 
 ### 5.3 Fehlersicht eines Modders
 
-- In sigil 1 zeigt jede Meldung auf das Token, das der Modder ändern muss, nennt Feld und Besitzer und
-  schlägt einen konkreten Ersatz vor (Abschnitt 2.6). Eine fehlende Klammer wird mit Zeile des Öffners
-  gemeldet.
-- In RON sind Schema- und Validierungsbefunde brauchbar, sobald die Zusatzschicht Pfade und Hinweise
-  liefert. Syntaxfehler führen dagegen oft in die falsche Richtung (e02, e04, e09), und ein fehlendes Feld
-  zeigt auf eine schließende Klammer weit unter der Stelle, an der der Modder suchen würde (e03).
+- In sigil 1 zeigt in den zehn Korpusfällen jede Meldung auf das Token, das der Modder ändern muss, und
+  nennt Feld und Besitzer (Abschnitt 2.6). In den meisten Fällen schlägt sie auch einen konkreten Ersatz
+  vor; Ausnahmen sind e03 (Hinweis ohne Beispielwert) und e08 (Umbenennen ohne konkreten Namen). Eine
+  fehlende Klammer wird mit Zeile des Öffners gemeldet. Bei syntaxspezifischen Fehlerbildern entstehen
+  Folgefehler (Abschnitt 2.7).
+- In RON sind Schema- und Validierungsbefunde brauchbar, sobald die Zusatzschicht Pfade, Positionen und
+  Hinweise liefert; das gilt auch für das fehlende Feld, das `ron` selbst an der schließenden Klammer meldet
+  (e03). Syntaxfehler führen dagegen oft in die falsche Richtung (e02, e04, e09).
 - Beide Varianten melden im Schema-Pass nur den ersten Fehler (Abschnitt 2.5).
 
 ### 5.4 Implementierungsaufwand im Prototyp
@@ -517,7 +583,7 @@ Beobachtungen (vorläufige Einschätzung von Claude):
 |---|---|---:|
 | `sigil.rs` | sigil 1: Lexer, verlustfreier CST, Parser mit Wiederaufsetzen, Absenkung, `set` | 1476 |
 | `tree.rs` | sigil 1: Wertebaum, serde-Deserializer mit Spans, Meldungstexte | 765 |
-| `ron_front.rs` | RON: `ron`-Aufruf, Fehlercodes → Diagnose und Hinweis | 116 |
+| `ron_front.rs` | RON: `ron`-Aufruf, Fehlercodes → Diagnose und Hinweis | 199 |
 | `ron_cst.rs` | RON: verlustfreier Scanner für Positionen, Knotenpfade und `set` | 514 |
 | `model.rs` | gemeinsam: Datenmodell | 284 |
 | `check.rs` | gemeinsam: Pipeline, Komposition, Validierung | 962 |
@@ -525,7 +591,9 @@ Beobachtungen (vorläufige Einschätzung von Claude):
 <!-- END GENERATED: aufwand -->
 
 Die Zahlen beschreiben Spike-Code nach `rustfmt`, nicht optimiert und ohne Tests. Die sigil-Seite
-(`sigil.rs`, `tree.rs`) ist rund 3,5-mal so groß wie die RON-Seite (`ron_front.rs`, `ron_cst.rs`). Die
+(`sigil.rs`, `tree.rs`, 2 241 Zeilen) ist rund 3,1-mal so groß wie die RON-Seite (`ron_front.rs`,
+`ron_cst.rs`, 713 Zeilen). Vor dem Review waren es 630 Zeilen und Faktor 3,6; `ron_front.rs` ist um die
+Verlegung fehlender Felder, die Feldnamen bei falscher Einheit und den Rohaufruf für Tabelle 2.2 gewachsen. Die
 RON-Seite ist aber nicht null: Knotenpfade, Positionen für Validierungsbefunde, Hinweise und
 verlustfreies `set` brauchen auch dort eigenen Code. Der gemeinsame Teil (Modell, Validierung,
 Diagnosedarstellung) ist unabhängig von der Syntaxwahl.
@@ -539,8 +607,11 @@ Diagnosedarstellung) ist unabhängig von der Syntaxwahl.
   unabhängige Zweitfassung der Generierbarkeitsmuster.
 - **Handbewertungen** der Spalten Ursache und Fix-Hinweis sind subjektiv und vorläufig.
 - **Nur `ron` 0.12.2.** Andere Versionen verhalten sich anders, etwa bei der Prüfung von Newtype-Namen.
-- **Wiederaufsetzen** des sigil-Parsers ist für die Fehlerarten des Korpus ausgelegt; andere Fehlerbilder
-  (etwa nicht geschlossene Listen über viele Zeilen) sind nicht gemessen.
+- **Wiederaufsetzen** des sigil-Parsers ist für die Fehlerarten des Korpus ausgelegt. Syntaxspezifische
+  Fehlerbilder sind nur als Sonden gemessen und zeigen Folgefehler (Abschnitt 2.7); andere (etwa nicht
+  geschlossene Listen über viele Zeilen) sind nicht gemessen.
+- **FR-08 und `beats`:** Kaskadentiefe über 3, Zyklus und `beats` stehen nur in den Sonden, nicht im
+  bewerteten Fehlerkorpus; der Korpus deckt die Kaskadentiefe nur am Limit ab (Muster 03).
 - **Nicht gemessen:** Parse-Geschwindigkeit, Hot-Reload, Editor-Unterstützung (LSP), echte v2-Dateien,
   Verhalten bei sehr großen Dateien, Rückmeldungen echter Modder.
 - Die Metrik „signifikante Tokens“ zählt Tokens der jeweiligen Scanner und ist nur als Richtwert
@@ -554,8 +625,8 @@ Offene Fragen an den PO, die die Messung schärft:
    ist die bessere Syntaxfehler-Diagnose wert, wenn Schema- und Validierungsbefunde in beiden Varianten
    gleich gut erreichbar sind?
 2. **Verlustfreies Editieren:** Ist `sigilc set` bzw. das Schreiben aus der Tooling-Suite (ADR-0008) eine
-   Anforderung für v1? Falls ja, braucht auch RON einen eigenen verlustfreien Parser, und der Aufwandsvorteil
-   von RON schrumpft auf etwa ein Viertel.
+   Anforderung für v1? Falls ja, braucht auch RON einen eigenen verlustfreien Parser, und der eigene Code von
+   RON wächst auf etwa ein Drittel dessen von sigil 1.
 3. **Komposition:** Falls RON gewählt wird, sind Overrides als `RawValue` zu halten; `ron::Value` hebelt die
    Einheitenprüfung aus (Abschnitt 2.4).
 4. **Mehrfachbefunde:** Soll ein Lauf alle Schemafehler einer Datei melden? Das ist in beiden Varianten

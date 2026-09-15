@@ -25,14 +25,16 @@ pub const AUTHORS: [&str; 2] = ["claude", "codex"];
 
 /// Manual quality ratings by Claude (provisional, PO review pending), rubric in results.md:
 /// (id, cause RON, hint RON, cause sigil 1, hint sigil 1).
+/// RON e03 and e07 were re-rated after the RON adapter learned to relocate a missing field to
+/// its owner and to name the field of a wrong unit (review of 2026-09-15); before: 2/2 and 2/2.
 pub const RATINGS: &[(&str, u8, u8, u8, u8)] = &[
     ("e01", 3, 3, 3, 3),
     ("e02", 1, 0, 3, 3),
-    ("e03", 2, 2, 3, 2),
+    ("e03", 3, 2, 3, 2),
     ("e04", 1, 0, 3, 3),
     ("e05", 3, 3, 3, 3),
     ("e06", 3, 3, 3, 3),
-    ("e07", 2, 2, 3, 3),
+    ("e07", 3, 3, 3, 3),
     ("e08", 3, 3, 3, 3),
     ("e09", 1, 0, 3, 3),
     ("e10", 3, 3, 3, 3),
@@ -244,21 +246,17 @@ pub fn raw_block(results: &[ErrorResult]) -> String {
     );
     let _ = writeln!(o, "|---|---|---|");
     for r in results.iter().filter(|r| r.syntax == Syntax::Ron) {
-        let d = r.first();
-        let raw = d.and_then(|d| d.raw.as_deref());
+        // Straight from `ron`, so the adapter's relocation (e03) does not show up here.
+        let raw = crate::ron_front::raw_error(&r.outcome.src);
         let _ = writeln!(
             o,
             "| {} | {} | {} |",
             r.id,
-            raw.map_or(
+            raw.as_ref().map_or(
                 "– (Befund des gemeinsamen Validators, nicht von `ron`)".to_string(),
-                |m| format!("`` {} ``", cell(m))
+                |(m, _)| format!("`` {} ``", cell(m))
             ),
-            if raw.is_some() {
-                pos_str(d.and_then(|d| d.pos))
-            } else {
-                "–".into()
-            }
+            raw.map_or("–".into(), |(_, p)| pos_str(Some(p)))
         );
     }
     o
@@ -804,6 +802,285 @@ pub fn length_block() -> String {
     o
 }
 
+/// Unit newtypes of the RON form; `Ticks(20)` is four tokens, `20t` in sigil 1 one.
+pub const UNIT_NEWTYPES: [&str; 6] = [
+    "Ticks",
+    "Units",
+    "Deg",
+    "UnitsPerTick",
+    "UnitsPerTick2",
+    "DegPerTick",
+];
+
+/// Significant tokens of one file split into commas, unit wrappers (name plus both
+/// parentheses), header line and the rest.
+pub fn token_kinds(syn: Syntax, src: &str) -> [usize; 4] {
+    let header_end = match syn {
+        Syntax::Ron => src
+            .lines()
+            .take_while(|l| l.starts_with("#!"))
+            .map(|l| l.len() + 1)
+            .sum::<usize>(),
+        Syntax::Sigil => {
+            if src.starts_with("sigil") {
+                src.find('\n').unwrap_or(src.len())
+            } else {
+                0
+            }
+        }
+    };
+    let texts: Vec<(usize, &str)> = match syn {
+        Syntax::Ron => ron_cst::tokenize(src)
+            .into_iter()
+            .filter(|t| !matches!(t.kind, ron_cst::RK::Space | ron_cst::RK::Comment))
+            .map(|t| (t.start, &src[t.start..t.end]))
+            .collect(),
+        Syntax::Sigil => sigil::lex(src)
+            .0
+            .into_iter()
+            .filter(|t| {
+                !t.kind.is_trivia() && !matches!(t.kind, sigil::TK::Newline | sigil::TK::Eof)
+            })
+            .map(|t| (t.start, &src[t.start..t.end]))
+            .collect(),
+    };
+    let mut k = [0usize; 4];
+    for (start, text) in &texts {
+        if *start < header_end {
+            k[2] += 1;
+        } else if *text == "," {
+            k[0] += 1;
+        } else if syn == Syntax::Ron && UNIT_NEWTYPES.contains(text) {
+            // The wrapper's `(` and `)` are counted here as well, not under the rest.
+            k[1] += 3;
+        }
+    }
+    k[3] = texts.len() - k[0] - k[1] - k[2];
+    k
+}
+
+pub fn token_kinds_block() -> String {
+    let mut r = [0usize; 4];
+    let mut s = [0usize; 4];
+    for p in PATTERNS {
+        let kr = token_kinds(Syntax::Ron, &read(&format!("corpus/ron/{p}.ron")));
+        let ks = token_kinds(Syntax::Sigil, &read(&format!("corpus/sigil/{p}.sigil")));
+        for i in 0..4 {
+            r[i] += kr[i];
+            s[i] += ks[i];
+        }
+    }
+    let total_r: usize = r.iter().sum();
+    let total_s: usize = s.iter().sum();
+    let diff = total_r as i64 - total_s as i64;
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "| Tokenart (alle fünf Muster) | RON | sigil 1 | Differenz | Anteil an der Differenz |"
+    );
+    let _ = writeln!(o, "|---|---:|---:|---:|---:|");
+    let names = [
+        "Trennkommas `,`",
+        "Einheiten-Hüllen (`Ticks` `(` `)` usw., je 3 Tokens)",
+        "Kopfzeile (`#![enable(implicit_some)]` bzw. `sigil 1`)",
+        "übrige (Namen, Werte, Klammern, `:`/`=`, Schlüsselwörter)",
+    ];
+    for i in 0..4 {
+        let d = r[i] as i64 - s[i] as i64;
+        let _ = writeln!(
+            o,
+            "| {} | {} | {} | {} | {} % |",
+            names[i],
+            r[i],
+            s[i],
+            d,
+            (d as f64 / diff as f64 * 100.0).round() as i64
+        );
+    }
+    let _ = writeln!(
+        o,
+        "| **Summe** | **{total_r}** | **{total_s}** | **{diff}** | **100 %** |"
+    );
+    o
+}
+
+// ------------------------------------------------------------------------------------------
+// Probes outside the scored error corpus
+// ------------------------------------------------------------------------------------------
+
+/// (id, description, syntax, base pattern, needle, replacement). Each probe changes a copy of
+/// a corpus pattern in memory; the files on disk stay untouched.
+pub const PROBES: &[(&str, &str, Syntax, &str, &str, &str)] = &[
+    (
+        "p01",
+        "RON-Gewohnheit: `:` statt `=`",
+        Syntax::Sigil,
+        "01-ring-burst",
+        "    count = 24\n",
+        "    count: 24\n",
+    ),
+    (
+        "p02",
+        "zwei Felder auf einer Zeile",
+        Syntax::Sigil,
+        "01-ring-burst",
+        "    count = 24\n    start = 7.5deg",
+        "    count = 24 start = 7.5deg",
+    ),
+    (
+        "p03",
+        "Leerzeichen vor der Einheit",
+        Syntax::Sigil,
+        "01-ring-burst",
+        "radius = 0.25u",
+        "radius = 0.25 u",
+    ),
+    (
+        "p04",
+        "Wallclock-Einheit `30s`",
+        Syntax::Sigil,
+        "01-ring-burst",
+        "delay = 30t",
+        "delay = 30s",
+    ),
+    (
+        "p05",
+        "Einheit fehlt",
+        Syntax::Sigil,
+        "01-ring-burst",
+        "speed = 0.05u/t",
+        "speed = 0.05",
+    ),
+    (
+        "p06",
+        "Newtype fehlt",
+        Syntax::Ron,
+        "01-ring-burst",
+        "speed: UnitsPerTick(0.05)",
+        "speed: 0.05",
+    ),
+    (
+        "p07",
+        "Strukturname fehlt",
+        Syntax::Ron,
+        "01-ring-burst",
+        "block: Ring(",
+        "block: (",
+    ),
+    (
+        "p08",
+        "reservierte Einheit `beats`",
+        Syntax::Sigil,
+        "01-ring-burst",
+        "delay = 30t",
+        "delay = 30beats",
+    ),
+    (
+        "p08",
+        "reservierte Einheit `beats`",
+        Syntax::Ron,
+        "01-ring-burst",
+        "delay: Ticks(30)",
+        "delay: Beats(30)",
+    ),
+    (
+        "p09",
+        "Kaskadenzyklus (`mote` platzt in `seed`)",
+        Syntax::Sigil,
+        "03-subemitter-cascade",
+        "    bullet = dust\n",
+        "    bullet = seed\n",
+    ),
+    (
+        "p09",
+        "Kaskadenzyklus (`mote` platzt in `seed`)",
+        Syntax::Ron,
+        "03-subemitter-cascade",
+        "bullet: \"dust\",",
+        "bullet: \"seed\",",
+    ),
+    (
+        "p10",
+        "Kaskadentiefe 4 (`dust` platzt in neues `grain`)",
+        Syntax::Sigil,
+        "03-subemitter-cascade",
+        "  despawn_vfx = dust_puff\n",
+        "  despawn_vfx = dust_puff\n  transform burst {\n    when = time 20t\n    bullet = grain\n    speed = 0.05u/t\n    block ring {\n      count = 2\n      start = 0deg\n    }\n  }\n}\n\nbullet grain {\n  silhouette = star\n  palette = enemy.violet\n  glow = 0.2\n  radius = 0.06u\n  damage = 1\n  flags = [grazeable]\n",
+    ),
+    (
+        "p10",
+        "Kaskadentiefe 4 (`dust` platzt in neues `grain`)",
+        Syntax::Ron,
+        "03-subemitter-cascade",
+        "            despawn_vfx: \"dust_puff\",\n        ),\n",
+        "            despawn_vfx: \"dust_puff\",\n            transforms: [\n                Burst(\n                    when: Time(Ticks(20)),\n                    bullet: \"grain\",\n                    speed: UnitsPerTick(0.05),\n                    block: Ring(\n                        count: 2,\n                        start: Deg(0.0),\n                    ),\n                ),\n            ],\n        ),\n        Bullet(\n            name: \"grain\",\n            silhouette: \"star\",\n            palette: \"enemy.violet\",\n            glow: 0.2,\n            radius: Units(0.06),\n            damage: 1,\n            flags: [Grazeable],\n        ),\n",
+    ),
+];
+
+pub struct ProbeResult {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub outcome: Outcome,
+}
+
+pub fn probe_results() -> Vec<ProbeResult> {
+    PROBES
+        .iter()
+        .map(|(id, title, syn, base, needle, repl)| {
+            let src = read(&format!("corpus/{}/{base}.{}", ext(*syn), ext(*syn)));
+            assert_eq!(
+                src.matches(needle).count(),
+                1,
+                "probe {id} ({}): needle must occur exactly once",
+                syn.name()
+            );
+            let mutated = src.replacen(needle, repl, 1);
+            let dir = file(&format!("corpus/{}", ext(*syn)));
+            ProbeResult {
+                id,
+                title,
+                outcome: check::check_src(*syn, mutated, &dir, 0),
+            }
+        })
+        .collect()
+}
+
+pub fn probes_block(results: &[ProbeResult]) -> String {
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "| Sonde | Fehlerbild | Syntax | Diagnosen | Meldungen (Position) | Fix-Hinweis der ersten Meldung |"
+    );
+    let _ = writeln!(o, "|---|---|---|---:|---|---|");
+    for r in results {
+        let msgs = if r.outcome.diags.is_empty() {
+            "– (keine Diagnose)".to_string()
+        } else {
+            r.outcome
+                .diags
+                .iter()
+                .map(|d| format!("{} ({})", cell(&d.cause), pos_str(d.pos)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        let _ = writeln!(
+            o,
+            "| {} | {} | {} | {} | {} | {} |",
+            r.id,
+            r.title,
+            r.outcome.syntax.name(),
+            r.outcome.diags.len(),
+            msgs,
+            r.outcome
+                .diags
+                .first()
+                .and_then(|d| d.hint.as_deref())
+                .map_or("–".to_string(), cell)
+        );
+    }
+    o
+}
+
 /// Lines from the line containing `marker` to the closing line at the same indentation.
 pub fn excerpt(src: &str, marker: &str) -> String {
     let lines: Vec<&str> = src.lines().collect();
@@ -910,7 +1187,9 @@ pub fn blocks() -> Vec<(&'static str, String)> {
         ("roundtrip", roundtrip_block()),
         ("ron-value", ron_value_block()),
         ("generierbarkeit", generability_block(&generability)),
+        ("sonden", probes_block(&probe_results())),
         ("laenge", length_block()),
+        ("token-arten", token_kinds_block()),
         ("spirale", spiral_block()),
         ("aufwand", effort_block()),
     ]
