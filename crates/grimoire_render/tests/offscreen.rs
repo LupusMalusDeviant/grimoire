@@ -530,9 +530,13 @@ fn nearer_mesh_occludes_a_farther_one_through_the_depth_buffer() {
     ));
 
     let stats = renderer.render_stage(&frame).expect("render_stage");
-    assert_eq!(stats.meshes_drawn, 2);
+    assert_eq!(stats.meshes_drawn, 2, "both meshes were registered above");
     assert_eq!(stats.meshes_rejected_layer, 0);
     assert_eq!(stats.meshes_rejected_invalid, 0);
+    assert_eq!(
+        stats.meshes_rejected_unregistered, 0,
+        "a registered mesh must still count as drawn (contract §6, PO decision V-20)"
+    );
     assert_eq!(
         stats.base.draw_calls, 2,
         "one draw call per distinct mesh handle, no sprites this frame"

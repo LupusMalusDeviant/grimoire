@@ -9,13 +9,15 @@
 //! depth test), so sprites always draw over meshes — exactly like before WP2.3, from the sprite
 //! pass's point of view.
 //!
-//! **Open question for the PO (a V-20 candidate):** a [`crate::MeshInstance`] whose `material` and
-//! `transform` are valid but whose `mesh` handle was never registered with this renderer is
-//! accepted and counted as drawn by [`crate::StageStats::meshes_drawn`] (contract §6 already froze
-//! that counter's meaning as "structurally valid", not "known to a registry", back when WP2.2 was
-//! merged and no registry existed yet) — but is silently *not* rasterised by this pass, without a
-//! panic and without its own counter. Whether that gap deserves a new `StageStats` counter (a
-//! contract change) is left to a vertrags-PR.
+//! **Registered vs. drawn (contract §6, PO decision V-20, 2026-09-16):** a [`crate::MeshInstance`]
+//! whose `material` and `transform` are valid but whose `mesh` handle was never registered with
+//! this renderer is no longer counted as drawn by [`crate::StageStats::meshes_drawn`] — it is
+//! counted separately, in [`crate::StageStats::meshes_rejected_unregistered`], and is still
+//! silently *not* rasterised by this pass, without a panic. The structural checks (`layer`,
+//! `transform`, `material`) stay shared code in `crate::stage`, applied identically by every
+//! renderer; only the registry check itself — [`MeshPass::is_registered`] here — is specific to a
+//! renderer that owns one, which is why [`crate::NullRenderer`] (no registry of its own) never
+//! reports this counter.
 //!
 //! Not part of the crate's public API (engine ADR-0002: `wgpu` stays invisible outside this
 //! crate and its `grimoire_gpu` dependency).
@@ -426,6 +428,15 @@ impl MeshPass {
         Ok(handle)
     }
 
+    /// Whether `handle` has been registered (and its GPU buffers uploaded) with this pass —
+    /// exactly the check [`MeshPass::render`] applies to decide whether to draw a mesh instance.
+    /// Also used by [`crate::WgpuRenderer::render_stage`] to fill
+    /// [`crate::StageStats::meshes_rejected_unregistered`] (contract §6, PO decision V-20,
+    /// 2026-09-16).
+    pub(crate) fn is_registered(&self, handle: MeshHandle) -> bool {
+        self.gpu_meshes.contains_key(&handle)
+    }
+
     /// Runs the mesh pass: always clears `view` to `clear_color` and the depth buffer to `1.0`
     /// (even with no usable camera or no drawable instances, so the sprite pass that follows can
     /// unconditionally `LoadOp::Load` afterwards), then draws every [`MeshInstance`] that is
@@ -475,7 +486,7 @@ impl MeshPass {
                 if !material.is_valid() {
                     continue;
                 }
-                if !self.gpu_meshes.contains_key(&mesh.mesh) {
+                if !self.is_registered(mesh.mesh) {
                     continue;
                 }
                 groups

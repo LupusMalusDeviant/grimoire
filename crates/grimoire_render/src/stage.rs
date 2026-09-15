@@ -10,8 +10,8 @@
 //! `clear()` and the shared extraction/counting logic, alongside the P1 bullet channel.
 
 use crate::stage3d::{
-    AmbientLight, BulletLightCap, Camera25D, DirectionalLight, MeshInstance, PbrMaterial,
-    PointLight,
+    AmbientLight, BulletLightCap, Camera25D, DirectionalLight, MeshHandle, MeshInstance,
+    PbrMaterial, PointLight,
 };
 use crate::{RenderFrame, RenderStats, SpriteInstance};
 
@@ -193,8 +193,11 @@ pub struct StageStats {
     /// Number of bullet instances rejected because they were structurally invalid: non-finite
     /// `position`, `radius` or `rotation`, or `radius <= 0`.
     pub bullets_rejected_invalid: u32,
-    /// Number of mesh instances accepted (finite `transform`, `material` in range and pointing at
-    /// a valid [`PbrMaterial`], `layer == RenderLayer::World`).
+    /// Number of mesh instances accepted: finite `transform`, `material` in range and pointing at
+    /// a valid [`PbrMaterial`], `layer == RenderLayer::World`, and — in a renderer that owns a
+    /// mesh registry — `mesh` registered with it (contract §6, PO decision V-20, 2026-09-16; see
+    /// [`StageStats::meshes_rejected_unregistered`]). A renderer without a registry
+    /// ([`crate::NullRenderer`]) applies only the structural checks, as before WP2.3.
     pub meshes_drawn: u32,
     /// Number of mesh instances rejected because `layer` was not [`RenderLayer::World`], the only
     /// layer P1 accepts for meshes.
@@ -202,6 +205,17 @@ pub struct StageStats {
     /// Number of mesh instances rejected because they were structurally invalid: a non-finite
     /// `transform`, or `material` out of range or pointing at an invalid [`PbrMaterial`].
     pub meshes_rejected_invalid: u32,
+    /// Number of mesh instances that passed every structural check above (finite `transform`,
+    /// valid `material`, `layer == RenderLayer::World`) but whose `mesh` handle was never
+    /// registered with the renderer (contract §6, PO decision V-20, 2026-09-16). Not counted in
+    /// [`StageStats::meshes_drawn`].
+    ///
+    /// The structural checks are shared code, applied identically by every renderer; only the
+    /// registry check itself is specific to renderers that own a mesh registry.
+    /// [`crate::WgpuRenderer`] fills this counter from its registry (plan 0002 WP2.3).
+    /// [`crate::NullRenderer`] has no registry of its own (a frozen P0 contract type, see its doc
+    /// comment) and therefore never rejects a mesh for this reason: this field stays `0` for it.
+    pub meshes_rejected_unregistered: u32,
     /// Number of materials in [`StageFrame::materials`] that failed [`PbrMaterial::is_valid`].
     pub materials_rejected_invalid: u32,
     /// Number of point lights accepted (see [`PointLight::is_valid`]).
@@ -238,9 +252,22 @@ struct BulletExtraction {
 /// marker and debug sprites), `draw_calls` stays whatever `render` reported (no additional pass
 /// exists yet in P1), the bullet counters come from [`extract_bullets`], and the mesh/material/
 /// light counters come from [`extract_stage3d`].
-pub(crate) fn stage_stats_from_base(base: RenderStats, frame: &StageFrame) -> StageStats {
+///
+/// `is_mesh_registered` is the one part of this shared function that is deliberately *not*
+/// identical for every caller (contract §6, PO decision V-20, 2026-09-16): the structural mesh
+/// checks in [`extract_stage3d`] are shared code, but only a renderer with its own mesh registry
+/// can say whether a `mesh` handle is actually known. Pass `None` for a renderer without a
+/// registry ([`crate::NullRenderer`]) — every structurally valid mesh instance then counts as
+/// drawn, exactly as before WP2.3 — or `Some(&is_registered)` for one that owns a registry
+/// ([`crate::WgpuRenderer`]), which moves an otherwise-drawable but unregistered instance from
+/// [`StageStats::meshes_drawn`] into [`StageStats::meshes_rejected_unregistered`].
+pub(crate) fn stage_stats_from_base(
+    base: RenderStats,
+    frame: &StageFrame,
+    is_mesh_registered: Option<&dyn Fn(MeshHandle) -> bool>,
+) -> StageStats {
     let bullets = extract_bullets(&frame.bullets);
-    let stage3d = extract_stage3d(frame);
+    let stage3d = extract_stage3d(frame, is_mesh_registered);
     let sprite_channels = frame.marker_sprites.len() + frame.debug_sprites.len();
     StageStats {
         base: RenderStats {
@@ -254,6 +281,7 @@ pub(crate) fn stage_stats_from_base(base: RenderStats, frame: &StageFrame) -> St
         meshes_drawn: stage3d.meshes_drawn,
         meshes_rejected_layer: stage3d.meshes_rejected_layer,
         meshes_rejected_invalid: stage3d.meshes_rejected_invalid,
+        meshes_rejected_unregistered: stage3d.meshes_rejected_unregistered,
         materials_rejected_invalid: stage3d.materials_rejected_invalid,
         point_lights_drawn: stage3d.point_lights_drawn,
         point_lights_rejected_invalid: stage3d.point_lights_rejected_invalid,
@@ -308,6 +336,7 @@ struct Stage3dExtraction {
     meshes_drawn: u32,
     meshes_rejected_layer: u32,
     meshes_rejected_invalid: u32,
+    meshes_rejected_unregistered: u32,
     materials_rejected_invalid: u32,
     point_lights_drawn: u32,
     point_lights_rejected_invalid: u32,
@@ -322,12 +351,21 @@ struct Stage3dExtraction {
 /// with no debug-only assertion analogous to the bullet pass's palette-space check — there is no
 /// pre-existing hard invariant here for one to guard, only this WP's own new validation.
 ///
-/// A mesh instance is drawn only if both its own fields are valid (finite `transform`) **and**
-/// `material` indexes a present, valid [`PbrMaterial`] in `frame.materials`; an out-of-range or
-/// invalid material rejects the mesh (`meshes_rejected_invalid`) without double-counting into
+/// A mesh instance is drawn only if all of: its own fields are valid (finite `transform`),
+/// `material` indexes a present, valid [`PbrMaterial`] in `frame.materials`, and — when
+/// `is_mesh_registered` is `Some`, i.e. the caller owns a mesh registry — `mesh` is registered
+/// with it (contract §6, PO decision V-20, 2026-09-16). An out-of-range or invalid material
+/// rejects the mesh (`meshes_rejected_invalid`) without double-counting into
 /// `materials_rejected_invalid`, which counts invalid *materials* themselves regardless of whether
-/// any mesh references them.
-fn extract_stage3d(frame: &StageFrame) -> Stage3dExtraction {
+/// any mesh references them. An otherwise-drawable mesh with an unregistered handle is counted
+/// separately (`meshes_rejected_unregistered`), never folded into `meshes_rejected_invalid`. With
+/// `is_mesh_registered == None` every structurally valid mesh counts as drawn — the behaviour
+/// every caller had before a registry existed (contract §6, still [`crate::NullRenderer`]'s
+/// behaviour, which has no registry of its own).
+fn extract_stage3d(
+    frame: &StageFrame,
+    is_mesh_registered: Option<&dyn Fn(MeshHandle) -> bool>,
+) -> Stage3dExtraction {
     let materials_rejected_invalid = frame
         .materials
         .iter()
@@ -337,6 +375,7 @@ fn extract_stage3d(frame: &StageFrame) -> Stage3dExtraction {
     let mut meshes_drawn = 0u32;
     let mut meshes_rejected_layer = 0u32;
     let mut meshes_rejected_invalid = 0u32;
+    let mut meshes_rejected_unregistered = 0u32;
     for mesh in &frame.meshes {
         if mesh.layer != RenderLayer::World {
             meshes_rejected_layer += 1;
@@ -345,10 +384,15 @@ fn extract_stage3d(frame: &StageFrame) -> Stage3dExtraction {
         let transform_finite = mesh.transform.iter().flatten().all(|c| c.is_finite());
         let material = frame.materials.get(mesh.material.0 as usize);
         let material_valid = material.is_some_and(PbrMaterial::is_valid);
-        if transform_finite && material_valid {
+        if !(transform_finite && material_valid) {
+            meshes_rejected_invalid += 1;
+            continue;
+        }
+        let registered = is_mesh_registered.is_none_or(|is_registered| is_registered(mesh.mesh));
+        if registered {
             meshes_drawn += 1;
         } else {
-            meshes_rejected_invalid += 1;
+            meshes_rejected_unregistered += 1;
         }
     }
 
@@ -370,6 +414,7 @@ fn extract_stage3d(frame: &StageFrame) -> Stage3dExtraction {
         meshes_drawn,
         meshes_rejected_layer,
         meshes_rejected_invalid,
+        meshes_rejected_unregistered,
         materials_rejected_invalid: u32::try_from(materials_rejected_invalid).unwrap_or(u32::MAX),
         point_lights_drawn,
         point_lights_rejected_invalid,
@@ -560,7 +605,7 @@ mod tests {
         });
         frame.key_light = Some(DirectionalLight::default());
 
-        let result = extract_stage3d(&frame);
+        let result = extract_stage3d(&frame, None);
         assert_eq!(result.meshes_drawn, 1);
         assert_eq!(result.meshes_rejected_layer, 0);
         assert_eq!(result.meshes_rejected_invalid, 0);
@@ -583,7 +628,7 @@ mod tests {
             ..MeshInstance::default()
         });
 
-        let result = extract_stage3d(&frame);
+        let result = extract_stage3d(&frame, None);
         assert_eq!(result.meshes_drawn, 0);
         assert_eq!(result.meshes_rejected_layer, 1);
         assert_eq!(result.meshes_rejected_invalid, 0);
@@ -600,7 +645,7 @@ mod tests {
         mesh.transform[0][0] = f32::NAN;
         frame.meshes.push(mesh);
 
-        let result = extract_stage3d(&frame);
+        let result = extract_stage3d(&frame, None);
         assert_eq!(result.meshes_drawn, 0);
         assert_eq!(result.meshes_rejected_layer, 0);
         assert_eq!(result.meshes_rejected_invalid, 1);
@@ -624,13 +669,70 @@ mod tests {
             ..MeshInstance::default()
         });
 
-        let result = extract_stage3d(&frame);
+        let result = extract_stage3d(&frame, None);
         assert_eq!(result.meshes_drawn, 0);
         assert_eq!(result.meshes_rejected_invalid, 2);
         assert_eq!(
             result.materials_rejected_invalid, 1,
             "the invalid material itself is counted once, independent of how many meshes reference it"
         );
+    }
+
+    // --- extract_stage3d: mesh registry check (WP2.3, PO decision V-20, 2026-09-16) -----------
+
+    #[test]
+    fn extract_stage3d_rejects_a_structurally_valid_but_unregistered_mesh_without_panic() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+
+        let never_registered: &dyn Fn(MeshHandle) -> bool = &|_| false;
+        let result = extract_stage3d(&frame, Some(never_registered));
+        assert_eq!(
+            result.meshes_drawn, 0,
+            "an unregistered handle must not be counted as drawn"
+        );
+        assert_eq!(result.meshes_rejected_layer, 0);
+        assert_eq!(
+            result.meshes_rejected_invalid, 0,
+            "an unregistered handle is not the same rejection as a structurally invalid mesh"
+        );
+        assert_eq!(result.meshes_rejected_unregistered, 1);
+    }
+
+    #[test]
+    fn extract_stage3d_counts_a_registered_mesh_as_drawn() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+
+        let always_registered: &dyn Fn(MeshHandle) -> bool = &|_| true;
+        let result = extract_stage3d(&frame, Some(always_registered));
+        assert_eq!(result.meshes_drawn, 1);
+        assert_eq!(result.meshes_rejected_unregistered, 0);
+    }
+
+    #[test]
+    fn extract_stage3d_without_a_registry_never_rejects_for_being_unregistered() {
+        // `None` is what a renderer without a mesh registry (`NullRenderer`) passes: every
+        // structurally valid mesh counts as drawn, the same behaviour every caller had before a
+        // registry existed.
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame, None);
+        assert_eq!(result.meshes_drawn, 1);
+        assert_eq!(result.meshes_rejected_unregistered, 0);
     }
 
     #[test]
@@ -652,7 +754,7 @@ mod tests {
             floor_contribution: 2.0,
         };
 
-        let result = extract_stage3d(&frame);
+        let result = extract_stage3d(&frame, None);
         assert_eq!(result.point_lights_drawn, 0);
         assert_eq!(result.point_lights_rejected_invalid, 1);
         assert_eq!(result.bullet_point_lights_drawn, 0);
@@ -664,10 +766,11 @@ mod tests {
     #[test]
     fn extract_stage3d_default_frame_has_no_rejections() {
         let frame = StageFrame::new();
-        let result = extract_stage3d(&frame);
+        let result = extract_stage3d(&frame, None);
         assert_eq!(result.meshes_drawn, 0);
         assert_eq!(result.meshes_rejected_layer, 0);
         assert_eq!(result.meshes_rejected_invalid, 0);
+        assert_eq!(result.meshes_rejected_unregistered, 0);
         assert_eq!(result.materials_rejected_invalid, 0);
         assert_eq!(result.point_lights_drawn, 0);
         assert_eq!(result.point_lights_rejected_invalid, 0);

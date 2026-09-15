@@ -376,6 +376,10 @@ impl Renderer for WgpuRenderer {
     /// *consumed* by the mesh pass's provisional shading (key light + ambient only; point lights
     /// stay WP3.4's clustered forward+ job). `StageStats::base.draw_calls` counts every pass
     /// (contract §6: "draw_calls: alle Pässe") — the mesh pass's draw calls plus the sprite pass's.
+    /// A structurally valid mesh instance whose `mesh` handle was never registered with this
+    /// renderer (`WgpuRenderer::register_mesh`) is not counted in [`StageStats::meshes_drawn`]
+    /// but in [`StageStats::meshes_rejected_unregistered`] instead (contract §6, PO decision V-20,
+    /// 2026-09-16).
     ///
     /// # Errors
     /// Same as [`Renderer::render`], applied across both passes.
@@ -388,13 +392,21 @@ impl Renderer for WgpuRenderer {
             return Err(repeat_error(error));
         }
         if self.width == 0 || self.height == 0 {
-            return Ok(stage::stage_stats_from_base(skipped_frame(start), frame));
+            return Ok(stage::stage_stats_from_base(
+                skipped_frame(start),
+                frame,
+                Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
+            ));
         }
 
         let (surface_frame, view) = match self.acquire_target() {
             Ok(result) => result,
             Err(GpuError::ZeroSize) => {
-                return Ok(stage::stage_stats_from_base(skipped_frame(start), frame));
+                return Ok(stage::stage_stats_from_base(
+                    skipped_frame(start),
+                    frame,
+                    Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
+                ));
             }
             Err(error) => return Err(map_gpu_error(error)),
         };
@@ -436,6 +448,10 @@ impl Renderer for WgpuRenderer {
             draw_calls: sprite_draw_calls + mesh_draw_calls,
             cpu_time: start.elapsed(),
         };
-        Ok(stage::stage_stats_from_base(base_stats, frame))
+        Ok(stage::stage_stats_from_base(
+            base_stats,
+            frame,
+            Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
+        ))
     }
 }
