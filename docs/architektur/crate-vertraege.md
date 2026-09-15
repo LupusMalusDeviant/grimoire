@@ -250,7 +250,10 @@ pub trait Renderer {
   (`Fn + Sync`) und parallelen Systemen nutzbar sind (§7, Send-Grenze). `DebugTransport` ist `Send` und wird nur
   außerhalb von Simulationsstufen benutzt. `SystemObserver` braucht weder `Send` noch `Sync`, weil er nur auf dem
   aufrufenden Thread von `Schedule::run_observed` läuft (§7.2).
-- Null-Implementierungen sind deterministisch, allokationsfrei im Aufruf und panicfrei. `NullCollision` leert `out`.
+- Null-Implementierungen sind deterministisch, allokationsfrei im Aufruf und panicfrei. Einzige Ausnahme ist der
+  `debug_assert!` der Palettenraumprüfung, den `NullRenderer::render_stage` wie `WgpuRenderer` nur mit
+  `debug_assertions` auslöst (§6); Konformanz-Tests mit fremdem Palettenraum sind deshalb auch gegen `NullRenderer`
+  `#[cfg_attr(debug_assertions, should_panic)]`. `NullCollision` leert `out`.
   Goldens, die mit einer Null-Implementierung entstehen, hängen nicht von deren Instanz ab.
 - Neue Trait-Methoden sind nur als bereitgestellte Methoden mit Standard-Implementierung erlaubt. Eine neue Pflichtmethode
   bricht externe Implementierungen und ist inkompatibel (§2b).
@@ -433,6 +436,22 @@ Nur im Review prüfbar (Engine-ADR 0004):
 `AppHandler`, `PlatformContext`, `AppResult`, `PlatformError`, `FileSystem`, `StdFileSystem`,
 `MemoryFileSystem`, `run_desktop`, `run_headless`.
 
+**Begrenztes Lesen (Ergänzung P1):** *Entwurf WP1.2 — PO-Freigabe ausstehend.* `FileSystem` erhält eine
+bereitgestellte Methode, additiv nach §2a (neue Trait-Methoden nur mit Standard-Implementierung); die Liste oben
+bleibt sonst unverändert.
+
+```rust
+fn read_limited(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>>;   // bereitgestellt
+```
+
+- Ist die Datei länger als `max_len`, liefert die Methode einen Fehler der Art `io::ErrorKind::FileTooLarge`.
+- Die Standard-Implementierung ruft `read` und prüft danach die Länge. Fremde Implementierungen bleiben so
+  kompatibel, schützen den Speicher aber nicht.
+- `StdFileSystem` überschreibt sie: Datei öffnen, höchstens `max_len + 1` Byte lesen (`take(max_len + 1)`), bei mehr
+  Bytes ablehnen. Das deckt auch eine Datei ab, die zwischen Prüfen und Lesen wächst.
+- `MemoryFileSystem` prüft die gespeicherte Länge vor dem Kopieren.
+- Tests in `fs.rs` für beide Implementierungen: genau `max_len` Byte gelingt, `max_len + 1` liefert `FileTooLarge`.
+
 **Re-Export `raw_window_handle` (SemVer-Kopplung):** `grimoire_platform` re-exportiert `pub use raw_window_handle;`
 (Version 0.6), weil `PlatformWindow: HasWindowHandle + HasDisplayHandle` die Traits in der öffentlichen API verlangt.
 Über `grimoire::platform` und `PlatformWindow` im Prelude der Fassade gehört `raw-window-handle` damit zur
@@ -606,7 +625,9 @@ pub enum RenderLayer { World, Vfx, PostFxResolve, Telegraphy, Bullets, PlayerMar
   `palette_space == BULLET_PASS_PALETTE_SPACE`. Jede andere Instanz wird verworfen und in
   `bullets_rejected_palette_space` gezählt. Im Debug-Build bricht zusätzlich ein `debug_assert!` ab
   (``bullet instance {i} uses palette space {n}; the bullet pass accepts only palette space 1``); Tests mit fremdem
-  Palettenraum sind deshalb `#[cfg_attr(debug_assertions, should_panic)]`. Eigene Projektile laufen über Sprite-
+  Palettenraum sind deshalb `#[cfg_attr(debug_assertions, should_panic)]`. Das gilt auch für `NullRenderer` und die
+  Suite `grimoire_render::conformance`; es ist die in §2a genannte Ausnahme vom panicfreien Null-Verhalten. Eigene
+  Projektile laufen über Sprite-
   oder (ab WP2.2) Mesh-Kanäle mit `FRIENDLY`-Paletten. Die Zahlenwerte sind vorläufig bis zur Stilbibel v0
   (WP2.7, P-11).
 - **Gültigkeit:** Eine Instanz mit `silhouette` oder `palette` außerhalb der Tabellen des Passes, mit nicht endlicher
@@ -821,14 +842,21 @@ pub struct NoopObserver;      // Default, Clone, Copy, Debug; impl SystemObserve
   Befehlspuffer. Mit `NoopObserver`, mit einem hashenden Beobachter und ohne Beobachter entstehen identische
   Zustands-Hashes (Test). Die Debug-Zugriffsprüfung ist während der Aufrufe nicht aktiv, weil kein Systemkontext
   besteht; `World::stable_hash` ist dort also erlaubt.
-- **Panic:** Panict eine Stufe, erhält der Beobachter für diese Stufe weder `tasks_finished` noch `system_finished`
-  noch `stage_finished`. Ein Panic im Beobachter selbst wird wie ein Panic eines exklusiven Systems weitergereicht
-  und ist nicht transaktional.
+- **Panic:** Es gibt zwei Fälle.
+  - *Eine Aufgabe panict* (ein System oder Block einer parallelen Stufe, oder der Executor wickelt ab): Der
+    Beobachter erhält für diese Stufe weder `tasks_finished` noch `system_finished` noch `stage_finished`.
+  - *Die Pufferanwendung panict* (§7, nicht transaktional): Bereits zugestellte Aufrufe bleiben zugestellt, also
+    `tasks_finished` und `system_finished` für jedes System, dessen Puffer vollständig angewendet wurde. Das
+    panicende System und alle späteren erhalten kein `system_finished`, die Stufe kein `stage_finished`.
+  - In einer exklusiven Stufe kennzeichnet `system_started` ohne `system_finished` und `stage_finished` den Panic.
+  - Ein Panic im Beobachter selbst wird wie ein Panic eines exklusiven Systems weitergereicht und ist nicht
+    transaktional.
 - **Leistung:** `run_observed` allokiert nicht zusätzlich. Ein Tick nur aus exklusiven Systemen bleibt
   allokationsfrei. `StageInfo` und `SystemInfo` sind `Copy` bzw. leihen den Namen.
 - **Konformanz-Suite `SystemObserver`** (§2 Regel 12): `grimoire_ecs::conformance` prüft für jedes
   `&mut dyn SystemObserver` die Aufrufreihenfolge je Stufenart (siehe oben) und dass der Zustands-Hash mit und ohne
-  Beobachter identisch ist. `NoopObserver` ruft sie in `grimoire_ecs` auf, der Profiler-Beobachter in den Tests der
+  Beobachter identisch ist. Beide Panic-Fälle gehören dazu: eine panicende Aufgabe und eine panicende
+  Pufferanwendung (etwa eine ersetzte Ressource, deren `Drop` panict). `NoopObserver` ruft sie in `grimoire_ecs` auf, der Profiler-Beobachter in den Tests der
   Fassade (§9.7).
 - `grimoire_ecs` liest keine Uhr. Zeitmessung, Zuordnung zu Subsystemen und Weitergabe an `grimoire_debug` liegen in
   der Fassade (§9.7).
@@ -1695,7 +1723,7 @@ pub struct SigilUnit;                            // Clone, Debug, PartialEq, Eq;
                                                  // MAX_UNIT_BYTES: usize = 8 * 1024 * 1024 (ganze Unit mit Kopf), MAX_CASCADE_DEPTH: u8 = 3
                                                  // from_bytes(&[u8]) -> Result<SigilUnit, UnitError>, to_bytes(&self) -> Vec<u8>,
                                                  // id() -> UnitId, content_hash() -> u64, bullet_types() -> &[BulletType],
-                                                 // emitter_count() -> u16, behavior_refs() -> &[BehaviorId]
+                                                 // emitter_count() -> u16, program_count() -> u16, behavior_refs() -> &[BehaviorId]
 pub enum UnitError;                              // #[non_exhaustive], thiserror: UnexpectedEnd { offset, needed, available }, BadMagic,
                                                  // UnsupportedVersion(u32), ReservedFlags(u32), PayloadLength { declared, actual },
                                                  // ContentHash { declared, computed }, UnknownSection { kind }, SectionLayout { kind },
@@ -1777,6 +1805,7 @@ pub struct SigilContent;                         // Resource: Clone (teilt Arc<S
                                                  // library() -> &SigilLibrary, epoch() -> ContentEpoch
 pub enum SigilError;                             // #[non_exhaustive], thiserror: Unit(#[from] UnitError), PoolFull, DuplicateUnit(UnitId),
                                                  // UnknownUnit(UnitId), TooManyUnits, BulletTypeOutOfRange { unit, bullet_type },
+                                                 // ProgramOutOfRange { unit: UnitId, program: u16 }, CascadeTooDeep { depth: u8 },
                                                  // NonFinite, DuplicateBehavior(BehaviorId),
                                                  // UnknownBehavior { unit: UnitId, behavior: BehaviorId },
                                                  // RegistryMismatch { loaded: u64, given: u64 }, AlreadyInstalled, NotInstalled,
@@ -1846,8 +1875,12 @@ pub struct BulletEvent { pub id: BulletId, pub unit: UnitId, pub bullet_type: u1
 - **`BulletId`** ist ein stabiler Griff (Index und Generation) für Despawn-Ereignisse und Kollisionsergebnisse
   (`ColliderKey::pool`, §14). Nach der Wiederverwendung eines Slots ist ein alter Griff nicht mehr lebendig
   (`is_alive == false`, `despawn` liefert `false`).
-- **`spawn`** prüft Unit, Typindex und Endlichkeit (`UnknownUnit`, `BulletTypeOutOfRange`, `NonFinite`) und ändert
-  bei einem Fehler nichts. **`despawn`** und **`clear`** schreiben je Bullet ein `BulletEvent`, `clear` in
+- **`spawn`** prüft Unit, Typindex, Programmindex, Kaskadentiefe und Endlichkeit und ändert bei einem Fehler nichts:
+  `UnknownUnit`, `BulletTypeOutOfRange`, `ProgramOutOfRange` (gültig sind `program == 0` oder
+  `program < unit.program_count()`), `CascadeTooDeep` (`cascade > MAX_CASCADE_DEPTH`), `NonFinite`. Damit gilt die
+  Tiefengrenze auch für Werte aus `with_program`/`with_cascade`, nicht nur für Unit-Bytes. Test (WP5.1): `spawn` mit
+  ungültigem Programmindex oder `with_cascade(MAX_CASCADE_DEPTH + 1)` liefert den Fehler, und der Pool-Hash bleibt
+  unverändert. **`despawn`** und **`clear`** schreiben je Bullet ein `BulletEvent`, `clear` in
   aufsteigender Slot-Reihenfolge. `clear` wirkt sofort und liefert die Anzahl. Mit Typfilter und über `ClearRequest`
   erfüllt das PRD-0004 FR-12 (höchstens ein Tick, §11.4).
 - **Ereignisse** (Despawn-Event-Hook, WP5.2): `events()` enthält die Despawns seit Beginn des laufenden bzw. letzten
@@ -1880,6 +1913,11 @@ pub struct ClearRequest { pub filter: ClearFilter }   // Component: Clone, Debug
   Emitter-Index, lokaler Zeit `t − started_at` (für `t < started_at` inaktiv), `origin`, `rotation`, `AimTarget`,
   Seed, Tick und Entity. Das Spiel bewegt Emitter per `CommandBuffer::set` oder `get_mut` und beendet sie per
   Despawn. Zeitangaben in Units sind Ticks; die Einheit `beats` lehnt der Compiler in v1 ab.
+- **Ungültige Emitter-Referenz** (vorläufig, PO-Bestätigung ausstehend): Ein `Emitter`, dessen `unit` nicht in der
+  geladenen Bibliothek steht oder dessen `emitter >= unit.emitter_count()` ist, ist in diesem Tick inaktiv. Er
+  erzeugt keine Bullets, zieht keine Zufallszahlen und panict nie. Er bleibt in der Welt und wird wieder aktiv,
+  sobald ein Swap den Index wieder gültig macht. Das gilt für vom Spiel erzeugte Komponenten ebenso wie nach einem
+  Swap, der eine Unit verkleinert (§11.8).
 - **Bausteine** (PRD-0004 FR-01): Ring, Spirale, Fächer, Aimed, Welle, Linie, Streuung. `Aimed` zielt auf
   `AimTarget`; ohne Ziel (`None`) nutzt es die Richtung `rotation`. `AimTarget` schreibt der Spieler-Proxy der
   Fassade (Feature `fixtures`, §9.5) oder das Spiel. Streuung zieht aus
@@ -1957,9 +1995,12 @@ pub mod system_names {                           // &'static str, erscheinen in 
      Richtungsumkehr) wirken im Block. Despawns und Sub-Spawns (Platzen, Sub-Emitter) sammelt jeder Block in
      Slot-Reihenfolge.
   3. `sigil.resolve`: Faltet in Blockreihenfolge, zuerst alle Despawns mit Ereignis, dann alle Sub-Spawns
-     (`cascade + 1`). Die Tiefe begrenzt die Unit-Validierung.
+     (`cascade + 1`). Die `spawn`-Prüfung (§11.3) und der Decoder (§11.1) halten die Tiefe gemeinsam in
+     `0..=MAX_CASCADE_DEPTH`. Ein Sub-Spawn, dessen Tiefe `MAX_CASCADE_DEPTH` trotzdem überschreiten würde, wird
+     deterministisch verworfen und in `dropped_spawns` gezählt; die Tiefe wird nie mit überlaufender Arithmetik
+     berechnet (`checked_add`).
   4. `sigil.emit`: Emitter in Query-Reihenfolge von `(Entity, &Emitter)`; neue Bullets bewegen sich erst im nächsten
-     Tick.
+     Tick. Ein inaktiver Emitter (§11.4) wird übersprungen.
   5. `sigil.clear`: `ClearRequest` in Query-Reihenfolge (§11.4).
 - **Zugriffe anderer Systeme:** Parallele Systeme lesen `BulletPool`, `SigilContent` und `AimTarget` mit
   `Access::read_resource`. Den Pool verändern nur exklusive Systeme von `grimoire_sigil` oder der Fassade (§2a) oder
@@ -2043,10 +2084,19 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
      `manifest_hash`).
   2. Alle Bullets dieser Unit werden in Slot-Reihenfolge despawnt (`DespawnCause::Swap`, ohne Ereignisse, weil
      `sigil.begin` die Liste leert), weil ihre Typ- und Programmindizes auf das alte Layout zeigen.
-  3. Jeder `Emitter` dieser Unit bekommt `started_at = effective_tick` und startet das Pattern neu (PRD-0004 FR-09).
+  3. Jeder `Emitter` dieser Unit mit `emitter < new.emitter_count()` bekommt `started_at = effective_tick`, startet
+     das Pattern neu (PRD-0004 FR-09) und zählt in `restarted_emitters`. Emitter mit größerem Index sind nach der
+     Regel aus §11.4 inaktiv und behalten ihr `started_at`.
 
   Bullets und Emitter anderer Units bleiben unberührt. Auch eine byte-identische Unit gilt als Swap. Es gibt keine
-  teilweise Anwendung.
+  teilweise Anwendung. Ein Swap, der die Emitter-Anzahl einer Unit verringert, ist damit zulässig und hat ein
+  definiertes, hashbares Ergebnis.
+- **PO-Frage (verkleinernder Swap, WP5.5/WP8.4):** A — Emitter mit ungültigem Index sind inaktiv und bleiben in der
+  Welt (wie oben); B — `replace_unit` lehnt einen Swap ab, der bestehende `Emitter`-Indizes ungültig macht (neue
+  Variante `SigilError::EmitterOutOfRange { unit, emitter }`), und ändert nichts; C — betroffene Emitter-Entities
+  werden despawnt. Empfehlung: A, weil Live-Editing Emitter-Blöcke entfernen und wieder hinzufügen darf, ohne dass
+  der Editor den Swap scheitern lässt oder Spiel-Entities verschwinden; B blockiert gewöhnliche Bearbeitungen, C
+  greift in Entities des Spiels ein.
 - **Replay v2 (§8.1, WP7.1):** `ReplayHeader::content_manifest` ist `epoch().manifest_hash` direkt nach `install`.
   Jeder `SwapReport` einer aufzeichnenden Sitzung ergibt einen `SwapRecord { tick: effective_tick,
   content_manifest: epoch.manifest_hash }`; mehrere Swaps an derselben Tick-Grenze ergeben einen Eintrag mit dem
@@ -2070,7 +2120,9 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   - `restore_checked` mit fremder Epoche liefert einen Fehler und lässt den Hash unverändert;
   - snapshot → restore → N Ticks mit aktiven Bullets ist bit-identisch;
   - Swap ohne passende Unit ändert nichts;
-  - zwei Swaps derselben Unit ergeben unterschiedliche Epochen.
+  - zwei Swaps derselben Unit ergeben unterschiedliche Epochen;
+  - Swap von 3 auf 1 Emitter und zurück auf 3 panict nicht und ergibt mit `SequentialExecutor` und
+    `PermutedExecutor` identische Hashes; ein vom Spiel erzeugter `Emitter` mit ungültigem Index bleibt inaktiv.
 
 ## 12. `grimoire_assets` — Pack v1 und `AssetSource`
 
@@ -2127,6 +2179,7 @@ pub const MAX_PACK_LEN: u64 = 1024 * 1024 * 1024;
 pub enum AssetError;                 // #[non_exhaustive], thiserror: NotFound(AssetId), InvalidPath { path, reason },
                                      // KindMismatch { id, expected, found }, HashMismatch(AssetId),
                                      // Decode { id, message: String }, Io { path: String, kind: io::ErrorKind },
+                                     // TooLarge { path: String, max: u64 },
                                      // Pack(#[from] PackError); Clone, Eq, Debug
 pub enum PackError;                  // #[non_exhaustive], thiserror: UnexpectedEnd { offset, needed, available }, BadMagic,
                                      // UnsupportedVersion(u32), HeaderLength(u32), FileLength { declared, actual },
@@ -2208,8 +2261,14 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
 - **Aufwand:** `from_bytes` prüft die Struktur in O(Einträge) und hasht keine Nutzdaten. `read` prüft SHA-256 des
   gelesenen Eintrags bei jedem Aufruf und liefert bei Abweichung `HashMismatch`. Die Nutzdaten werden ohne Kopie als
   `Cow::Borrowed` aus dem geteilten Puffer geliefert.
-- `open` liest über `FileSystem::read` (kein `std::fs`, PRD-0002 FR-16). Dateien über `MAX_PACK_LEN` werden
-  abgelehnt.
+- `open` liest über `FileSystem::read_limited(path, MAX_PACK_LEN)` (§5; kein `std::fs`, PRD-0002 FR-16). Eine
+  größere Datei ergibt `AssetError::TooLarge { path, max: MAX_PACK_LEN }` und wird nie vollständig geladen (§2
+  Regel 9). Test mit `MemoryFileSystem`: eine Datei von `MAX_PACK_LEN + 1` Byte liefert `TooLarge`.
+- **PO-Frage (Pack-Größe vor dem Laden, WP8.3):** A — additive bereitgestellte Methode `FileSystem::read_limited`
+  (§5) wie oben; B — §5 bleibt eingefroren, `open` nutzt `FileSystem::read`, prüft `MAX_PACK_LEN` erst nach dem
+  vollständigen Laden und §12 dokumentiert das als Ausnahme von §2 Regel 9. Empfehlung: A, weil nur so die
+  Obergrenze den Speicher schützt; die Änderung bricht keine Implementierung (in Engine- und Spiel-Repo gibt es nur
+  `StdFileSystem` und `MemoryFileSystem`).
 - **`content_hash`** (Standard-Methode, für alle Quellen gleich) = SHA-256(`b"grimoire.content.v1\0"` ‖ Anzahl `u32`
   ‖ je Eintrag in `entries()`-Reihenfolge `id u64`, `kind u16`, `kind_version u32`, `len u64`, `sha256`).
   - Pfade, Compiler und Anwendungsblock gehen nicht ein. Ein `PackReader` und eine `MemorySource` mit gleichem
@@ -2540,12 +2599,16 @@ impl SpatialGrid {
 }
 pub struct BatchHits;            // Clone, Default, Debug; len() (Anzahl Anfragen), hits(i: usize) -> &[Hit], clear()
 pub enum CollideError;           // #[non_exhaustive], thiserror: InvalidGridConfig(&'static str)
+pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien gültiger Formen (vorläufig)
 ```
 
 **Semantik:**
 
-- **Formen:** Eine Form ist gültig (`is_valid`), wenn alle Koordinaten endlich sind und `radius` endlich und `≥ 0`
-  ist. Eine Kapsel mit `a == b` ist ein Kreis. Ungültige Formen gelangen nie in Simulationszustand (§3). `rebuild*`
+- **Formen:** Eine Form ist gültig (`is_valid`), wenn für jede Koordinate `|x| <= MAX_COORD` gilt (damit auch
+  endlich) und `radius` endlich mit `0 <= radius <= MAX_COORD` ist. Die Grenze hält jeden Zwischenwert endlich
+  (`c₁ − c₂`, Abstandsquadrat, `(r₁ + r₂)²`, `dot` und `|b − a|²` der Kapsel, `center ± radius` in `aabb()`).
+  Ohne sie ergäben riesige, aber endliche Formen `inf <= inf` als Treffer in `BruteForceQuery`, während das Gitter
+  sie in gegenüberliegende Randzellen legt und nie vergleicht. Eine Kapsel mit `a == b` ist ein Kreis. Ungültige Formen gelangen nie in Simulationszustand (§3). `rebuild*`
   bricht im Debug-Build mit ``invalid shape for collider {key:?}`` ab. Im Release-Build ist das Ergebnis
   deterministisch, fachlich aber unbestimmt, und es gibt keinen Panic.
 - **`overlaps` (exakt, ohne Wurzel und ohne Trigonometrie):** Verglichen werden immer Abstandsquadrate mit
@@ -2607,7 +2670,8 @@ pub enum CollideError;           // #[non_exhaustive], thiserror: InvalidGridCon
     `impl CollisionQuery` gegen `NullCollision`, `BruteForceQuery` und `SpatialGrid` auf. Geprüft wird: `out` wird
     geleert, Reihenfolge aufsteigend, keine Duplikate, `NONE` findet nichts.
   - Proptest: `SpatialGrid` ist gleich `BruteForceQuery` für zufällige Objekte, auch in dichten Clustern, außerhalb
-    der Gittergrenzen, mit entarteten Kapseln, Radius 0 und exakter Berührung; `rebuild_par` ist gleich `rebuild`
+    der Gittergrenzen, mit entarteten Kapseln, Radius 0, exakter Berührung und Formen an `±MAX_COORD` mit Radius
+    `MAX_COORD` in gegenüberliegenden Randzellen (der Generator erzeugt nur gültige Formen); `rebuild_par` ist gleich `rebuild`
     mit `SequentialExecutor`, `PermutedExecutor::new(1..=3)` und `reversed()`.
   - Goldener Hash `GOLDEN_QUERY_HASH` über die Treffer einer festen Szene. In `grimoire_exec/tests/hash_gate.rs`
     folgt dieselbe Szene mit 1, 2 und N Threads.
@@ -2646,7 +2710,7 @@ pub const MAX_GOLDEN_BYTES: usize = 64 * 1024 * 1024;       // eine Golden-Maste
 pub const MAX_SAMPLES: usize = 100_000;
 pub const MAX_PARAMS: usize = 64;
 pub const MAX_FINGERPRINT_ENTRIES: usize = 64;
-pub const MAX_CHECKPOINTS: usize = 1 << 20;                 // zusätzlich ≤ ticks / hash_every + 1
+pub const MAX_CHECKPOINTS: usize = 1 << 20;                 // zusätzlich ≤ (hash_every == 0 ? 1 : ticks / hash_every + 1)
 pub const MAX_SUBSYSTEMS_PER_CHECKPOINT: usize = 1024;
 pub const MAX_TEXT_BYTES: usize = 1024;                     // freie Zeichenketten ohne engeres Muster
 ```
@@ -2757,6 +2821,7 @@ pub struct RecordedWith { pub engine_version: String, pub engine_build: String }
 pub struct Checkpoint { pub tick: u64, pub state_hash: u64, pub subsystems: Vec<SubsystemHash> }   // Clone, Eq, Debug
 pub struct SubsystemHash { pub name: String, pub hash: u64 }                        // Clone, Eq, Debug
 pub struct GoldenRun { pub seed: u64, pub tick_rate_hz: u32, pub hash_every: u64, pub content_manifest: ContentManifestHash,
+                       pub algorithms: AlgorithmVersions,   // vom Lauf aus StableHasher::ALGORITHM_VERSION und SimRng::ALGORITHM_VERSION
                        pub golden_eligible: bool, pub checkpoints: Vec<Checkpoint> }  // Ergebnis eines Laufs
 pub enum GoldenVerdict {                        // #[non_exhaustive]; Clone, Eq, Debug
     Match,
@@ -2776,7 +2841,9 @@ pub struct RenewalEntry { pub name: String, pub previous_final_hash: Option<u64>
 - **Streng:** wie §15.1. Unbekanntes `schema`, höhere `schema_version`, fehlende oder unbekannte Felder und
   Verstöße gegen die Größengrenzen liefern `SchemaError`, nie einen Panic.
 - **Checkpoints** folgen der `replay`-Semantik: `(tick, state_hash)` bei `tick % hash_every == 0` und immer der
-  Endzustand ohne Duplikat. Ticks sind streng aufsteigend, der letzte ist `ticks`.
+  Endzustand ohne Duplikat. Ticks sind streng aufsteigend, der letzte ist `ticks`. `hash_every == 0` ist zulässig
+  und ergibt genau einen Checkpoint (`ticks`); die Obergrenze der Checkpoint-Anzahl ist deshalb stückweise definiert
+  (`MAX_CHECKPOINTS`, §15), und kein Leser dividiert durch `hash_every`, wenn es 0 ist.
 - **Subsystem-Hashes** sind vorgesehen, aber nicht vorgeschrieben: `subsystems` darf leer sein.
   - Reihenfolge = Aufzeichnungsreihenfolge des Beobachters (`SystemObserver`, §7.2); Namen je Checkpoint eindeutig.
   - Die Granularität (je System je Tick oder alle N Ticks) entscheidet OF-18.1 (WP7.2), ohne Formatänderung.
@@ -2784,7 +2851,8 @@ pub struct RenewalEntry { pub name: String, pub previous_final_hash: Option<u64>
 - **Reihenfolge von `compare`:**
   1. `run.golden_eligible == false` → `NotEligible`.
   2. Abweichender `content_manifest` → `ContentChanged`, ohne Hash-Vergleich, weil dann Abweichungen erwartet sind.
-  3. Abweichende Form (`seed`, `tick_rate_hz`, `hash_every`, Tick-Liste, `algorithms`) → `ShapeMismatch`.
+  3. Abweichende Form (`seed`, `tick_rate_hz`, `hash_every`, Tick-Liste, `master.algorithms != run.algorithms`)
+     → `ShapeMismatch`. `compare` nutzt nie die Konstanten des prüfenden Binärs, sondern nur `run.algorithms`.
   4. Erster Checkpoint mit anderem `state_hash` → `Diverged`, mit dem ersten Subsystem in Master-Reihenfolge, das in
      beiden vorkommt und abweicht.
   5. Sonst `Match`.
@@ -2794,14 +2862,17 @@ pub struct RenewalEntry { pub name: String, pub previous_final_hash: Option<u64>
   Checkpoint je Zeile, abschließender Zeilenumbruch. Erneuerungen ergeben dadurch kleine Diffs. Ein Master zu einem
   Replay mit Swap-Einträgen (§8.1) ist unzulässig (`SchemaError::InvalidValue`).
 - **Master-Verzeichnis:** versioniert im jeweiligen Repo. Erneuert wird nur per Ein-Kommando-Werkzeug: Es schreibt
-  die Datei und hängt einen `RenewalEntry` an `renewals.jsonl` im Master-Verzeichnis an. Die Commit-Regel folgt
+  die Datei (`algorithms` aus `GoldenRun::algorithms`) und hängt einen `RenewalEntry` an `renewals.jsonl` im
+  Master-Verzeichnis an. Die Commit-Regel folgt
   `CONTRIBUTING.md` (eigener Commit, Grund, alt → neu, erster Tick, Subsystem; Agenten erneuern nicht eigenmächtig).
   Der Diff-Report (Verdikt als JSON + Replay des Laufs) ist CI-Artefakt.
 - **Bestand:** Die bestehenden Konstanten-Goldens (`GOLDEN_FINAL_HASH`, `GOLDEN_PARALLEL_FINAL_HASH`) bleiben
   Konstanten; eine Migration ist in P1 nicht verlangt.
 - **Dokumentation:** `docs/formats/golden-master.md`.
 - **Vertragstests:**
-  - Jede Verdikt-Variante mit konstruierten Läufen.
+  - Jede Verdikt-Variante mit konstruierten Läufen, darunter `ShapeMismatch` allein durch abweichende `algorithms`.
+  - Rundreise und `compare` mit `hash_every == 0` (genau ein Checkpoint); eine Datei mit `hash_every: 0` und zwei
+    Checkpoints liefert `Err`, nie einen Panic.
   - Kanonische Schreibung ist idempotent.
   - Hash-Strings nach §2 Regel 11.
   - Jedes Maximum + 1 und jeder Verstoß gegen die Pfadregel liefert `Err`.
