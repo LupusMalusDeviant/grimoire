@@ -20,7 +20,12 @@
 //!    [`InputMap`] is sampled once into input slot 0, held or latched inputs count as pressed,
 //!    and the simulation steps once per tick due with that input. The latch is cleared only after
 //!    a frame that ran at least one tick, so a tap released between two ticks is not lost.
-//! 3. Every plugin extracts sprites with the interpolation factor `alpha`, the renderer draws.
+//! 3. Every plugin extracts sprites and the WP2.2 stage channels ([`GamePlugin::extract`], then
+//!    [`GamePlugin::extract_stage`]) with the interpolation factor `alpha`. The first plugin whose
+//!    [`GamePlugin::focus`] returns `Some` drives the render-side camera follow spring
+//!    ([`grimoire_render::CameraFollow`], set up via [`AppBuilder::camera25d`], plan 0002 WP2.4)
+//!    and next frame's mouse-aim sampling ([`sample_aim`], contract §9.4) — never the simulation,
+//!    which only ever sees the resulting quantised axes. The renderer then draws the stage.
 //!    A lost surface skips the frame and is reported to the platform, which throttles the loop
 //!    while frames keep going unpresented; any other render error ends the run with that error.
 //! 4. Every plugin receives the [`FrameStats`].
@@ -82,6 +87,7 @@
 //! ```
 
 pub mod adapters;
+mod aim;
 mod app;
 mod error;
 #[cfg(feature = "fixtures")]
@@ -90,6 +96,7 @@ mod input;
 mod main_loop;
 mod plugin;
 
+pub use aim::{AIM_MIN_DISTANCE, PointerState, quantize_aim, sample_aim};
 pub use app::{
     App, AppBuilder, DEFAULT_HASH_EVERY, DEFAULT_MAX_TICKS_PER_FRAME, DEFAULT_TICK_RATE_HZ,
     HeadlessReport,
@@ -121,7 +128,9 @@ pub mod prelude {
         SequentialExecutor, World, parallel_system_fn, system_fn,
     };
     pub use grimoire_platform::{KeyCode, MouseButton, PlatformWindow, WindowConfig};
-    pub use grimoire_render::{Camera2D, RenderFrame, RendererConfig, SpriteInstance, shape};
+    pub use grimoire_render::{
+        Camera2D, Camera25D, RenderFrame, RendererConfig, SpriteInstance, StageFrame, shape,
+    };
     pub use grimoire_sim::{
         InputFrame, SimRng, SimSeed, Simulation, Tick, TickInput, derive_block_rng, derive_rng,
     };

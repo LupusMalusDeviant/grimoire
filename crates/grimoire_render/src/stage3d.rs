@@ -14,16 +14,22 @@
 //! toon/cel-shading direction): materials follow glTF metallic-roughness, consistent with the
 //! game's PRD-0003.
 //!
-//! **Deferred to later work packages:** the tilted view-projection wired into a following camera
-//! system (look-ahead, critically damped spring) and its replay-hash gate (WP2.4), the real PBR
-//! shading including shadows and specular anti-aliasing (WP2.5/WP2.6), and the point-light *count*
-//! budget (`Low 32` / `High 256`) together with clustered forward+ lighting (WP3.4, plan 0002).
-//! Mesh geometry, its GPU upload and a first (deliberately provisional) directional-light-plus-
-//! ambient shading are WP2.3's job (see [`crate::mesh`], [`crate::procedural`] and
-//! [`crate::WgpuRenderer::register_mesh`]); this module still owns only the data contract those
-//! steps consume, plus the `view_projection` helper WP2.3's mesh pass builds on
-//! ([`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`] stay ray-casts, not a matrix,
-//! so both keep working without a GPU).
+//! **WP2.4 (this work package):** [`CameraFollow`] wires the tilted view-projection into a
+//! following camera — a critically damped spring plus look-ahead, both driven render-side (see
+//! [`CameraFollow::update`]'s doc comment for why the simulation never runs it and the plan 0002
+//! WP2.4 replay-hash gate this guarantees). `grimoire`'s facade (crate `grimoire`, not this one)
+//! drives it from the player proxy's interpolated position once per frame and feeds axes 2/3 of
+//! `TickInput` from `grimoire::sample_aim`/`grimoire::quantize_aim` (contract §9.4).
+//!
+//! **Deferred to later work packages:** the real PBR shading including shadows and specular
+//! anti-aliasing (WP2.5/WP2.6), and the point-light *count* budget (`Low 32` / `High 256`)
+//! together with clustered forward+ lighting (WP3.4, plan 0002). Mesh geometry, its GPU upload and
+//! a first (deliberately provisional) directional-light-plus-ambient shading are WP2.3's job (see
+//! [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this module
+//! still owns only the data contract those steps consume, plus the `view_projection` helper
+//! WP2.3's mesh pass builds on ([`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`]
+//! stay ray-casts, not a matrix, so both keep working without a GPU) and that [`CameraFollow`] now
+//! keeps fed with a followed [`Camera25D::target`] every frame.
 
 use grimoire_core::math::dmath;
 
@@ -324,6 +330,175 @@ impl Camera25D {
         } else {
             None
         }
+    }
+}
+
+/// One axis of a critically damped spring-damper toward `target`: the closed-form update used by
+/// [`CameraFollow`], not a numerical integration of the underlying differential equation (so it
+/// stays stable for any `dt`, not just small ones). `smoothing_time` is the approximate real time
+/// (seconds) the spring takes to settle on a stationary target.
+///
+/// A non-finite `smoothing_time`, `value` or `target` snaps straight to `target` with zero
+/// velocity instead of propagating NaN; a non-positive or non-finite `dt` leaves `value`/`velocity`
+/// unchanged (no time has passed, so nothing should move). Only basic arithmetic is used, in
+/// keeping with the spirit of engine-ADR-0004 even though this function's output does not feed
+/// [`Camera25D::screen_to_ground`]'s basis directly (only [`Camera25D::target`], an input value to
+/// it) and so is not itself bound by contract §9.4's determinism rule.
+fn critically_damped_step(
+    value: f32,
+    velocity: f32,
+    target: f32,
+    smoothing_time: f32,
+    dt: f32,
+) -> (f32, f32) {
+    if !is_positive_and_finite(smoothing_time) || !value.is_finite() || !target.is_finite() {
+        return (target, 0.0);
+    }
+    if !dt.is_finite() || dt <= 0.0 {
+        return (value, velocity);
+    }
+    // Closed-form critically damped spring (damping ratio 1), using the standard third-order
+    // rational approximation of the exponential decay `exp(-omega * dt)` (Ryan Juckett,
+    // "Critically Damped Ease-In/Ease-Out Smoothing", Game Programming Gems 4; the same
+    // approximation widely known from Unity's `SmoothDamp`). `omega` is the spring's natural
+    // angular frequency; `exp` approximates `e^(-omega * dt)`.
+    let omega = 2.0 / smoothing_time;
+    let x = omega * dt;
+    let exp = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+    let change = value - target;
+    let temp = (velocity + omega * change) * dt;
+    let new_velocity = (velocity - omega * temp) * exp;
+    let new_value = target + (change + temp) * exp;
+    if new_value.is_finite() && new_velocity.is_finite() {
+        (new_value, new_velocity)
+    } else {
+        (target, 0.0)
+    }
+}
+
+/// `v` scaled down to at most `max_length` (direction preserved), or `v` unchanged if it is
+/// already shorter. Never NaN: a non-finite `v` or a non-finite/non-positive `max_length` returns
+/// `[0.0, 0.0]`.
+fn clamp_length(v: [f32; 2], max_length: f32) -> [f32; 2] {
+    if !v[0].is_finite() || !v[1].is_finite() || !is_positive_and_finite(max_length) {
+        return [0.0, 0.0];
+    }
+    let length_squared = v[0] * v[0] + v[1] * v[1];
+    if !length_squared.is_finite() {
+        return [0.0, 0.0];
+    }
+    if length_squared <= max_length * max_length {
+        return v;
+    }
+    let length = dmath::sqrt(length_squared);
+    if !is_positive_and_finite(length) {
+        return [0.0, 0.0];
+    }
+    [v[0] / length * max_length, v[1] / length * max_length]
+}
+
+/// Render-side camera following (plan 0002 WP2.4): a critically damped spring that drives
+/// [`Camera25D::target`] toward a game's focus point, plus look-ahead extrapolated from the
+/// focus's own recent motion, capped at [`Camera25D::look_ahead_max`] and smoothed with the same
+/// spring at time constant [`Camera25D::look_ahead_smoothing`].
+///
+/// Lives entirely on the render/facade side and is driven once per rendered frame with the real
+/// frame time — the fixed-timestep simulation never runs this and never reads its output; only a
+/// game's presentation code (`grimoire`'s main loop, or a game's own `extract_stage`) calls
+/// [`CameraFollow::update`]. This keeps the simulation's state hash (`grimoire_sim::Simulation`,
+/// not a dependency of this crate) independent of every [`Camera25D`] parameter, however the
+/// camera follows (plan 0002 WP2.4 gate: replaying a fixed, recorded `TickInput` sequence with
+/// different camera parameters yields identical hashes).
+///
+/// # Look-ahead formula (implementation choice, not fixed by contract §6)
+/// The contract carries [`Camera25D::look_ahead_max`] and [`Camera25D::look_ahead_smoothing`] but
+/// leaves the exact look-ahead law to whoever wires the spring up (WP2.4). This type extrapolates
+/// one second of the focus point's most recent frame-to-frame velocity, clamped to
+/// `look_ahead_max`, and lets the same critically damped spring (time constant
+/// `look_ahead_smoothing`) settle [`CameraFollow::position`] on `focus + look_ahead` — so a
+/// stationary focus eventually gives `position == focus` and a fast-moving focus leads by at most
+/// `look_ahead_max` world units. Flagged as a V-20 candidate (clarification) for the PO: a
+/// different lead time or a speed-based (rather than capped-linear) falloff would also satisfy the
+/// contract's wording.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraFollow {
+    /// Current smoothed ground point, suitable for [`Camera25D::target`].
+    position: [f32; 2],
+    /// Spring velocity driving `position` toward the look-ahead target.
+    velocity: [f32; 2],
+    /// Focus ground point of the previous [`CameraFollow::update`] call, used to estimate the
+    /// focus's own velocity for look-ahead.
+    previous_focus: [f32; 2],
+}
+
+impl CameraFollow {
+    /// Starts a follow spring already settled on `focus` (no initial velocity or look-ahead), so
+    /// the very first frame does not snap in from an arbitrary origin.
+    #[must_use]
+    pub fn new(focus: [f32; 2]) -> Self {
+        Self {
+            position: focus,
+            velocity: [0.0, 0.0],
+            previous_focus: focus,
+        }
+    }
+
+    /// Current smoothed ground point (the last value [`CameraFollow::update`] returned, or the
+    /// construction focus if it has never been called).
+    #[must_use]
+    pub fn position(&self) -> [f32; 2] {
+        self.position
+    }
+
+    /// Advances the spring by `dt` real seconds toward `focus`, using `camera`'s
+    /// [`Camera25D::look_ahead_max`] and [`Camera25D::look_ahead_smoothing`], and returns the new
+    /// [`CameraFollow::position`].
+    ///
+    /// Call this once per rendered frame (never inside the simulation) with the same focus point
+    /// the loop already interpolated with `alpha` (contract §9.3 step 5) and the real elapsed time
+    /// since the previous frame. A non-finite `focus` is ignored for this call (the position does
+    /// not move, as if the frame had `dt == 0`) rather than propagating NaN into the camera.
+    pub fn update(&mut self, camera: &Camera25D, focus: [f32; 2], dt: f32) -> [f32; 2] {
+        if !focus[0].is_finite() || !focus[1].is_finite() {
+            return self.position;
+        }
+        let safe_dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
+        let focus_velocity = if safe_dt > 0.0 {
+            [
+                (focus[0] - self.previous_focus[0]) / safe_dt,
+                (focus[1] - self.previous_focus[1]) / safe_dt,
+            ]
+        } else {
+            [0.0, 0.0]
+        };
+        self.previous_focus = focus;
+
+        let look_ahead_max = if is_positive_and_finite(camera.look_ahead_max) {
+            camera.look_ahead_max
+        } else {
+            0.0
+        };
+        // One second of lead time, see the type's doc comment.
+        let look_ahead = clamp_length(focus_velocity, look_ahead_max);
+        let desired = [focus[0] + look_ahead[0], focus[1] + look_ahead[1]];
+
+        let (x, vx) = critically_damped_step(
+            self.position[0],
+            self.velocity[0],
+            desired[0],
+            camera.look_ahead_smoothing,
+            safe_dt,
+        );
+        let (y, vy) = critically_damped_step(
+            self.position[1],
+            self.velocity[1],
+            desired[1],
+            camera.look_ahead_smoothing,
+            safe_dt,
+        );
+        self.position = [x, y];
+        self.velocity = [vx, vy];
+        self.position
     }
 }
 
@@ -896,6 +1071,150 @@ mod tests {
         // Must not panic; the mesh pass treats a non-finite result like "no camera" (see
         // `view_projection`'s doc comment).
         let _ = view_projection(&camera, 800.0 / 600.0, 0.05, 2000.0);
+    }
+
+    // --- CameraFollow: critically damped spring + look-ahead (WP2.4) ------------------------
+
+    #[test]
+    fn camera_follow_starts_settled_on_the_initial_focus() {
+        let follow = CameraFollow::new([12.0, -4.0]);
+        assert_eq!(follow.position(), [12.0, -4.0]);
+    }
+
+    #[test]
+    fn camera_follow_converges_on_a_stationary_focus() {
+        let camera = Camera25D {
+            look_ahead_max: 4.0,
+            look_ahead_smoothing: 0.25,
+            ..Camera25D::default()
+        };
+        let mut follow = CameraFollow::new([0.0, 0.0]);
+        let focus = [10.0, -6.0];
+        // A moving focus first pulls in a look-ahead offset; once it stops (from here on) the
+        // spring must settle back down onto the focus itself.
+        follow.update(&camera, [5.0, -3.0], 1.0 / 60.0);
+        for _ in 0..600 {
+            follow.update(&camera, focus, 1.0 / 60.0);
+        }
+        let position = follow.position();
+        assert!(
+            (position[0] - focus[0]).abs() < 1e-2 && (position[1] - focus[1]).abs() < 1e-2,
+            "expected convergence near {focus:?}, got {position:?}"
+        );
+    }
+
+    #[test]
+    fn camera_follow_look_ahead_leads_a_moving_focus_bounded_by_the_configured_maximum() {
+        let camera = Camera25D {
+            look_ahead_max: 2.0,
+            look_ahead_smoothing: 0.05,
+            ..Camera25D::default()
+        };
+        let mut follow = CameraFollow::new([0.0, 0.0]);
+        // A focus moving along +X at 10 units/s for two seconds: the look-ahead offset (one
+        // second of velocity, clamped) saturates at `look_ahead_max` from the first frame, so the
+        // steady-state lead must stay within it (a critically damped spring tracking a ramp never
+        // overshoots its target, so the lead approaches but never exceeds `look_ahead_max` by more
+        // than floating point slack) while still being strictly ahead of the focus (look-ahead is
+        // actually happening, not just clamped away to zero). A critically damped spring tracking
+        // a ramp also lags its own (moving) target by `velocity * look_ahead_smoothing` at steady
+        // state, so a *fast* focus relative to `look_ahead_smoothing` can net-lag the raw focus
+        // even while leading the look-ahead target — 10 units/s here keeps that tracking lag
+        // (0.5 world units) well under `look_ahead_max`, so the net lead stays positive.
+        let mut focus_x = 0.0f32;
+        let mut position = [0.0, 0.0];
+        let mut max_lead = f32::MIN;
+        for _ in 0..120 {
+            focus_x += 10.0 / 60.0;
+            position = follow.update(&camera, [focus_x, 0.0], 1.0 / 60.0);
+            max_lead = grimoire_core::math::dmath::max(max_lead, position[0] - focus_x);
+        }
+        let lead = position[0] - focus_x;
+        assert!(
+            lead > 0.0 && lead <= camera.look_ahead_max + 1e-3,
+            "expected 0 < lead <= look_ahead_max ({}), got {lead}",
+            camera.look_ahead_max
+        );
+        assert!(
+            max_lead <= camera.look_ahead_max + 1e-3,
+            "lead must never exceed look_ahead_max ({}), peaked at {max_lead}",
+            camera.look_ahead_max
+        );
+        assert!((position[1]).abs() < 1e-6, "no motion on Y: {position:?}");
+    }
+
+    #[test]
+    fn camera_follow_never_produces_nan_for_degenerate_inputs() {
+        let degenerate_cameras = [
+            Camera25D::default(),
+            Camera25D {
+                look_ahead_max: f32::NAN,
+                ..Camera25D::default()
+            },
+            Camera25D {
+                look_ahead_smoothing: f32::NAN,
+                ..Camera25D::default()
+            },
+            Camera25D {
+                look_ahead_max: -1.0,
+                look_ahead_smoothing: 0.0,
+                ..Camera25D::default()
+            },
+            Camera25D {
+                look_ahead_max: f32::INFINITY,
+                look_ahead_smoothing: f32::INFINITY,
+                ..Camera25D::default()
+            },
+        ];
+        let dts = [0.0_f32, -1.0, 1e-6, 1.0, 1000.0, f32::NAN, f32::INFINITY];
+        let focuses = [
+            [0.0, 0.0],
+            [f32::NAN, 0.0],
+            [f32::INFINITY, -f32::INFINITY],
+            [1e30, -1e30],
+        ];
+        for camera in &degenerate_cameras {
+            let mut follow = CameraFollow::new([0.0, 0.0]);
+            for &dt in &dts {
+                for &focus in &focuses {
+                    let position = follow.update(camera, focus, dt);
+                    assert!(
+                        position[0].is_finite() && position[1].is_finite(),
+                        "camera {camera:?}, dt {dt}, focus {focus:?} produced {position:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn camera_follow_feeds_a_finite_view_projection_and_ray_cast() {
+        // Ties CameraFollow into the existing projection/ray-cast gate (WP2.4 depends on WP2.2/
+        // WP2.3's `view_projection` and `screen_to_ground`, not a new matrix): whatever position
+        // the spring settles on must keep both finite and consistent.
+        let template = Camera25D {
+            look_ahead_max: 4.0,
+            look_ahead_smoothing: 0.2,
+            ..Camera25D::default()
+        };
+        let mut follow = CameraFollow::new([0.0, 0.0]);
+        let mut target = [0.0, 0.0];
+        for tick in 0..120u32 {
+            let focus = [tick as f32 * 0.2, (tick as f32 * 0.05).sin() * 3.0];
+            target = follow.update(&template, focus, 1.0 / 60.0);
+        }
+        let camera = Camera25D { target, ..template };
+        let viewport = [800.0, 600.0];
+        let matrix = view_projection(&camera, viewport[0] / viewport[1], 0.05, 2000.0);
+        for column in matrix {
+            assert!(column.iter().all(|c| c.is_finite()), "{matrix:?}");
+        }
+        let center = [viewport[0] * 0.5, viewport[1] * 0.5];
+        let ground = camera
+            .screen_to_ground(center, viewport)
+            .expect("a well-formed followed camera still hits the ground at its centre pixel");
+        assert!((ground[0] - target[0]).abs() < 1e-3);
+        assert!((ground[1] - target[1]).abs() < 1e-3);
     }
 
     // --- PbrMaterial validation boundaries ---------------------------------------------------
