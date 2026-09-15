@@ -19,6 +19,8 @@ use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+#[cfg(debug_assertions)]
+use std::sync::Arc;
 
 use crate::access::{Access, Declared};
 use crate::command::CommandBuffer;
@@ -179,6 +181,9 @@ struct ParallelEntry {
     commands: CommandBuffer,
     /// Panic payload of the last run, taken after the stage.
     panic: Option<Box<dyn Any + Send>>,
+    /// Name and declaration for the debug access check.
+    #[cfg(debug_assertions)]
+    context: Arc<crate::debug_access::AccessContext>,
 }
 
 enum Entry {
@@ -328,11 +333,18 @@ impl Schedule {
             list.sort_unstable();
             list.dedup();
         }
+        #[cfg(debug_assertions)]
+        let context = Arc::new(crate::debug_access::AccessContext {
+            system: system.name().to_owned(),
+            access,
+        });
         self.entries.push(Entry::Parallel(ParallelEntry {
             system: Box::new(system),
             resolved,
             commands: CommandBuffer::new(),
             panic: None,
+            #[cfg(debug_assertions)]
+            context,
         }));
         self.rebuild_stages();
         self
@@ -538,15 +550,24 @@ fn run_parallel_stage(entries: &mut [Entry], world: &mut World) {
 }
 
 /// Runs one parallel system and stores its panic instead of unwinding through the executor.
+///
+/// Debug builds run the system inside its access context and validate the recorded commands
+/// before the stage applies anything; a violation is stored like any other panic.
 fn run_task(entry: &mut ParallelEntry, world: &World) {
     let ParallelEntry {
         system,
         commands,
         panic,
+        #[cfg(debug_assertions)]
+        context,
         ..
     } = entry;
+    #[cfg(debug_assertions)]
+    let _guard = crate::debug_access::enter(Arc::clone(context));
     let result = catch_unwind(AssertUnwindSafe(|| {
         system.run(world, commands);
+        #[cfg(debug_assertions)]
+        crate::debug_access::validate_commands(context, commands);
     }));
     if let Err(payload) = result {
         *panic = Some(payload);

@@ -137,6 +137,8 @@ pub(crate) mod internal {
         /// Splits a fetch into its first `at` rows and the rest, element by element.
         fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize)
         -> (Self::Fetch<'w>, Self::Fetch<'w>);
+        /// Visits the component access of every element (debug access check).
+        fn for_each_access(visit: &mut dyn FnMut(ComponentAccess));
     }
 
     pub fn check_conflicts<Q: ?Sized>(accesses: &[Option<ComponentAccess>]) {
@@ -587,6 +589,12 @@ impl<E: Element> QueryInternal for E {
     fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
         <E as Element>::split_fetch(fetch, at)
     }
+
+    fn for_each_access(visit: &mut dyn FnMut(internal::ComponentAccess)) {
+        if let Some(access) = <E as Element>::access() {
+            visit(access);
+        }
+    }
 }
 
 impl<E: Element> Query for E {
@@ -654,6 +662,12 @@ macro_rules! impl_query_tuple {
             ) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
                 let parts = ($(<$E as Element>::split_fetch(fetch.$index, at),)+);
                 (($(parts.$index.0,)+), ($(parts.$index.1,)+))
+            }
+
+            fn for_each_access(visit: &mut dyn FnMut(internal::ComponentAccess)) {
+                $(if let Some(access) = <$E as Element>::access() {
+                    visit(access);
+                })+
             }
         }
 
@@ -886,6 +900,9 @@ where
     if blocks.len() <= 1 {
         return blocks.into_iter().map(f).collect();
     }
+    // The context of a parallel system follows its blocks onto every executing thread.
+    #[cfg(debug_assertions)]
+    let context = crate::debug_access::current();
     let mut slots: Vec<BlockSlot<'w, Q, T>> = blocks
         .into_iter()
         .map(|block| BlockSlot {
@@ -898,7 +915,11 @@ where
         let mut tasks: Vec<_> = slots
             .iter_mut()
             .map(|slot| {
+                #[cfg(debug_assertions)]
+                let mut context = context.clone();
                 move || {
+                    #[cfg(debug_assertions)]
+                    let _guard = context.take().map(crate::debug_access::enter);
                     if let Some(block) = slot.block.take() {
                         match catch_unwind(AssertUnwindSafe(|| f(block))) {
                             Ok(output) => slot.output = Some(output),

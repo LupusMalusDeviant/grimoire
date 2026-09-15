@@ -37,6 +37,8 @@ mod archetype;
 mod bundle;
 mod command;
 mod component;
+#[cfg(debug_assertions)]
+mod debug_access;
 mod entity;
 mod error;
 mod executor;

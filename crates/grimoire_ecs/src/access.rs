@@ -93,6 +93,24 @@ impl Access {
         self.structural = true;
         self
     }
+
+    /// Whether component type `type_id` is declared for reading (`write == false`) or writing.
+    #[cfg(debug_assertions)]
+    pub(crate) fn has_component(&self, type_id: TypeId, write: bool) -> bool {
+        has(&self.components, type_id, write)
+    }
+
+    /// Whether resource type `type_id` is declared for reading (`write == false`) or writing.
+    #[cfg(debug_assertions)]
+    pub(crate) fn has_resource(&self, type_id: TypeId, write: bool) -> bool {
+        has(&self.resources, type_id, write)
+    }
+}
+
+#[cfg(debug_assertions)]
+fn has(list: &[Declared], type_id: TypeId, write: bool) -> bool {
+    list.iter()
+        .any(|entry| entry.type_id == type_id && entry.write == write)
 }
 
 fn declared<T: 'static>(write: bool) -> Declared {

@@ -170,6 +170,8 @@ impl World {
     /// Component `C` of `entity`, if the entity is alive and has it.
     #[must_use]
     pub fn get<C: Component>(&self, entity: Entity) -> Option<&C> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_component_read::<C>("get");
         let location = self.entities.location(entity)?;
         let id = self.components.id::<C>()?;
         self.archetypes[location.archetype]
@@ -196,6 +198,8 @@ impl World {
     ///
     /// Visits archetypes in creation order and rows in dense order.
     pub fn query<Q: ReadOnlyQuery>(&self) -> QueryIter<'_, Q> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_query::<Q>("query");
         QueryIter::new(&self.components, &self.archetypes)
     }
 
@@ -227,6 +231,8 @@ impl World {
         &self,
         f: impl Fn(QueryBlock<'_, Q>) -> T + Sync,
     ) -> Vec<T> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_query::<Q>("par_blocks");
         Q::check_access();
         let state = Q::init_state(&self.components);
         let mut blocks = Vec::new();
@@ -285,6 +291,8 @@ impl World {
     /// Resource `R`, if present.
     #[must_use]
     pub fn resource<R: Resource>(&self) -> Option<&R> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_resource_read::<R>();
         self.resources.get()
     }
 
@@ -313,6 +321,8 @@ impl World {
     ///
     /// Types are identified by registration number only.
     pub fn stable_hash(&self, hasher: &mut StableHasher) {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_whole_world("stable_hash");
         self.entities.stable_hash(hasher);
         hasher.write_usize(self.components.count());
         hasher.write_usize(self.archetypes.len());
@@ -325,6 +335,8 @@ impl World {
     /// Captures the complete state: allocator, registries, archetypes, columns and resources.
     #[must_use]
     pub fn snapshot(&self) -> WorldSnapshot {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_whole_world("snapshot");
         WorldSnapshot {
             world: self.duplicate(),
         }
