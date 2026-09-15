@@ -31,6 +31,7 @@ grimoire_ui = { path = "crates/grimoire_ui" }
 
 # Tool crates (engine ADR-0008): never a dependency of a runtime crate.
 grimoire_bench = { path = "crates/grimoire_bench" }
+grimoire_link = { path = "crates/grimoire_link" }
 
 # Third party. Versions are pinned deliberately; upgrades are explicit commits.
 bytemuck = { version = "1.25.2", features = ["derive"] }

@@ -1,0 +1,25 @@
+[package]
+name = "grimoire_link"
+description = "CLI `grimoire-link`: compiles a .sigil file via grimoire_sigilc and pushes the unit to a running engine over the debug link (Plan-0002 WP8.4/WP8.5). Not a release artefact in P1 (PO decision P-14)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "grimoire-link"
+path = "src/bin/grimoire-link.rs"
+
+# Outside the determinism set, no clippy.toml (contract §1). May use further runtime crates
+# freely; never grimoire_bench. grimoire_debug/tcp exists as of this writing (sibling PR in
+# flight when this crate was created) so the feature is enabled here directly, as the contract
+# specifies, rather than deferred as a follow-up.
+[dependencies]
+grimoire_debug = { workspace = true, features = ["tcp"] }
+grimoire_sigilc.workspace = true
+
+[lints]
+workspace = true
