@@ -97,6 +97,7 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
 | `nightly.yml` | täglich 02:17 UTC, manuell | Tests im Release-Modus auf drei Systemen plus Float-Vergleich; geplante Läufe entfallen, wenn `main` 24 h nicht bewegt wurde (Push oder Merge laut Aktivitäts-API, nicht Commit-Datum) |
 | `release.yml` | Tag `vX.Y.Z` | Versionsprüfung, Testsuite (Linux), Release-Notes per git-cliff, GitHub-Release (nur Quelltext) |
 
+- **Ruleset:** `main` ist gegen Force-Push und Löschen geschützt; direkte Pushes sind erlaubt.
 - Commits, die nur Markdown oder `docs/` ändern, lösen `ci.yml` nicht aus. **Achtung Branch-Schutz:**
   Ein per Pfadfilter übersprungener Workflow meldet keinen Status. Pull Requests, die ausschließlich
   Doku ändern, bleiben dann bei Pflicht-Checks auf „Expected“ stehen und brauchen einen manuellen
@@ -200,11 +201,14 @@ Patch-Version.
 - **Vor 1.0 (`0.MINOR.PATCH`):** Eine inkompatible Änderung hebt **MINOR** (`0.3.2` → `0.4.0`) und
   braucht einen CHANGELOG-Eintrag mit Migrationshinweis. Kompatible Funktionen und Fehlerbehebungen
   heben **PATCH**.
+- **Während Phase P1 (PO-Entscheidung P-7):** Releases sind Patch-Versionen `0.1.x`. Additive
+  Änderungen gelten als kompatibel, auch neue Formatversionen, solange ältere Formate lesbar bleiben
+  (etwa Replay v2 neben v1); sie heben PATCH. `0.2.0` erscheint erst mit einer inkompatiblen Änderung.
 - **Ab 1.0:** reguläres SemVer (inkompatibel → MAJOR, Funktion → MINOR, Fehlerbehebung → PATCH).
 - **Als inkompatibel gilt:** Entfernen oder Signaturänderung öffentlicher API der `grimoire*`-Crates;
   geänderte deterministische Ergebnisse (Hash-Werte, RNG-Streams, Sim-Reihenfolge), weil sie Replays
-  und Golden-Master des Spiels brechen; geänderte Formate (Snapshots, Replays, Packs); ein höheres
-  `rust-version`; geänderte Standard-Features.
+  und Golden-Master des Spiels brechen; geänderte Formate (Snapshots, Replays, Packs), sofern ältere
+  Formate danach nicht mehr lesbar sind; ein höheres `rust-version`; geänderte Standard-Features.
 - Das Spiel pinnt exakte Tags; auch ein Patch-Release erreicht es erst durch einen bewussten
   Upgrade-Commit.
 
