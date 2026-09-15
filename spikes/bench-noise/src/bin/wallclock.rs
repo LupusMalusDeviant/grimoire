@@ -2,7 +2,10 @@
 //!
 //! Prints one JSON line per (bench, variant) to stdout and, if given, appends the same lines to
 //! the file named in `argv[1]`. Metadata (`os`, `rep`, `sha`) comes from environment variables so
-//! the CI workflow needs no templating inside this binary.
+//! the CI workflow needs no templating inside this binary. `BENCH_NOISE_VARIANTS` (comma-separated
+//! variant names, default: all of them) restricts which variants run — the Windows/macOS jobs use
+//! it to measure only `baseline,plus20` (hard rule: those two OS only for the wall-clock
+//! comparison, at a fraction of the Linux repetitions).
 //!
 //! Wall-clock time only measures these benchmarks; it never feeds simulation state
 //! (`#[allow(clippy::disallowed_methods)]` is not needed here: this crate has no such lint).
@@ -85,7 +88,19 @@ fn main() {
     let rep = env_or("BENCH_NOISE_REP", "0");
     let sha = env_or("GITHUB_SHA", "unknown");
 
-    for variant in VARIANTS {
+    let selected: Option<Vec<String>> = env::var("BENCH_NOISE_VARIANTS")
+        .ok()
+        .map(|list| list.split(',').map(str::trim).map(str::to_string).collect());
+    let variants: Vec<_> = VARIANTS
+        .iter()
+        .filter(|v| {
+            selected
+                .as_ref()
+                .is_none_or(|names| names.iter().any(|n| n == v.name))
+        })
+        .collect();
+
+    for variant in variants.iter().copied() {
         let (base, extra, samples) = measure_ecs(variant.percent);
         let record = SampleRecord {
             os: os.clone(),
@@ -101,7 +116,7 @@ fn main() {
         emit(&record, out_file.as_mut());
     }
 
-    for variant in VARIANTS {
+    for variant in variants.iter().copied() {
         let (base, extra, samples) = measure_sim(variant.percent);
         let record = SampleRecord {
             os: os.clone(),

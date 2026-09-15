@@ -120,9 +120,46 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  linux-aggregate:
-    name: linux aggregate + comparator self-test
-    needs: linux-measure
+  # Hard rule: Windows and macOS only for the wall-clock comparison, at reduced repetition and
+  # only baseline/plus20 (BENCH_NOISE_VARIANTS), and only after Linux's own pipeline is proven
+  # green — another PR's 3-OS CI is running in this repo, so this stays modest.
+  crossos-wallclock:
+    name: wall-clock comparison (${{ matrix.os }}, rep ${{ matrix.rep }})
+    needs: [smoke, linux-measure]
+    if: ${{ !cancelled() && needs.smoke.result == 'success' && needs.linux-measure.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        rep: [1, 2, 3]
+    env:
+      BENCH_NOISE_REP: ${{ matrix.rep }}
+      BENCH_NOISE_VARIANTS: baseline,plus20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/bench-noise
+      - name: Wall-clock measurement (K1; baseline + plus20 only)
+        run: |
+          mkdir -p results
+          cargo run --release --locked --bin wallclock -- "results/wallclock-rep${{ matrix.rep }}.jsonl"
+      - name: Upload rep results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-noise-${{ matrix.os }}-rep${{ matrix.rep }}
+          path: spikes/bench-noise/results/
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    name: aggregate + comparator self-test
+    needs: [linux-measure, crossos-wallclock]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -136,10 +173,10 @@ jobs:
       # Plan §5: the comparator's unit tests (gate_decision self-test table) run only in CI.
       - name: Comparator unit tests
         run: cargo test --locked
-      - name: Download every repetition's results
+      - name: Download every repetition's results (all OS)
         uses: actions/download-artifact@v8
         with:
-          pattern: bench-noise-linux-rep*
+          pattern: bench-noise-*
           path: all-results
       - name: Build analyze tool
         run: cargo build --release --locked --bin analyze
@@ -151,7 +188,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: bench-noise-linux-cv-report
+          name: bench-noise-cv-report
           path: spikes/bench-noise/cv-report.json
           if-no-files-found: error
           retention-days: 30
