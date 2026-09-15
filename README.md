@@ -78,7 +78,7 @@ Interpolation liegt in [crates/grimoire/examples/sim_loop.rs](crates/grimoire/ex
 | `grimoire_core` | Fundament | Stabiles Hashing, deterministische Mathematik |
 | `grimoire_platform` | Plattform | Fenster, Event-Loop, Roh-Input, Uhren, Dateisystem (Desktop + Headless) |
 | `grimoire_gpu` | Plattform | Besitzschicht über wgpu (Gerät, Surfaces, Offscreen-Ziele) |
-| `grimoire_render` | Engine | Renderer: instanzierte Sprites, Kamera (später Toon, Lichter, Post-FX) |
+| `grimoire_render` | Engine | Renderer: instanzierte Sprites, Kamera (später PBR, Schatten, Lichter, Post-FX) |
 | `grimoire_ecs` | Engine | Eigenes Archetyp-ECS mit deterministischer Iteration und Snapshots |
 | `grimoire_sim` | Engine | Fixed-Timestep, Seed-RNG, InputFrames, Replays, Zustands-Hashes |
 | `grimoire_collide` | Engine | 2D-Kollision und Graze-Abfragen (ab P1/P2) |

@@ -564,7 +564,9 @@ wiederverwendet.
 
 Dieser Abschnitt ist der **einzige Eigentümer** von `BulletInstance`, den Palettenraum-Konstanten, der
 Ebenenreihenfolge und des Erweiterungswegs des Frames (Plan 0002 WP1.2). WP2.2 fügt Kamera-, Mesh- und
-Lichtkanäle (`Camera25D`, `MeshInstance`, `ToonMaterial`, `PointLight`, Key-Light, Ambient) nach denselben Regeln
+Lichtkanäle (`Camera25D`, `MeshInstance`, `PbrMaterial` [Basisfarbe, Metallic, Roughness, Emissive; optionale
+Texturreferenzen für Basisfarbe, Normalen und Occlusion-Roughness-Metallic; glTF-kompatibel; Konsequenz aus
+Spiel-ADR-0014, Wechsel von Toon/Cel-Shading zu PBR], `PointLight`, Key-Light, Ambient) nach denselben Regeln
 als weitere Felder von `StageFrame` hinzu; für `Camera25D::screen_to_ground` gilt zusätzlich die
 Arithmetik-Regel aus §9.4 (Determinismus). `BulletInstance` definiert WP2.2 nicht neu. Anpassungen nach dem Spike
 OF-3.3 (WP3.2) kommen nur per Vertrags-PR (§2b) und vor dem Start von WP5.3.
