@@ -1,0 +1,15 @@
+[package]
+name = "sigil-syntax-proto"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Spike OF-4.1: prototype parsers RON vs. sigil 1 and the measurements for the syntax ADR"
+
+# Standalone crate: deliberately not a member of the engine workspace.
+[workspace]
+
+[dependencies]
+ron = "=0.12.2"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"

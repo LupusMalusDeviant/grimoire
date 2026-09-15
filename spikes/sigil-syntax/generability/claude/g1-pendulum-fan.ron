@@ -1,0 +1,43 @@
+#![enable(implicit_some)]
+// G1 pendulum fan (author: Claude, written from the brief only)
+Sigil(
+    version: 1,
+    meta: Meta(
+        name: "Pendulum Fan",
+        difficulty: ["normal"],
+        density: 90,
+    ),
+    bullets: [
+        Bullet(
+            name: "leaf",
+            silhouette: "leaf",
+            palette: "enemy.jade",
+            glow: 0.4,
+            radius: Units(0.15),
+            damage: 1,
+            flags: [Grazeable],
+        ),
+    ],
+    emitters: [
+        Emitter(
+            name: "pendulum",
+            bullet: "leaf",
+            repeat: Times(12),
+            interval: Ticks(10),
+            speed: UnitsPerTick(0.1),
+            block: Fan(
+                count: 7,
+                spread: Deg(90.0),
+                center: Deg(270.0),
+            ),
+            modifiers: [
+                Rotate(rate: DegPerTick(1.5)),
+                SineOffset(
+                    amplitude: Units(0.5),
+                    period: Ticks(60),
+                    phase: Deg(0.0),
+                ),
+            ],
+        ),
+    ],
+)

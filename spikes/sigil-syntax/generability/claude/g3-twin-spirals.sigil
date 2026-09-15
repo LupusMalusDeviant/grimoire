@@ -1,0 +1,84 @@
+sigil 1
+// G3 twin spirals with tempo curve (author: Claude, written from the brief only)
+
+meta {
+  name = "Twin Spirals"
+  difficulty = [hard, curtain]
+  density = 400
+}
+
+bullet petal {
+  silhouette = petal
+  palette = enemy.rose
+  glow = 0.5
+  radius = 0.18u
+  damage = 1
+  flags = [grazeable]
+  transform reverse {
+    when = event player_parry
+  }
+}
+
+bullet wisp {
+  silhouette = crescent
+  palette = enemy.violet
+  glow = 0.9
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+  behaviour = seek_target_weak
+}
+
+emitter spiral_left {
+  bullet = petal
+  offset = (x = -2u, y = 0u)
+  repeat = forever
+  interval = 3t
+  speed = 0.08u/t
+  block spiral {
+    arms = 2
+    step = 9deg
+    start = 90deg
+  }
+  modifier speed_curve {
+    keys = [
+      (at = 0t, mul = 0.5),
+      (at = 30t, mul = 1.4),
+      (at = 80t, mul = 1.0),
+    ]
+    interp = linear
+  }
+}
+
+emitter spiral_right {
+  bullet = petal
+  offset = (x = 2u, y = 0u)
+  repeat = forever
+  interval = 3t
+  speed = 0.08u/t
+  block spiral {
+    arms = 2
+    step = -9deg
+    start = 90deg
+  }
+  modifier speed_curve {
+    keys = [
+      (at = 0t, mul = 0.5),
+      (at = 30t, mul = 1.4),
+      (at = 80t, mul = 1.0),
+    ]
+    interp = linear
+  }
+}
+
+emitter wisps {
+  bullet = wisp
+  delay = 120t
+  repeat = 5
+  interval = 60t
+  speed = 0.05u/t
+  block aimed {
+    count = 2
+    spread = 20deg
+  }
+}

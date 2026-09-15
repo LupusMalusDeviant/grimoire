@@ -1,0 +1,37 @@
+sigil 1
+// G1 pendulum fan (author: Claude, written from the brief only)
+
+meta {
+  name = "Pendulum Fan"
+  difficulty = [normal]
+  density = 90
+}
+
+bullet leaf {
+  silhouette = leaf
+  palette = enemy.jade
+  glow = 0.4
+  radius = 0.15u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter pendulum {
+  bullet = leaf
+  repeat = 12
+  interval = 10t
+  speed = 0.1u/t
+  block fan {
+    count = 7
+    spread = 90deg
+    center = 270deg
+  }
+  modifier rotate {
+    rate = 1.5deg/t
+  }
+  modifier sine_offset {
+    amplitude = 0.5u
+    period = 60t
+    phase = 0deg
+  }
+}
