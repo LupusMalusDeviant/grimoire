@@ -11,7 +11,12 @@ publish.workspace = true
 
 [dependencies]
 grimoire_core.workspace = true
+grimoire_ecs.workspace = true
 grimoire_sim.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
