@@ -446,6 +446,19 @@ impl Parser {
             let value = self.expect_number()?;
             let value = u32::try_from(value)
                 .map_err(|_| self.err(format!("variant value {value} does not fit a u32")))?;
+            // A variant value that does not fit the enum's own declared discriminant width would
+            // silently truncate on the wire (the Rust emitter writes it via `as u8`/`as u16`), so
+            // it is rejected here instead (contract §13: "Enums als `u8`, außer explizit anders
+            // angegeben").
+            let max_for_width = match width {
+                EnumWidth::U8 => u32::from(u8::MAX),
+                EnumWidth::U16 => u32::from(u16::MAX),
+            };
+            if value > max_for_width {
+                return Err(self.err(format!(
+                    "enum {name:?}'s variant {vname:?} has value {value}, which does not fit its {width_ident} discriminant width (max {max_for_width})"
+                )));
+            }
             let vdoc = self.take_doc_strings();
             variants.push(EnumVariant {
                 name: vname,
@@ -573,6 +586,14 @@ impl Parser {
                         let max = u32::try_from(max).map_err(|_| {
                             self.err(format!("str16 max length {max} does not fit a u32"))
                         })?;
+                        // `Str16`'s wire length prefix is a `u16` (contract §12), so a declared
+                        // maximum above 65535 could never be reached on the wire and is a schema
+                        // bug, not a valid (if generous) upper bound.
+                        if max > u32::from(u16::MAX) {
+                            return Err(self.err(format!(
+                                "str16 max length {max} exceeds 65535, the largest value a u16 length prefix can encode"
+                            )));
+                        }
                         self.expect_punct(')')?;
                         Ok(TypeRef::Str16 { max })
                     }
@@ -681,7 +702,24 @@ fn validate(schema: &Schema) -> Result<(), SchemaError> {
         }
     }
 
+    let mut seen_message_names = std::collections::BTreeSet::new();
+    let mut seen_message_ids = std::collections::BTreeMap::new();
     for message in &schema.messages {
+        if !seen_message_names.insert(message.name.clone()) {
+            return Err(SchemaError {
+                line: 0,
+                message: format!("duplicate message name {:?}", message.name),
+            });
+        }
+        if let Some(previous) = seen_message_ids.insert(message.id, message.name.clone()) {
+            return Err(SchemaError {
+                line: 0,
+                message: format!(
+                    "duplicate message id {:#06x}, used by both {previous:?} and {:?}",
+                    message.id, message.name
+                ),
+            });
+        }
         if !schema.items.iter().any(|item| match item {
             Item::Struct(s) => s.name == message.payload,
             Item::Enum(_) => false,
@@ -919,6 +957,87 @@ mod tests {
         "#;
         let error = parse(source).unwrap_err();
         assert!(error.message.contains("not an unsigned integer"), "{error}");
+    }
+
+    #[test]
+    fn rejects_str16_max_length_over_u16_range() {
+        let source = r#"
+            schema "example"
+            version 1
+            error_type "self"
+            struct S { name: str16(65536) "too big for a u16 length prefix" }
+        "#;
+        let error = parse(source).unwrap_err();
+        assert!(error.message.contains("65535"), "{error}");
+    }
+
+    #[test]
+    fn accepts_str16_max_length_at_the_u16_boundary() {
+        let source = r#"
+            schema "example"
+            version 1
+            error_type "self"
+            struct S { name: str16(65535) "exactly at the boundary" }
+        "#;
+        parse(source).expect("65535 must still be accepted");
+    }
+
+    #[test]
+    fn rejects_enum_variant_value_exceeding_u8_width() {
+        let source = r#"
+            schema "example"
+            version 1
+            error_type "self"
+            enum E : u8 {
+                A = 256 "does not fit a u8"
+            }
+        "#;
+        let error = parse(source).unwrap_err();
+        assert!(error.message.contains("256"), "{error}");
+        assert!(error.message.contains("u8"), "{error}");
+    }
+
+    #[test]
+    fn rejects_enum_variant_value_exceeding_u16_width() {
+        let source = r#"
+            schema "example"
+            version 1
+            error_type "self"
+            enum E : u16 {
+                A = 65536 "does not fit a u16"
+            }
+        "#;
+        let error = parse(source).unwrap_err();
+        assert!(error.message.contains("65536"), "{error}");
+        assert!(error.message.contains("u16"), "{error}");
+    }
+
+    #[test]
+    fn rejects_duplicate_message_ids() {
+        let source = r#"
+            schema "example"
+            version 1
+            error_type "self"
+            struct S { x: u8 "x" }
+            message A = 1 dir both payload S
+            message B = 1 dir both payload S
+        "#;
+        let error = parse(source).unwrap_err();
+        assert!(error.message.contains("duplicate message id"), "{error}");
+    }
+
+    #[test]
+    fn rejects_duplicate_message_names() {
+        let source = r#"
+            schema "example"
+            version 1
+            error_type "self"
+            struct S { x: u8 "x" }
+            message A = 1 dir both payload S
+            message A = 2 dir both payload S
+        "#;
+        let error = parse(source).unwrap_err();
+        assert!(error.message.contains("duplicate message name"), "{error}");
     }
 
     #[test]
