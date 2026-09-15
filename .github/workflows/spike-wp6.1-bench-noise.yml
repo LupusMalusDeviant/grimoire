@@ -1,0 +1,157 @@
+# Spike OF-17.3 / plan 0002 WP6.1 (bench-noise): throwaway workflow, lives only on this branch.
+# `push` (not `workflow_dispatch`: that only fires for workflow files already on the default
+# branch) triggered by this branch alone, so it never runs ci.yml's job and never touches main.
+#
+# Every push that triggers this workflow is watched until it finishes:
+#   gh run watch <id> --exit-status        (red run: gh run view <id> --log-failed)
+name: Spike WP6.1 bench-noise (OF-17.3)
+
+on:
+  push:
+    branches: [p1/wp6.1-bench-spike]
+    paths:
+      - spikes/bench-noise/**
+      - .github/workflows/spike-wp6.1-bench-noise.yml
+
+# Never cancel a run in progress: every measurement job is expensive to redo and the aggregate
+# job needs every rep's artifact.
+concurrency:
+  group: spike-wp6.1-bench-noise
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: spikes/bench-noise
+
+jobs:
+  # Laufzeitschutz (plan §3.0 Nr. 5): the measurement matrix depends on this; a broken Valgrind
+  # or toolchain combination fails here instead of burning ten repetitions.
+  smoke:
+    name: smoke (toolchain, valgrind, fmt, clippy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - name: Fingerprint
+        run: |
+          echo "rustc: $(rustc -Vv | tr '\n' ' ')"
+          echo "valgrind: $(valgrind --version)"
+          echo "glibc: $(ldd --version | head -1)"
+          lscpu | grep 'Model name' || true
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/bench-noise
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Callgrind smoke probe
+        run: |
+          valgrind --tool=callgrind --callgrind-out-file=cg.smoke.out --quiet -- \
+            ./target/release/ir_probe ecs baseline
+          grep '^summary:' cg.smoke.out
+
+  # Zwei Messblöcke aus dem Vorschlag werden hier zu einem Fenster von 10 sequentiellen
+  # Wiederholungen zusammengefasst (siehe README "Deviations"): max-parallel 1, damit keine zwei
+  # Wiederholungen sich einen Runner-Pool-Nachbarn teilen.
+  linux-measure:
+    name: linux measure (rep ${{ matrix.rep }})
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        rep: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    env:
+      BENCH_NOISE_REP: ${{ matrix.rep }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/bench-noise
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Fingerprint
+        run: |
+          mkdir -p results
+          printf '{"rep":%s,"rustc":"%s","valgrind":"%s","glibc":"%s","cpu":"%s"}\n' \
+            "${{ matrix.rep }}" \
+            "$(rustc -Vv | tr '\n' ' ' | sed 's/"/\\"/g')" \
+            "$(valgrind --version)" \
+            "$(ldd --version | head -1 | sed 's/"/\\"/g')" \
+            "$(lscpu | grep 'Model name' | sed 's/.*: *//; s/"/\\"/g')" \
+            > "results/fingerprint-rep${{ matrix.rep }}.json"
+      - name: Wall-clock measurement (K1)
+        run: ./target/release/wallclock "results/wallclock-rep${{ matrix.rep }}.jsonl"
+      - name: Instruction-count measurement (K4)
+        run: |
+          bash scripts/measure_ir.sh ./target/release/ir_probe \
+            "results/ir-rep${{ matrix.rep }}.jsonl" cg-out
+      - name: Upload rep results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-noise-linux-rep${{ matrix.rep }}
+          path: spikes/bench-noise/results/
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-aggregate:
+    name: linux aggregate + comparator self-test
+    needs: linux-measure
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/bench-noise
+      # Plan §5: the comparator's unit tests (gate_decision self-test table) run only in CI.
+      - name: Comparator unit tests
+        run: cargo test --locked
+      - name: Download every repetition's results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bench-noise-linux-rep*
+          path: all-results
+      - name: Build analyze tool
+        run: cargo build --release --locked --bin analyze
+      - name: CV report
+        run: |
+          ./target/release/analyze "$GITHUB_WORKSPACE/all-results" cv-report.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload CV report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-noise-linux-cv-report
+          path: spikes/bench-noise/cv-report.json
+          if-no-files-found: error
+          retention-days: 30

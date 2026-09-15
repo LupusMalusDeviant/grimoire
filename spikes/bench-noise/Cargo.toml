@@ -1,0 +1,38 @@
+[package]
+name = "bench-noise"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Spike OF-17.3 / plan 0002 WP6.1: how noisy are wall-clock and instruction-count benchmarks on GitHub-hosted runners, and which one can gate a >10% regression?"
+
+# Standalone crate: deliberately not a member of the engine workspace, so its dependencies,
+# its lints and its CI stay untouched (same convention as spikes/look-dev and spikes/sigil-syntax).
+[workspace]
+
+[dependencies]
+grimoire_core = { path = "../../crates/grimoire_core" }
+grimoire_ecs = { path = "../../crates/grimoire_ecs" }
+grimoire_sim = { path = "../../crates/grimoire_sim" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "wallclock"
+path = "src/bin/wallclock.rs"
+
+[[bin]]
+name = "ir_probe"
+path = "src/bin/ir_probe.rs"
+
+[[bin]]
+name = "analyze"
+path = "src/bin/analyze.rs"
+
+# Callgrind needs debug symbols even in a release build (gungraun/iai-callgrind prerequisite:
+# `[profile.bench] debug = true`; this crate has no [[bench]] targets, so it is set on release).
+[profile.release]
+debug = true
+
+[lints.rust]
+unsafe_code = "deny"
