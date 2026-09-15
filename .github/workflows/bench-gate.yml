@@ -1,0 +1,223 @@
+# Benchmark gate (Plan-0002 WP6.2, engine ADR-0010): builds and runs the two P0 baseline benches
+# (`ecs_query_10k`, `sim_step_600`) under Callgrind on every push to main and every pull request,
+# compares the Callgrind `Ir` result against the accepted basis on the `bench-trends` branch
+# (P-12), and — on push to main only — appends the measurement to that same branch. Wall-clock
+# samples are measured too, but only as a trend (engine ADR-0010: measured 95-129% job-to-job
+# noise on shared Linux runners, unusable as a >10% gate); they are never compared or gated.
+#
+# WARN MODE (current): job `gate`'s "Evaluate gate verdict" step never fails the job on a red
+# verdict; it only annotates it (`::warning::`) and records it in the job summary. To switch to
+# HARD MODE (plan 0002 M1/M2, after the review window ADR-0010 names — at least 20 gate runs over
+# at least 14 days with no false alarm), change `env.BENCH_GATE_MODE` below from `warn` to `hard`.
+# That one line is the entire switch: the step already branches on it. A measurement error
+# (`compare` exit code 2 — e.g. a zero Ir reading, or a candidate whose own JSON is invalid)
+# always fails the job regardless of this switch, in both modes: that signals a broken
+# measurement, not a graded regression verdict, and warn mode was never meant to hide that.
+#
+# Every push that triggers this workflow is watched until it finishes:
+#   gh run watch --exit-status        (red run: gh run view --log-failed)
+name: Benchmark gate
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+
+# One gate run per ref at a time; PR runs are superseded by a newer push, main runs never are
+# (every main commit gets a verdict, and the trend-branch append must not be skipped).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Default: read-only. Only the `publish-trend` job (push to main only) elevates to `contents:
+# write`, scoped to that one job, per this task's own rule ("give write permission only to that
+# job").
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The WARN MODE -> HARD MODE switch (see header comment above). Valid values: "warn", "hard".
+  BENCH_GATE_MODE: warn
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Builds the bench binaries once, measures both benches (wall-clock trend + Callgrind Ir gate),
+  # runs the comparator's synthetic self-test, and evaluates the gate verdict against the accepted
+  # basis. Single job (not a repetition matrix, unlike the WP6.1 noise spike): engine ADR-0010
+  # already proved Ir's job-to-job and run-to-run noise band is exactly 0% for these two benches
+  # on ubuntu-24.04, so a production run only needs the one real measurement, keeping this job
+  # modest alongside the rest of this repo's CI.
+  gate:
+    name: gate (build, measure, compare)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      compare-exit-code: ${{ steps.evaluate.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: .
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build bench binaries
+        run: cargo build --release --locked -p grimoire_bench --bins
+      - name: Fingerprint
+        run: |
+          {
+            echo "RUNNER_OS_LOWER=linux"
+            echo "RUNNER_ARCH_LOWER=x86_64"
+            echo "RUNNER_IMAGE=ubuntu-24.04"
+            echo "CPU_MODEL=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
+            echo "LOGICAL_CPUS=$(nproc)"
+          } >>"$GITHUB_ENV"
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "GIT_DIRTY=1" >>"$GITHUB_ENV"
+          else
+            echo "GIT_DIRTY=0" >>"$GITHUB_ENV"
+          fi
+      - name: Wall-clock trend measurement (trend only, never gated)
+        run: |
+          mkdir -p results
+          DIRTY_FLAG=()
+          if [[ "$GIT_DIRTY" == "1" ]]; then DIRTY_FLAG=(--dirty); fi
+          ./target/release/wallclock --sha "$GITHUB_SHA" "${DIRTY_FLAG[@]}" \
+            --os "$RUNNER_OS_LOWER" --arch "$RUNNER_ARCH_LOWER" --image "$RUNNER_IMAGE" \
+            --cpu-model "$CPU_MODEL" --logical-cpus "$LOGICAL_CPUS" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            >results/wallclock.jsonl
+      - name: Instruction-count measurement (Callgrind Ir, the gate metric)
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          bash crates/grimoire_bench/scripts/measure_ir.sh \
+            ./target/release/ir_probe ./target/release/bench_result \
+            results/ir.jsonl cg-out
+      - name: Comparator self-test (synthetic inputs; always required, independent of WARN/HARD mode)
+        run: ./target/release/compare --self-test | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fetch accepted basis (bench-trends, P-12)
+        run: |
+          mkdir -p basis
+          if git fetch origin bench-trends 2>/dev/null; then
+            git show origin/bench-trends:accepted-basis.jsonl >basis/accepted-basis.jsonl 2>/dev/null \
+              || : >basis/accepted-basis.jsonl
+          else
+            : >basis/accepted-basis.jsonl
+          fi
+      - name: Evaluate gate verdict (WARN MODE; see header comment for the HARD MODE switch)
+        id: evaluate
+        run: |
+          set +o pipefail
+          ./target/release/compare --candidate results/ir.jsonl --basis basis/accepted-basis.jsonl \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          code="${PIPESTATUS[0]}"
+          set -o pipefail
+          echo "code=$code" >>"$GITHUB_OUTPUT"
+          echo "compare exit code: $code (mode: $BENCH_GATE_MODE)"
+          if [[ "$code" -eq 2 ]]; then
+            echo "::error title=Messfehler::compare meldete einen Messfehler (Exitcode 2); das gilt unabhängig vom Warn-/Hard-Modus immer als Fehlschlag."
+            exit 1
+          fi
+          if [[ "$code" -eq 3 && "$BENCH_GATE_MODE" == "hard" ]]; then
+            echo "::error title=Regressions-Gate (HARD MODE)::compare meldete Rot (Exitcode 3); HARD MODE lässt den Job fehlschlagen."
+            exit 1
+          fi
+          if [[ "$code" -eq 3 ]]; then
+            echo "::warning title=Regressions-Gate (WARN MODE)::compare meldete Rot (Exitcode 3); WARN MODE lässt den Job trotzdem grün."
+          fi
+          exit 0
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-gate-results
+          path: |
+            results/
+            basis/
+          if-no-files-found: error
+          retention-days: 30
+
+  # Calibrates the regression injector fresh on this runner (engine ADR-0010: the per-unit slope
+  # is bench- and host-dependent, so this task's own calibration unit counts are never copied from
+  # a prior measurement, including the ADR's own table) and proves +5% never gates red while
+  # +15%/+20% always do — the negative proof this task's scope calls for, backed by a real
+  # Callgrind measurement rather than only a unit test on synthetic numbers. Independent of `gate`
+  # (own build): both run in parallel, keeping wall time down without sharing mutable state.
+  calibration-proof:
+    name: calibration proof (+15% detected, engine ADR-0010)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: .
+          save-if: false
+      - name: Build bench binaries
+        run: cargo build --release --locked -p grimoire_bench --bins
+      - name: Calibrate ecs_query_10k
+        run: |
+          mkdir -p results
+          bash crates/grimoire_bench/scripts/calibrate_injection.sh ./target/release/ir_probe ecs \
+            results/calibration-ecs.jsonl cg-out-calibration
+      - name: Calibrate sim_step_600
+        run: |
+          bash crates/grimoire_bench/scripts/calibrate_injection.sh ./target/release/ir_probe sim \
+            results/calibration-sim.jsonl cg-out-calibration
+      - name: Calibration check (accuracy within +/-1pp; +15%/+20% red, +5% not red)
+        run: ./target/release/calibration_check results | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload calibration results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-gate-calibration
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+
+  # Appends this run's BenchResult lines (wall-clock trend + Ir) to bench-trends (P-12). Push to
+  # main only, and only once `gate` itself succeeded (a failed measurement must not enter the
+  # trend). The first push to main after this PR merges creates `bench-trends` (an orphan branch,
+  # never sharing history with main) — see `.github/scripts/append-bench-trend.sh`.
+  publish-trend:
+    name: publish trend (bench-trends, P-12)
+    needs: gate
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !cancelled() && needs.gate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download bench results
+        uses: actions/download-artifact@v8
+        with:
+          name: bench-gate-results
+          path: downloaded
+      - name: Merge wall-clock and Ir results into one file
+        run: cat downloaded/results/wallclock.jsonl downloaded/results/ir.jsonl >combined-results.jsonl
+      - name: Append to bench-trends
+        run: bash .github/scripts/append-bench-trend.sh combined-results.jsonl "$GITHUB_SHA"
