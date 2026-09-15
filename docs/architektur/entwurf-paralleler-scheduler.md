@@ -427,9 +427,9 @@ wird §11) und der CHANGELOG-Eintrag unter `[Unreleased]` sind Teil desselben En
 14. `tests/timing.rs` (`#[ignore]`, nur manuell im Release und in einer Messsitzung): Blöcke gegen
     `query_mut`, Schrittkosten, Verteilungsaufwand einer Zwei-System-Stufe.
 
-Spiel-Repo (nicht in WP1.0, erst nach Merge, Tag `v0.1.1` und Pin-Anhebung; erledigt mit Spiel-Commit `95ba4b3`): `fnp_sim_harness` prüft
-`0x5270_20ae_cf76_4ca7` mit jedem Executor aus `gate_executors()`; `fnp_app` übergibt einen
-`ThreadPoolExecutor`.
+Spiel-Repo (nicht in WP1.0, erst nach Merge, Tag `v0.1.1` und Pin-Anhebung): `fnp_sim_harness` prüft
+`0x5270_20ae_cf76_4ca7` mit jedem Executor aus `gate_executors()` (erledigt mit Spiel-Commit `95ba4b3`);
+`fnp_app` übergibt einen `ThreadPoolExecutor` (noch offen).
 
 ## 9. Commit-Reihenfolge
 
