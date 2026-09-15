@@ -1,7 +1,9 @@
 //! # grimoire_ecs
 //!
 //! Entity-component-system of the Grimoire engine: archetype storage, queries, commands,
-//! resources, an ordered system schedule, stable world hashing and snapshots.
+//! resources, stages of an ordered schedule with exclusive and parallel systems (engine
+//! ADR-0006), executors, data-parallel queries in fixed blocks, stable world hashing and
+//! snapshots.
 //!
 //! Determinism is the primary design goal (game ADR-0004/0005):
 //!
@@ -10,6 +12,9 @@
 //!   rows in dense order. Despawn swap-removes, which changes order reproducibly.
 //! - Despawned entity slots are reused oldest-first with a bumped generation.
 //! - [`World::stable_hash`] and [`World::snapshot`] cover the complete state.
+//! - Parallel stages see an unchanged world and apply their command buffers in list order;
+//!   data-parallel blocks have fixed boundaries ([`QUERY_BLOCK_SIZE`]). No state depends on the
+//!   [`Executor`] or its thread count; this crate never creates threads.
 //!
 //! ```
 //! use grimoire_core::impl_stable_hash;
