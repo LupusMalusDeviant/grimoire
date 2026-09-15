@@ -1,9 +1,9 @@
 # ADR-0008: Crate-Map-Erweiterung P1
 
-- **Status:** Vorgeschlagen (Nummer vorläufig: 0006 ist vergeben, 0007 belegt der Vorschlag auf dem Branch `p1/wp1.4-sigil-syntax-spike`; parallele P1-Branches legen Engine-ADRs an, die endgültige Nummer steht erst beim Merge fest)
+- **Status:** Akzeptiert (2026-09-15; PO-Entscheidung V-1 in der Vertragsfreigabe WP1.2 — Merge nach adversarialem Review und grüner CI auf drei Betriebssystemen; Nummer bis zum Merge vorläufig: 0006 ist vergeben, 0007 belegt der Vorschlag auf dem Branch `p1/wp1.4-sigil-syntax-spike`)
 - **Datum:** 2026-09-15
 - **Autor:** Claude (Ausarbeitung, unbeaufsichtigter Lauf) im Auftrag von Lupus Malus Deviant (PO)
-- **Konsultiert:** — (PO-Entscheidung ausstehend; vorgesehen mit dem Vertrags-PR aus Plan 0002 WP1.2/WP1.3, spätestens in Sammelsitzung B)
+- **Konsultiert:** Lupus Malus Deviant (PO; Vertragsfreigabe WP1.2 am 2026-09-15, V-1 bis V-21, Spiel-Repo `docs/plans/0002-vertragsfreigabe-wp1.2.md`)
 
 ## Kontext und Problemstellung
 
@@ -69,7 +69,7 @@ Laufzeitpfad noch die Determinismus-Menge verunreinigen — und wie wird die Kar
 - Standalone: Der Workspace baut und testet ohne Spiel (PRD-0002 FR-01), auch wenn `tools/` hinzukommt.
 - Determinismus: Binär-Units sind auf Windows, Linux und macOS byte-identisch (ADR-0004); keine Determinismus-Crate hängt von rayon ab (ADR-0006).
 - Die P0-API bleibt unverändert; neue Crates erscheinen in der Fassade nur additiv.
-- CI-Laufzeit: Die Standard-Push-CI bleibt unter 15 Minuten je Plattform (PRD-0017 NFR, Plan 0002 OP-5); GitHub-Actions-Minuten sind knapp (OP-2).
+- CI-Laufzeit: Die Standard-Push-CI bleibt unter 15 Minuten je Plattform (PRD-0017 NFR, Plan 0002 OP-5).
 - So wenige neue Crates wie möglich, jede mit genau einer Rolle.
 - Laufzeit-Crates bleiben ab P4 für Mobile-Targets kompilierbar; Werkzeug-Crates müssen das nicht.
 
@@ -101,7 +101,7 @@ Schnitt aus Plan 0002 WP1.3.
 
 **Positiv:**
 - Der Laufzeitpfad bleibt frei von Parser und Compiler; keine Laufzeit-Crate hängt an einem Werkzeug.
-- Die Determinismus-Lints gelten für den Compiler: std-Trigonometrie, `HashMap`-Reihenfolgen und eigene Threads fallen schon im lokalen Clippy-Lauf auf, nicht erst im 3-OS-Identitätsvergleich der Units (WP4.4), der Minuten kostet.
+- Die Determinismus-Lints gelten für den Compiler: std-Trigonometrie, `HashMap`-Reihenfolgen und eigene Threads fallen schon im lokalen Clippy-Lauf auf, nicht erst im 3-OS-Identitätsvergleich der Units (WP4.4), der einen CI-Lauf kostet.
 - Benchmarks dürfen Uhr und Threads nutzen, ohne Ausnahmen in Simulations-Crates.
 - `grimoire_debug` bleibt schlank; `grimoire-link` bündelt Compiler und Transport außerhalb der Engine-Laufzeit.
 
@@ -122,7 +122,7 @@ Identitäts-Gate (WP4.4) und goldene Unit-Hashes.
 
 **Negativ:**
 - Plattformabhängige Konstanten (etwa `f32::sin` beim Umrechnen von Grad) fallen erst im 3-OS-Vergleich auf; bis dahin entstehen je Build-Maschine andere Units und Content-Hashes (R4).
-- Das Gate kostet je Lauf Minuten auf drei Betriebssystemen (OP-2); lokal auf einem System bleibt der Fehler unsichtbar.
+- Das Gate kostet je Lauf CI-Zeit auf drei Betriebssystemen (OP-5); lokal auf einem System bleibt der Fehler unsichtbar.
 - Widerspricht dem Plan-Umfang zu PRD-0018 FR-09 („Determinismus-Lints auch für `sigilc`“).
 
 ### Option 4: Wie Option 2, plus gemeinsame Format-Crate
@@ -142,11 +142,11 @@ Palettenraum-Kennungen. Sigil, Render, Assets, Debug und die Werkzeuge hängen d
 
 ## Vorschlag des Autors
 
-**Option 2** (vorläufig, die Bestätigung durch den PO steht aus).
+**Option 2** (vom PO am 2026-09-15 bestätigt, V-1).
 
 Option 2 erfüllt die harten Anforderungen durch Konstruktion statt durch Disziplin. Der Laufzeitpfad kann den
 Compiler gar nicht erreichen. Die Determinismus-Lints wirken dort, wo plattformabhängige Units entstehen würden, und
-finden die Fehler lokal und ohne CI-Minuten. Benchmarks bekommen Uhr und Threads, ohne Ausnahmen in
+finden die Fehler lokal und ohne CI-Lauf. Benchmarks bekommen Uhr und Threads, ohne Ausnahmen in
 Simulations-Crates zu streuen. Die Nachteile — drei Crates mehr, ein sequentieller Compiler, eine siebte
 `clippy.toml` — sind Aufwand, kein Risiko für Determinismus oder Standalone-Garantie.
 
@@ -156,22 +156,24 @@ werden, sobald ADR-0011 den Schema-Codegen entschieden hat; heute nähme sie die
 
 ## Entscheidung
 
-**Gewählte Option:** offen — Vorschlag des Autors: Option 2; Entscheidung durch den PO mit dem Vertrags-PR aus
-WP1.2/WP1.3, spätestens in Sammelsitzung B (Plan 0002)
+**Gewählte Option:** Option 2 — eigene Werkzeug-Crates, Compiler in der Determinismus-Menge, dazu die Dev-Kanten
+`grimoire_exec → grimoire_sigil` und `grimoire_exec → grimoire_collide` für das Thread-Gate (PO-Entscheidung V-1,
+2026-09-15)
 
-Bausteine des Vorschlags (Namen sind Arbeitsnamen; die verbindliche Kantentabelle steht in Crate-Verträge §1):
+Bausteine der Entscheidung (die verbindliche Kantentabelle steht in Crate-Verträge §1):
 
 1. **Laufzeitkanten.**
    - Neu ist `grimoire_sigil → grimoire_ecs`; die Kanten zu `grimoire_sim` (Tick, Zufallsströme) und `grimoire_core` bleiben.
    - `grimoire_collide` bleibt bei `grimoire_ecs` und `grimoire_core`.
-   - Die Fassade hängt in P1 normal an `grimoire_collide`, `grimoire_sigil`, `grimoire_assets` und `grimoire_debug`. `grimoire_collide` und `grimoire_sigil` kommen schon an M1 mit den WP1.3-Skeletten hinzu, weil der Spieler-Proxy ihre Typen braucht (vorläufig, Crate-Verträge §9.1).
+   - Die Fassade hängt in P1 normal an `grimoire_collide`, `grimoire_sigil`, `grimoire_assets` und `grimoire_debug`. `grimoire_collide` und `grimoire_sigil` kommen schon an M1 mit den WP1.3-Skeletten hinzu, weil der Spieler-Proxy ihre Typen braucht (Crate-Verträge §9.1).
    - `grimoire_audio` und `grimoire_ui` bleiben Platzhalter ohne Kante bis zu einem P2-Crate-Map-ADR.
-2. **`grimoire_sigilc`.** Die neue Crate (Bibliothek und Binary `sigilc`) hängt an `grimoire_sigil`, `grimoire_sim`, `grimoire_ecs` und `grimoire_core`, gehört zur Determinismus-Menge und trägt die identische `clippy.toml` (sieben Dateien). Keine Laufzeit-Crate hängt von ihr ab, auch nicht als Dev-Abhängigkeit; Laufzeit-Tests nutzen eingecheckte Unit-Fixtures. `UnitId`s leitet sie nach der Regel von `AssetId::from_path` über `StableHasher` ab, ohne Kante zu `grimoire_assets`. Die Kanten zu `grimoire_sim` und `grimoire_ecs` braucht `sigilc simulate` (Plan 0002 WP5.6): Es führt den Laufzeit-Interpreter über `grimoire_sigil::install` auf einer `Simulation` aus (vorläufig, PO-Bestätigung ausstehend). Beide Crates gehören zur Determinismus-Menge; die Regel „`sigilc` hängt nur an Crates dieser Menge“ bleibt gewahrt.
+2. **`grimoire_sigilc`.** Die neue Crate (Bibliothek und Binary `sigilc`) hängt an `grimoire_sigil`, `grimoire_sim`, `grimoire_ecs` und `grimoire_core`, gehört zur Determinismus-Menge und trägt die identische `clippy.toml` (sieben Dateien). Keine Laufzeit-Crate hängt von ihr ab, auch nicht als Dev-Abhängigkeit; Laufzeit-Tests nutzen eingecheckte Unit-Fixtures. `UnitId`s leitet sie nach der Regel von `AssetId::from_path` über `StableHasher` ab, ohne Kante zu `grimoire_assets`. Die Kanten zu `grimoire_sim` und `grimoire_ecs` braucht `sigilc simulate` (Plan 0002 WP5.6): Es führt den Laufzeit-Interpreter über `grimoire_sigil::install` auf einer `Simulation` aus. Beide Crates gehören zur Determinismus-Menge; die Regel „`sigilc` hängt nur an Crates dieser Menge“ bleibt gewahrt.
 3. **`grimoire_bench`.** Die neue Crate liegt außerhalb der Determinismus-Menge und hat keine `clippy.toml`. Sie darf von jeder Laufzeit-Crate und von `grimoire_exec` abhängen; keine Engine-Crate hängt von ihr ab. Ihre Bibliothek enthält die JSON-Schema-Typen für Bench-Ergebnisse und Golden Master (Crate-Verträge §15). Wanduhrwerte gelangen nie in Zustands- oder Subsystem-Hashes.
 4. **`grimoire_link`.** Die neue Crate (Binary `grimoire-link`) liegt außerhalb der Determinismus-Menge. Sie hängt an `grimoire_debug` mit Feature `tcp` und an `grimoire_sigilc` und darf weitere Laufzeit-Crates nutzen; nichts hängt von ihr ab. In P1 ist sie kein Release-Artefakt (P-14). Die feste `tcp`-Kante vereinigt sich in jeden `--workspace`-Lauf; die Auslieferungskonfiguration (Fassade ohne `debug-link`, `grimoire_debug` ohne `tcp`) prüft deshalb ein paketgewählter CI-Schritt (Crate-Verträge §2 Regel 14).
-5. **`grimoire_exec`** wird festgehalten, wie ADR-0006 und der Branch es umsetzen:
+5. **`grimoire_exec`** wird festgehalten, wie ADR-0006 und der Branch es umsetzen, ergänzt um zwei Dev-Kanten für das Thread-Gate:
    - normale Kante zu `grimoire_ecs`, Drittcrates `rayon` und `thiserror`
    - Dev-Kanten zu `grimoire`, `grimoire_sim` und `grimoire_core` für das Hash-Gate
+   - Dev-Kanten `grimoire_exec → grimoire_sigil` und `grimoire_exec → grimoire_collide` (PO-Entscheidung V-1): `hash_gate.rs` bindet die Szenarien dieser Crates per `#[path]` ein und führt sie mit 1, 2 und N Threads aus (Crate-Verträge §1, §11.7, §14)
    - außerhalb der Determinismus-Menge; keine Crate dieser Menge hängt von ihr ab, bei keiner Kantenart
 6. **Trennungen.**
    - `grimoire_render` und `grimoire_sigil` kennen einander nicht; neutrale Kennungen sind je Crate eigene Typen, die Fassade bildet sie ab.
@@ -184,15 +186,15 @@ Bausteine des Vorschlags (Namen sind Arbeitsnamen; die verbindliche Kantentabell
    - Dev-Kanten von Crates der Determinismus-Menge zeigen nur auf Engine-Crates dieser Menge.
    - Kanten zu `grimoire_core` sind jeder Crate erlaubt.
    - Zwischen Werkzeug-Crates gibt es nur `grimoire_link → grimoire_sigilc`.
-8. **Außerhalb von Cargo.** `tools/` (P-1, vorläufig) ist kein Workspace-Mitglied und hat keine Cargo-Kante. Das Standalone-Gate prüft zusätzlich `tools/**`.
+8. **Außerhalb von Cargo.** `tools/` (P-1) ist kein Workspace-Mitglied und hat keine Cargo-Kante. Das Standalone-Gate prüft zusätzlich `tools/**`.
 9. **Prüfung.** Ein CI-Kanten-Check vergleicht die Kanten jedes Workspace-Mitglieds (normal, Build, Dev) mit einer eingecheckten Positivliste, die §1 entspricht; eine Positivkontrolle stellt sicher, dass die Abfrage greift. Die Identitätsprüfung der `clippy.toml` gilt für sieben Dateien. Die Umsetzung kommt mit den Skeletten in WP1.3.
 
-Determinismus-Menge nach diesem Vorschlag: `grimoire_core`, `grimoire_ecs`, `grimoire_sim`, `grimoire_collide`,
+Determinismus-Menge nach dieser Entscheidung: `grimoire_core`, `grimoire_ecs`, `grimoire_sim`, `grimoire_collide`,
 `grimoire_sigil`, `grimoire_sigilc`, Fassade `grimoire`.
 
 ## Konsequenzen
 
-Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2).
+Die folgenden Punkte beschreiben die Folgen der gewählten Option 2.
 
 ### Positiv
 
@@ -205,7 +207,7 @@ Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2
 
 ### Negativ
 
-- Drei zusätzliche Crates verlängern Builds und die Engine-CI (OP-5), während GitHub-Actions-Minuten knapp sind (OP-2).
+- Drei zusätzliche Crates verlängern Builds und die Engine-CI (OP-5).
 - `sigilc` kompiliert sequentiell und ohne `HashMap`; große Content-Mengen brauchen mehr Zeit.
 - Visual- und Palettenraum-Kennungen existieren doppelt und werden in der Fassade abgebildet; eine Abweichung der Wertebereiche fällt nur durch Tests auf.
 - Der Kopfkommentar aller sieben `clippy.toml`, die Kommentare in `check-thread-source.sh` und die Crate-Beschreibung von `grimoire_sigil` müssen angepasst werden.
@@ -259,5 +261,5 @@ Determinismus-Menge und für das Verhältnis von `tools/` zum Workspace. Nicht e
 - [ADR-0006](0006-paralleler-scheduler-deterministische-zusammenfuehrung.md) — Executor-Crate, strenge Abhängigkeitsregel, Scope ohne Werkzeuge und Asset-Laden
 - ADR-0007 (Vorschlag, Branch `p1/wp1.4-sigil-syntax-spike`) — Sigil-Quelltextsyntax v1, Umsetzung in `grimoire_sigilc`
 - [Crate-Verträge](../architektur/crate-vertraege.md) §1, §2 (Regeln 12–15), §2a, §3, §15
-- Spiel-Repo: PRD-0002 (FR-01, FR-02, FR-03, FR-15), PRD-0004, PRD-0016 (FR-10), PRD-0017 (NFR), PRD-0018 (FR-09); Plan 0002 (WP1.2, WP1.3, WP1.5, WP4.3, WP4.4, WP6.2, WP8.5, OP-2, OP-5, R4, R20, P-1, P-2, P-14); Projekt-ADR-0007 (Offline-Kompilierung)
+- Spiel-Repo: PRD-0002 (FR-01, FR-02, FR-03, FR-15), PRD-0004, PRD-0016 (FR-10), PRD-0017 (NFR), PRD-0018 (FR-09); Plan 0002 (WP1.2, WP1.3, WP1.5, WP4.3, WP4.4, WP6.2, WP8.5, OP-5, R4, R20, P-1, P-2, P-14); Projekt-ADR-0007 (Offline-Kompilierung)
 - `.github/scripts/check-thread-source.sh`, `.github/workflows/ci.yml` (Standalone-Gate, Job `docs`)

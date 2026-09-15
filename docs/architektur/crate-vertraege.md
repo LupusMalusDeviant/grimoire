@@ -1,26 +1,29 @@
 # Crate-Verträge — Phase P0/P1
 
-> **Entwurfsstand WP1.2:** Abschnitte, Unterabschnitte und Listenpunkte mit dem Vermerk *Entwurf WP1.2 —
-> PO-Freigabe ausstehend.* sind der Vertragsentwurf für Phase P1 (Plan 0002, WP1.2 und WP1.3). Sie warten auf
-> die Freigabe durch den PO und sind bis zum Merge nicht bindend. Texte ohne diesen Vermerk gelten unverändert.
+> **Freigabestand WP1.2:** Abschnitte, Unterabschnitte und Listenpunkte mit dem Vermerk *Freigegeben (WP1.2).* sind
+> der Vertrag für Phase P1 (Plan 0002, WP1.2 und WP1.3). Freigegeben durch den PO am 2026-09-15 (V-1 bis V-21);
+> Merge nach adversarialem Review und grüner CI auf drei Betriebssystemen. Die Einzelentscheidungen V-1 bis V-20
+> und die mit V-21 im Ganzen übernommenen vorläufigen Entscheidungen stehen im Spiel-Repo unter
+> `docs/plans/0002-vertragsfreigabe-wp1.2.md`. Bis zum Merge sind diese Texte nicht bindend (§2b). Texte ohne den
+> Vermerk gelten unverändert.
 
 > **Agenten-Hinweis:** Dieses Dokument ist die verbindliche Schnittstellen-Spezifikation der
 > Grimoire-Crates. Öffentliche APIs weichen nur mit Begründung im Commit und gleichzeitiger
 > Aktualisierung dieses Dokuments ab. Anforderungs-Hintergrund: Spiel-Repo `docs/prd/0002`,
 > `0013`, `0017`, `0018`; Grundsatzentscheidungen: Spiel-Repo `docs/adr/0002`–`0005`.
 
-> *Entwurf WP1.2 — PO-Freigabe ausstehend.* **Ergänzung P1:** Gemergte Verträge ändern sich ausschließlich
+> *Freigegeben (WP1.2).* **Ergänzung P1:** Gemergte Verträge ändern sich ausschließlich
 > nach dem Vertragsänderungs-Protokoll (§2b). Zusätzlicher Anforderungs-Hintergrund: Spiel-Repo
 > `docs/prd/0003`, `0004`, `0016` sowie Plan 0002 (WP1.2, WP1.3, WP1.7); Grundsatzentscheidungen bis Spiel-Repo
-> `docs/adr/0009`; Engine-Entscheidungen unter `docs/adr/` (u. a. 0004, 0005, 0006 und Vorschlag 0008
+> `docs/adr/0009`; Engine-Entscheidungen unter `docs/adr/` (u. a. 0004, 0005, 0006 und 0008
 > „Crate-Map-Erweiterung P1“).
 
 ## 1. Schichten und erlaubte Abhängigkeiten
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Der Abschnitt ersetzt die P0-Fassung vollständig; deren Aussagen zu
+*Freigegeben (WP1.2).* Der Abschnitt ersetzt die P0-Fassung vollständig; deren Aussagen zu
 `winit`, `wgpu`, `grimoire_core` und `grimoire_exec` bleiben inhaltlich erhalten.
 
-Grundlage: Engine-ADR-0008 „Crate-Map-Erweiterung P1“ (Vorschlag, Nummer vorläufig) und Engine-ADR-0006
+Grundlage: Engine-ADR-0008 „Crate-Map-Erweiterung P1“ (akzeptiert am 2026-09-15, Nummer bis zum Merge vorläufig) und Engine-ADR-0006
 (Executor-Crate). Die Tabelle unter dem Diagramm ist abschließend; das Diagramm zeigt nur die vorhandenen Kanten.
 
 ```mermaid
@@ -56,13 +59,13 @@ graph TD
 | `grimoire_debug` | Laufzeit | nein | `platform`, `core` | `ecs`, `sim`, `render`, `sigil`, `collide`, `assets`, Werkzeug-Crates |
 | `grimoire_audio`, `grimoire_ui` | Platzhalter (P2) | offen | keine bis zum P2-Crate-Map-ADR | — |
 | `grimoire` (Fassade) | Laufzeit | ja | `core`, `ecs`, `sim`, `platform`, `render`, `collide`, `sigil`, `assets`, `debug` | `exec`, `rayon`, Werkzeug-Crates |
-| `grimoire_exec` | Laufzeit-Zusatz (Engine-ADR-0006) | nein | `ecs`; Dev: `grimoire`, `sim`, `core`, `sigil`, `collide` (die letzten beiden vorläufig, PO-Frage in §11.7) | Werkzeug-Crates; keine Crate der Determinismus-Menge hängt von ihr ab |
-| `grimoire_sigilc` | Werkzeug: Bibliothek + CLI `sigilc` | ja | `sigil`, `sim`, `ecs`, `core` (`sim`/`ecs` für `sigilc simulate`, Plan 0002 WP5.6; vorläufig) | `platform`, `render`, `assets`, `debug`, `exec`, `rayon`, andere Werkzeug-Crates |
+| `grimoire_exec` | Laufzeit-Zusatz (Engine-ADR-0006) | nein | `ecs`; Dev: `grimoire`, `sim`, `core`, `sigil`, `collide` (die letzten beiden für das Hash-Gate, PO-Entscheid V-1, §11.7) | Werkzeug-Crates; keine Crate der Determinismus-Menge hängt von ihr ab |
+| `grimoire_sigilc` | Werkzeug: Bibliothek + CLI `sigilc` | ja | `sigil`, `sim`, `ecs`, `core` (`sim`/`ecs` für `sigilc simulate`, Plan 0002 WP5.6) | `platform`, `render`, `assets`, `debug`, `exec`, `rayon`, andere Werkzeug-Crates |
 | `grimoire_link` | Werkzeug: CLI `grimoire-link` | nein | `debug` (Feature `tcp`), `sigilc`; weitere Laufzeit-Crates erlaubt | `bench` |
 | `grimoire_bench` | Werkzeug: Benchmarks, JSON-Schemata (§15) | nein | jede Laufzeit-Crate, `exec` | `sigilc`, `link` |
 
 - Normale und Build-Kanten zeigen nur nach unten. Kein Crate kennt ein Spiel; das Standalone-Gate prüft
-  `Cargo.toml`, `crates/**` und — sobald die C#-Suite dort liegt (P-1, vorläufig) — `tools/**`.
+  `Cargo.toml`, `crates/**` und — sobald die C#-Suite dort liegt (P-1) — `tools/**`.
 - Kanten zu `grimoire_core` sind jeder Engine-Crate erlaubt (abhängigkeitsfreie Blatt-Crate, Engine-ADR-0005);
   gezeichnet sind nur die vorhandenen. `grimoire_core` bleibt auf stabiles Hashing und deterministische
   Mathematik beschränkt und nimmt keine Render-, Sigil- oder Format-Typen auf.
@@ -101,8 +104,8 @@ graph TD
   Wanduhr liest, und misst mit 1 und N Threads über `grimoire_exec`. Wanduhrwerte gelangen nie in Zustands- oder
   Subsystem-Hashes. Ihre Bibliothek enthält die JSON-Schema-Typen für Bench-Ergebnisse und Golden Master (§15).
 - **`grimoire_link`** aktiviert das Feature `tcp` von `grimoire_debug` fest und nutzt `sigilc` als Bibliothek.
-  In P1 ist es kein Release-Artefakt (P-14, vorläufig); gebaut wird aus dem Tag.
-- **`tools/`** (C#-Suite, P-1, vorläufig): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
+  In P1 ist es kein Release-Artefakt (P-14); gebaut wird aus dem Tag.
+- **`tools/`** (C#-Suite, P-1): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
   Formatdokumente (`docs/formats/`), Golden-Fixtures und die JSON-Ausgaben von `sigilc` an der Engine.
 - Abbildungen zwischen `grimoire_sigil`, `grimoire_collide`, `grimoire_render`, `grimoire_assets` und
   `grimoire_debug` liegen ausschließlich in der Fassade (Adapter-Tabelle in §9.1).
@@ -120,7 +123,7 @@ graph TD
 7. Kein `todo!()`/`unimplemented!()` in abgeschlossenem Code (`clippy::todo`).
 8. Commits: Conventional Commits (`feat(ecs): …`, `test(sim): …`), Englisch.
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend (Regeln 9–15).*
+*Freigegeben (WP1.2): Regeln 9–15.*
 
 9. **Fremde Bytes:** Jeder Decoder für Eingaben von außen — Binär-Units, Packs und ihr Manifest, Replays,
    IPC-Frames, JSON aus Werkzeugen — liefert bei fehlerhafter Eingabe einen Fehler (`#[non_exhaustive]`-Enum der
@@ -130,11 +133,12 @@ graph TD
    Fuzzing folgt im Red-Team-Schritt.
 10. **Binärformate:** Little-Endian, Felder fester Breite, am Anfang Magic und `u32`-Version; Zeichenketten und
     Blöcke längenpräfixiert mit Obergrenze; keine Iterationsreihenfolge ungeordneter Container in den Bytes. Jedes
-    Format hat ein Dokument `docs/formats/<format>.md` in diesem Repo (vorläufig nach P-9) und byteweise
+    Format hat ein Dokument `docs/formats/<format>.md` in diesem Repo (nach P-9) und byteweise
     Golden-Fixtures unter Versionskontrolle; in P1 sind das `sigil.md` (§11.1), `pack.md` (§12),
     `debug-protocol.md` (§13), `replay.md` (§8.1), `bench-result.md` und `golden-master.md` (§15). Eine
-    Formatänderung erhöht die Version und ist nach der SemVer-Politik inkompatibel; ältere Versionen bleiben
-    lesbar, wo der Abschnitt des Formats das verlangt. Nachrichtenströme (Debug-Protokoll, §13) tragen Magic und
+    Formatänderung erhöht die Version. Nach der SemVer-Politik ist sie inkompatibel, wenn ältere Versionen danach
+    nicht mehr lesbar sind, sonst additiv (§2b; etwa Replay v2 neben v1, §8.1). Welche älteren Versionen lesbar
+    bleiben, legt der Abschnitt des Formats fest. Nachrichtenströme (Debug-Protokoll, §13) tragen Magic und
     Version nicht je Frame, sondern versionieren im Handshake; für ihre Frames gelten Längenpräfix und Obergrenzen.
 11. **JSON-Schnittstellen** (Bench-Ergebnisse, Golden Master, Harness-Berichte, Profiler-Export, JSON-Spiegel des
     Debug-Protokolls, `sigilc --json`):
@@ -175,7 +179,7 @@ graph TD
     `grimoire_debug` mit `tcp`, auch der Lauf „ohne Features“. Die Auslieferungskonfiguration eines Spiels
     (Fassade ohne `debug-link`, `grimoire_debug` ohne `tcp`) prüft deshalb ein eigener, paketgewählter Schritt ohne
     `grimoire_link`: `cargo clippy -p grimoire_debug -p grimoire --all-targets --locked -- -D warnings` und
-    `cargo test -p grimoire_debug -p grimoire --locked` (vorläufig, PO-Bestätigung ausstehend; Umsetzung WP1.3,
+    `cargo test -p grimoire_debug -p grimoire --locked` (Umsetzung WP1.3,
     Laufzeit nach OP-5 bewertet).
 15. **Crate-Kanten:** Neue Kanten zwischen Engine-Crates und neue Engine-Crates nur über ein Engine-ADR zur
     Crate-Map (Engine-ADR-0008 und Nachfolger) mit gleichzeitiger Änderung der Tabelle in §1. Neue
@@ -183,7 +187,7 @@ graph TD
 
 ## 2a. Trait-Entscheid je Subsystem (P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 PRD-0002 FR-02 verlangt Verträge als Traits, FR-15 Null- bzw. Headless-Implementierungen, PRD-0018 FR-01 Tests
 gegen die Verträge. Für jedes Subsystem, das P1 schneidet oder erweitert, legt die Tabelle fest, ob ein Trait
@@ -289,7 +293,7 @@ weil ihre Wahrheit das dokumentierte Byteformat ist und es keine Verhaltensvaria
 | `SigilUnit`, Pack v1, `Replay` v2, Debug-Nachrichten v1, `BenchResult`, `GoldenMaster` | `grimoire_sigil`, `grimoire_assets`, `grimoire_sim`, `grimoire_debug`, `grimoire_bench` | Formattypen | Byteformat bzw. Schema in `docs/formats/` ist die Wahrheit | Golden-Fixtures, Roundtrip, Fehleingaben liefern Fehler (§2 Regel 9) |
 
 **Zugriff auf konkrete Ressourcen** (präzisiert den Plan-Wortlaut „nur über Systeme der Fassade“ für den
-parallelen Scheduler; PO-Bestätigung ausstehend):
+parallelen Scheduler; PO-Entscheid V-2):
 - Zustandsbehaftete Ressourcen mit innerer Invariante (`BulletPool`, `SigilContent`, `SpatialGrid`) haben keine
   öffentlichen Felder. Gelesen wird über die lesende API der besitzenden Crate mit deklariertem Zugriff
   (`Access::read_resource::<R>()`), auch aus Systemen eines Spiels. Reine Datenressourcen ohne Invariante
@@ -302,20 +306,20 @@ parallelen Scheduler; PO-Bestätigung ausstehend):
 
 ## 2b. Vertragsänderungs-Protokoll
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Gilt für gemergte Verträge: dieses Dokument, die Formatdokumente unter `docs/formats/`, Golden-Fixtures der
 Formate, Konformanz-Suiten und die Crate-Map (§1). Stränge bauen nur gegen gemergte Verträge. Ein ungemergter
-Entwurf (Vermerk *Entwurf … — PO-Freigabe ausstehend*) ist nicht bindend; wer ihn braucht, arbeitet mit
+Vertragstext ist nicht bindend, auch nach der PO-Freigabe (Vermerk *Entwurf …* oder *Freigegeben …*); wer ihn braucht, arbeitet mit
 Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 
 **Einstufung** (steht in jeder PR-Beschreibung):
 
-| Stufe | Bedeutung | Beispiele | Versionsfolge (SemVer-Politik vor 1.0) |
+| Stufe | Bedeutung | Beispiele | Versionsfolge (SemVer-Politik vor 1.0; in P1 Patch-Versionen `0.1.x`, P-7) |
 |-------|-----------|-----------|----------------------------------------|
 | K — Klarstellung | Wortlaut ändert sich, Signaturen, Semantik, Formate und Hashes nicht | Mehrdeutigkeit aufgelöst, Verweis ergänzt | keine |
-| A — additiv | Neue Elemente, alte Programme und Daten bleiben gültig | neue bereitgestellte Trait-Methode, neuer `#[non_exhaustive]`-Typ, neue Nachricht in einer freien ID des Debug-Protokolls (§13) | PATCH |
-| I — inkompatibel | alles, was die SemVer-Politik als inkompatibel nennt, dazu: geänderte `QUERY_BLOCK_SIZE`, Hash-Layouts, Strom-Nummern (§8.3), Formatversionen, `repr(C)`-Layouts, verschärfte Konformanz-Suiten, neue Pflichtmethoden, neue Crate-Kanten | `BulletInstance`-Layout nach dem Bullet-Darstellungs-ADR, Replay v2 | MINOR, CHANGELOG mit Migrationshinweis |
+| A — additiv | Neue Elemente, alte Programme und Daten bleiben gültig | neue bereitgestellte Trait-Methode, neuer `#[non_exhaustive]`-Typ, neue Nachricht in einer freien ID des Debug-Protokolls (§13), neue Formatversion, solange ältere lesbar bleiben (Replay v2 neben `InputLog` v1, §8.1) | PATCH |
+| I — inkompatibel | alles, was die SemVer-Politik als inkompatibel nennt, dazu: geänderte `QUERY_BLOCK_SIZE`, Hash-Layouts, Strom-Nummern (§8.3), Formatversionen, nach denen ältere Formate nicht mehr lesbar sind, `repr(C)`-Layouts, verschärfte Konformanz-Suiten, neue Pflichtmethoden, neue Crate-Kanten | `BulletInstance`-Layout nach dem Bullet-Darstellungs-ADR | MINOR (in P1 also `0.2.0`), CHANGELOG mit Migrationshinweis |
 
 **Ablauf:**
 
@@ -335,11 +339,12 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
    Der Merge trägt einen Eintrag in das Änderungsprotokoll unten ein.
 5. **Gate:** adversariales Review durch einen separaten Review-Agenten (Mehrdeutigkeiten, Verstöße gegen §1,
    Determinismus-Lücken, zustandsbehaftete Behaviors, Panics bei fehlerhaften Eingaben, Einstufung), PO-Freigabe
-   (Umfang je Stufe: PO-Entscheidung ausstehend), CI auf Windows, Linux und macOS grün und bis zum Ende überwacht.
+   (Stufen A und I gebündelt in der nächsten Sammelsitzung, Stufe K nach dem Review ohne PO-Freigabe; PO-Entscheid
+   V-20), CI auf Windows, Linux und macOS grün und bis zum Ende überwacht.
    Ein roter Lauf wird vor jeder Weiterarbeit analysiert.
 6. **Parallele Vertrags-PRs:** Die Merge-Reihenfolge je Meilenstein gilt; der später gemergte PR rebased und passt
    Text und Suiten an. ADR-Nummern werden beim Merge vergeben.
-7. **Beim Merge** entfallen die Entwurfsvermerke der gemergten Abschnitte.
+7. **Beim Merge** entfallen die Entwurfs- und Freigabevermerke der gemergten Abschnitte.
 
 **Fristen mit Sonderregel:**
 - Änderungen an `BulletInstance` nach den Render-Spikes nur per Vertrags-PR und vor dem Start der Render-Extraktion
@@ -355,14 +360,14 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend: Überschrift (Compiler `sigilc`), der zweite Einleitungsabsatz und die
+*Freigegeben (WP1.2): Überschrift (Compiler `sigilc`), der zweite Einleitungsabsatz und die
 markierten Punkte. Alle übrigen Punkte gelten unverändert.*
 
 Erzwungen durch `clippy.toml` in diesen Crates, zusätzlich im Review geprüft. Die Fassade trägt dieselbe Datei,
 weil ihre Hauptschleife, `InputMap::sample` und das Beispiel `sim_loop` (Vorlage für Spiele) `TickInput` und
 Systeme in die Simulation speisen; ihre Wanduhr liest sie nur über `PlatformContext::clock`.
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* `grimoire_sigilc` trägt dieselbe Datei, weil seine Ausgabe (Binär-Units)
+*Freigegeben (WP1.2).* `grimoire_sigilc` trägt dieselbe Datei, weil seine Ausgabe (Binär-Units)
 in Content-Hash, Golden Master und Replays eingeht und auf Windows, Linux und macOS byte-identisch sein muss
 (Engine-ADR-0004, Engine-ADR-0008). Die Sperren gelten dort auch für die CLI `sigilc`: Sie kompiliert auf einem
 Thread und rechnet Literale und Einheiten nur mit Operationen um, die Engine-ADR-0004 erlaubt. Den byteweisen
@@ -375,7 +380,7 @@ Clippy-Lauf sichtbar. Der CI-Job `docs` erfasst `grimoire_sigilc` automatisch, w
 - Keine Transzendentalfunktionen aus `std`, weder für `f32` noch für `f64` (`sin`, `cos`, `atan2`, `exp`, `powf`, `sinh`, `log10`, `cbrt`, …) — stattdessen `grimoire_core::math::dmath`. Kein `mul_add`, kein `powi` (laut `std`-Doku nicht deterministisch).
 - Kein `f32::min`/`max` und kein `f64::min`/`max` (Nullvorzeichen bei `(+0.0, -0.0)` wechselt zwischen Debug und Release) — stattdessen `dmath::min`/`dmath::max`; `clamp` bleibt erlaubt.
 - Keine Threads in Determinismus-Crates (`std::thread::spawn`, `thread::Builder::spawn`/`spawn_scoped`, `thread::scope` gesperrt), keine Adressen/`TypeId`s in Hashes oder Reihenfolgen. **Einzige Thread-Quelle der Simulation** ist `grimoire_exec` (rayon, eigener Pool mit fester Thread-Anzahl, nie der globale Pool) hinter dem Trait `grimoire_ecs::Executor` (Engine-ADR-0006, Baustein 6). Keine Crate mit dieser `clippy.toml` hängt von `rayon`, `rayon-core` oder `grimoire_exec` ab — weder als normale noch als Build- oder Dev-Abhängigkeit, auch nicht optional hinter einem Feature. Der CI-Job `docs` prüft das mit `.github/scripts/check-thread-source.sh` (`cargo tree -e normal,build,dev --target all --all-features` je Crate mit `clippy.toml`, Positivkontrolle an `grimoire_exec`, Identität der `clippy.toml`).
-- *Entwurf WP1.2 — PO-Freigabe ausstehend.* **Threads außerhalb der Simulation (abschließende Liste):**
+- *Freigegeben (WP1.2).* **Threads außerhalb der Simulation (abschließende Liste):**
   Engine-ADR-0006 regelt nur Simulations-Threads und nimmt Render-Thread, Asset-Laden und Werkzeuge ausdrücklich
   aus seinem Scope aus. Außerhalb der Simulation entstehen Threads nur an diesen Stellen:
   1. im IO-Thread `grimoire-debug-io` von `grimoire_debug::TcpServerTransport` (Feature `tcp` von
@@ -409,17 +414,17 @@ Nur im Review prüfbar (Engine-ADR 0004):
 - NaN gelangt nie in Simulationszustand. Code verzweigt nie auf Vorzeichen oder Payload eines möglichen NaN (`to_bits`, `total_cmp`, `is_sign_negative`, `copysign`) — beides ist plattform- und optimierungsabhängig.
   Debug-Builds prüfen das Verbot an jedem Hash-Punkt zusätzlich zur Laufzeit: `Simulation::state_hash` bricht mit Panic samt Tick ab, wenn der gehashte Zustand ein NaN enthält (`StableHasher::saw_nan`). Golden-Tests und `replay`-Checkpoints schlagen damit an. Release-Builds und NaN, das vor dem nächsten Hash wieder verschwindet, bleiben Review-Aufgabe.
 - Clippy ignoriert nicht auflösbare Pfade in `clippy.toml` stillschweigend: Neue Einträge werden mit einer temporären Lint-Probe verifiziert; die sechs `clippy.toml` (fünf Simulations-Crates und Fassade) bleiben identisch.
-- *Entwurf WP1.2 — PO-Freigabe ausstehend.* Mit `grimoire_sigilc` (Engine-ADR-0008) werden es sieben identische
+- *Freigegeben (WP1.2).* Mit `grimoire_sigilc` (Engine-ADR-0008) werden es sieben identische
   `clippy.toml` (fünf Simulations-Crates, Compiler `grimoire_sigilc` und Fassade). Ihr Kopfkommentar nennt alle
   sieben Crates und wird in allen Dateien gleichzeitig geändert; `check-thread-source.sh` meldet zusätzlich die
   erwartete Anzahl. `grimoire_platform`, `grimoire_gpu`, `grimoire_render`, `grimoire_assets`, `grimoire_debug`,
   `grimoire_exec`, `grimoire_link` und `grimoire_bench` tragen bewusst keine.
 - Parallele Systeme und Block-Closures verändern keinen Simulationszustand über innere Veränderlichkeit (`Mutex`, `RwLock`, Atomics, `OnceLock`, `Cell`); Komponenten und Ressourcen enthalten keine. Diagnose ohne Wirkung auf den Zustand ist erlaubt.
 - Deklarationen sind vollständig und nicht übermäßig: Eine fehlende fällt nur im Debug-Build oder im Hash-Gate auf, eine überflüssige Schreib- oder Strukturdeklaration zerlegt Stufen unnötig.
-- *Entwurf WP1.2 — PO-Freigabe ausstehend.* Profiler-, Stats- und Beobachter-Code (`SystemObserver`, §7.2) liest die
+- *Freigegeben (WP1.2).* Profiler-, Stats- und Beobachter-Code (`SystemObserver`, §7.2) liest die
   Welt nur. Keine seiner Ausgaben (Zeiten, Zähler, Subsystem-Hashes) fließt in Komponenten, Ressourcen, `TickInput`
   oder Systementscheidungen zurück.
-- *Entwurf WP1.2 — PO-Freigabe ausstehend.* Präsentationszustand bleibt außerhalb der Welt: Kamera (`Camera2D`,
+- *Freigegeben (WP1.2).* Präsentationszustand bleibt außerhalb der Welt: Kamera (`Camera2D`,
   `Camera25D`), Zeigerposition, Viewport, `alpha` und daraus interpolierte Positionen. Keine Komponente und keine
   Ressource enthält ihn; kein System liest ihn. Nur `quantize_aim`/`sample_aim` in der Fassade übersetzen ihn in
   `i16`-Achsen eines `InputFrame`, und erst dieser Wert ist determinismusrelevant. Geprüft wird das über das
@@ -443,7 +448,7 @@ Nur im Review prüfbar (Engine-ADR 0004):
 `AppHandler`, `PlatformContext`, `AppResult`, `PlatformError`, `FileSystem`, `StdFileSystem`,
 `MemoryFileSystem`, `run_desktop`, `run_headless`.
 
-**Begrenztes Lesen (Ergänzung P1):** *Entwurf WP1.2 — PO-Freigabe ausstehend.* `FileSystem` erhält eine
+**Begrenztes Lesen (Ergänzung P1):** *Freigegeben (WP1.2).* `FileSystem` erhält eine
 bereitgestellte Methode, additiv nach §2a (neue Trait-Methoden nur mit Standard-Implementierung); die Liste oben
 bleibt sonst unverändert.
 
@@ -555,7 +560,7 @@ wiederverwendet.
 
 **Bühnen-Frame, Ebenenreihenfolge und Bullet-Kanal (Ergänzung P1, Vertrag Sigil↔Render)**
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Dieser Abschnitt ist der **einzige Eigentümer** von `BulletInstance`, den Palettenraum-Konstanten, der
 Ebenenreihenfolge und des Erweiterungswegs des Frames (Plan 0002 WP1.2). WP2.2 fügt Kamera-, Mesh- und
@@ -767,7 +772,7 @@ pub struct QueryBlock<'w, Q>;   // Iterator<Item = Q::Item<'w>>; index(), len(),
 - **Panic:** Panict ein System einer parallelen Stufe, laufen die übrigen Aufgaben zu Ende; dann werden alle Puffer der Stufe verworfen und der Panic mit dem kleinsten Listenindex weitergereicht. Kein Befehl der Stufe ist angewendet, die Welt ist im Zustand vor der Stufe; frühere Stufen des Ticks bleiben angewendet, der interne Zustand der Systeme ist unbestimmt. Bei Blöcken wird der Panic mit dem kleinsten Blockindex weitergereicht, nachdem alle Blöcke beendet sind; bei `par_blocks_mut` können andere Blöcke ihre Zeilen schon verändert haben. Panics exklusiver Systeme und während der Befehlsanwendung sind nicht transaktional; danach ist die Welt nur per `restore` weiterverwendbar. Der Schedule bleibt verwendbar: Jede parallele Stufe beginnt mit leeren Puffern und ohne gespeicherten Panic, auch nach einem Panic bei der Befehlsanwendung oder im Executor; nach `restore` wendet ein Lauf nichts aus dem gescheiterten Lauf an.
 - **Debug-Prüfung** (nur mit `debug_assertions`, in Release ohne Code): Innerhalb eines parallelen Systems und seiner Blöcke (auch auf Worker-Threads) bricht mit Panic samt Systemnamen ab: `query`/`par_blocks` mit einem nicht per `read` deklarierten Element `&T`/`Option<&T>`, `get::<C>` ohne `read::<C>`, `resource::<R>` ohne `read_resource::<R>`, `stable_hash`/`snapshot` (ganze Welt). Nach dem Lauf des Systems und vor jeder Anwendung prüft der Schedule dessen Puffer, auch angehängte Befehle: `spawn`/`despawn`/`insert`/`remove` ohne `structural`, `set::<C>` ohne `write::<C>`, `insert_resource`/`remove_resource::<R>` ohne `write_resource::<R>`. Meldung z. B. ``system `census` reads component `game::Velocity` without declaring it (Access::read, World::query)``. Exklusive Systeme werden nicht geprüft, auch nicht, wenn ein paralleles System einen Schedule (etwa auf einer Hilfswelt) ausführt, ebenso Blöcke von Aufrufern ohne Kontext, auch wenn sie auf einem Worker laufen, der gerade in einem parallelen System (etwa einer anderen Welt am selben Pool) wartet.
 - **Leistung:** Ein Tick eines Schedules nur aus exklusiven Systemen allokiert nicht. Eine parallele Stufe mit mehreren Systemen allokiert je Tick zweimal; `par_blocks*` allokiert je Aufruf abhängig von der Blockanzahl, nie je Entity.
-- *Entwurf WP1.2 — PO-Freigabe ausstehend.* **Konformanz-Suite `Executor`** (§2 Regel 12): `grimoire_ecs::conformance`
+- *Freigegeben (WP1.2).* **Konformanz-Suite `Executor`** (§2 Regel 12): `grimoire_ecs::conformance`
   (Feature `conformance`) prüft für jedes `&dyn Executor`: jede Aufgabe läuft genau einmal, `run` kehrt erst nach
   dem Ende aller Aufgaben zurück, ein Panic einer Aufgabe wird nicht verschluckt, ein verschachtelter Aufruf aus
   einer Aufgabe verklemmt nicht. `SequentialExecutor` und `PermutedExecutor` rufen die Suite in den Tests von
@@ -776,7 +781,7 @@ pub struct QueryBlock<'w, Q>;   // Iterator<Item = Q::Item<'w>>; index(), len(),
 
 ### 7.1 Blöcke über Nicht-Query-Daten (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Additiv; ändert kein bestehendes Verhalten.
+*Freigegeben (WP1.2).* Additiv; ändert kein bestehendes Verhalten.
 
 ```rust
 pub fn slice_block_ranges(len: usize) -> impl ExactSizeIterator<Item = Range<usize>>;
@@ -812,7 +817,7 @@ pub fn run_blocks<B: Send, T: Send>(executor: &dyn Executor, blocks: Vec<B>, f: 
 
 ### 7.2 Beobachter im Schedule: `SystemObserver` (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 ```rust
 pub struct StageInfo { pub index: usize, pub exclusive: bool, pub first_system: usize, pub len: usize }
@@ -877,7 +882,7 @@ pub struct NoopObserver;      // Default, Clone, Copy, Debug; impl SystemObserve
 
 ### 7.3 Lesezugriff auf Snapshots (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 ```rust
 // WorldSnapshot zusätzlich: resource<R: Resource>(&self) -> Option<&R>   // Ressource im Zustand zum Snapshot-Zeitpunkt
@@ -938,7 +943,7 @@ pub enum SimError;                                // #[non_exhaustive], thiserro
 - `derive_rng(seed, tick, stream)` = `SimRng::new(splitmix64(splitmix64(splitmix64(seed) ^ tick) ^ stream))`,
   reine Funktion der Argumente.
 - `derive_block_rng(seed, tick, stream, block)` = `derive_rng(seed, tick, splitmix64(splitmix64(stream) ^ block))`, reine Funktion der Argumente; neue Ableitung innerhalb von `ALGORITHM_VERSION = 1`, keine bestehende Ausgabe ändert sich.
-- **Ströme:** Jedes System, das Zufall zieht, nutzt eine feste, als `const` im definierenden Crate dokumentierte Strom-Nummer; datenparallele Blöcke ziehen ausschließlich aus `derive_block_rng(seed, tick, stream, block.index() as u64)` und schalten den Generator in dichter Reihenfolge fort. Vorläufig (PO-Bestätigung ausstehend): Engine-Crates vergeben Ströme mit gesetztem Bit 63, Spiele Ströme ohne.
+- **Ströme:** Jedes System, das Zufall zieht, nutzt eine feste, als `const` im definierenden Crate dokumentierte Strom-Nummer; datenparallele Blöcke ziehen ausschließlich aus `derive_block_rng(seed, tick, stream, block.index() as u64)` und schalten den Generator in dichter Reihenfolge fort. Engine-Crates vergeben Ströme mit gesetztem Bit 63, Spiele Ströme ohne; die übrigen Bits teilt §8.3 auf (PO-Entscheid V-4).
 - `Simulation::new` legt `Tick(0)`, `SimSeed(seed)` und `TickInput::default()` als Ressourcen an.
   `step`: `Tick`, `SimSeed` und `TickInput` setzen → Schedule ausführen → Tick erhöhen und `Tick` erneut setzen.
   Tick und Seed gehören der Simulation; Änderungen durch Systeme werden überschrieben. Systeme halten
@@ -961,18 +966,18 @@ pub enum SimError;                                // #[non_exhaustive], thiserro
   Windows, Linux und macOS reproduziert; bei Abweichung listet die Meldung alle Checkpoint-Hashes, sodass der
   Vergleich mit einer grünen Plattform den ersten abweichenden Tick zeigt. Erneuerung nur bei bewusster Änderung von Szenario, Hash-Layout oder RNG-/Hash-Algorithmusversion.
 - **`Simulation`:** `new` verwendet den sequentiellen Executor der Welt; die Thread-Anzahl wird über `world_mut().set_executor(..)` gewählt und von `restore` beibehalten. `step` führt den Schedule stufenweise mit diesem Executor aus; die Reihenfolge `Tick`/`SimSeed`/`TickInput` setzen → Schedule → Tick erhöhen bleibt. `state_hash`, `snapshot` und `replay` hängen nicht vom Executor ab. Nach einem Panic in `step` ist die Simulation nur per `restore` weiterverwendbar.
-- **Hash-Gate** (Engine-ADR-0006, Baustein 7): `tests/determinism.rs` führt das P0-Szenario zusätzlich in paralleler Form aus (`steer`, `integrate` exklusiv mit `par_blocks_mut`; `census` und `agitate` als parallele Stufe; `spawn` als strukturelles paralleles System) — mit `SequentialExecutor`, `StageMode::Isolated`, `PermutedExecutor` (Seeds 1 und 2, rückwärts); jeder Checkpoint gleicht dem P0-Lauf und `GOLDEN_FINAL_HASH`. `tests/parallel_determinism.rs` (mehrgliedrige Stufen, verzögerte Schreibzugriffe, Blockzufall, `f32`-Reduktionen, Strukturgrenzen) hat den goldenen Endhash `GOLDEN_PARALLEL_FINAL_HASH`, gemessen mit `StageMode::Isolated` und `SequentialExecutor`, und eine eingefrorene Stufenaufteilung. `grimoire_exec/tests/hash_gate.rs` führt beide Szenarien und das Fassaden-Szenario mit Pools aus 1, 2 und N ≥ 3 Threads aus (`gate_executors`, N = 4 oder `GRIMOIRE_GATE_THREADS`). Alles läuft in der bestehenden Testmatrix auf Windows, Linux und macOS. Die Spiel-Harness folgt mit dem Pin auf den ersten Alpha-Tag. Ohne grünes Gate wird kein Release getaggt, das den parallelen Executor enthält.
+- **Hash-Gate** (Engine-ADR-0006, Baustein 7): `tests/determinism.rs` führt das P0-Szenario zusätzlich in paralleler Form aus (`steer`, `integrate` exklusiv mit `par_blocks_mut`; `census` und `agitate` als parallele Stufe; `spawn` als strukturelles paralleles System) — mit `SequentialExecutor`, `StageMode::Isolated`, `PermutedExecutor` (Seeds 1 und 2, rückwärts); jeder Checkpoint gleicht dem P0-Lauf und `GOLDEN_FINAL_HASH`. `tests/parallel_determinism.rs` (mehrgliedrige Stufen, verzögerte Schreibzugriffe, Blockzufall, `f32`-Reduktionen, Strukturgrenzen) hat den goldenen Endhash `GOLDEN_PARALLEL_FINAL_HASH`, gemessen mit `StageMode::Isolated` und `SequentialExecutor`, und eine eingefrorene Stufenaufteilung. `grimoire_exec/tests/hash_gate.rs` führt beide Szenarien und das Fassaden-Szenario mit Pools aus 1, 2 und N ≥ 3 Threads aus (`gate_executors`, N = 4 oder `GRIMOIRE_GATE_THREADS`). Alles läuft in der bestehenden Testmatrix auf Windows, Linux und macOS. Die Spiel-Harness folgt mit dem Pin auf den ersten Tag mit dem parallelen Executor (`v0.1.1`, P-7). Ohne grünes Gate wird kein Release getaggt, das den parallelen Executor enthält.
 
 ### 8.1 Replay-Binärformat Version 2 (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Additive Erweiterung. `InputLog` samt `MAGIC`, `FORMAT_VERSION = 1`, `to_bytes`/`from_bytes` und `replay` bleiben
 unverändert: `InputLog::from_bytes` liest weiterhin nur Version 1 und liefert für Version-2-Daten
 `SimError::UnsupportedVersion(2)`. Beide Versionen liest `Replay::from_bytes`.
 
 ```rust
-pub const ENGINE_VERSION: &str;                   // = env!("CARGO_PKG_VERSION") von grimoire_sim, z. B. "0.2.0-alpha.2"
+pub const ENGINE_VERSION: &str;                   // = env!("CARGO_PKG_VERSION") von grimoire_sim, z. B. "0.1.2"
 pub const ENGINE_BUILD: BuildHash;                // aus option_env!("GRIMOIRE_BUILD_HASH") zur Übersetzungszeit, sonst BuildHash::UNKNOWN
 pub struct BuildHash(pub [u8; 20]);               // git-Commit (SHA-1); UNKNOWN = alle Bytes 0; is_known(), to_hex() -> String,
                                                   // from_hex(&str) -> Result<Self, SimError>; Copy, Default, Eq, Ord, Hash, Debug
@@ -1060,9 +1065,9 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
 - Executor und Thread-Anzahl stehen nicht im Header, weil Hashes nach Engine-ADR-0006 nicht von ihnen abhängen.
 - **Geltungsbereich P1:** Version 2 entsteht nur aus Headless-Läufen (Harness). Die Frame-Schleife zeichnet weiterhin
   kein `InputLog` auf (Einengung von FR-14, §9).
-- **Version:** Version 2 ist nach der SemVer-Politik eine inkompatible Formatänderung und hebt MINOR (`v0.2.0`).
-  Der CHANGELOG nennt als Migration: „v1 bleibt über `Replay::from_bytes` lesbar; `InputLog::from_bytes` liest nur
-  v1.“
+- **Version:** Replay v2 ist ein neuer Typ neben `InputLog` v1, und v1 bleibt lesbar. Nach der SemVer-Politik in P1
+  (P-7) ist das eine additive Änderung (§2b Stufe A); sie hebt PATCH innerhalb von `0.1.x`. Der CHANGELOG nennt als
+  Hinweis: „v1 bleibt über `Replay::from_bytes` lesbar; `InputLog::from_bytes` liest nur v1.“
 - **Dokumentation und Fixtures:** `docs/formats/replay.md`. Byteweise Golden-Fixtures liegen unter
   `crates/grimoire_sim/tests/fixtures/`: `replay_v1.bin`, `replay_v2_minimal.bin`, `replay_v2_full.bin` mit Swaps
   und Metadaten. Sie dienen auch Verbrauchern außerhalb von Rust als Referenz.
@@ -1077,7 +1082,7 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
 
 ### 8.2 Snapshots: Lesezugriff und geprüfte Wiederherstellung (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 ```rust
 // SimSnapshot zusätzlich: resource<R: Resource>(&self) -> Option<&R>       // delegiert an WorldSnapshot::resource (§7.3)
@@ -1118,7 +1123,7 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
 
 ### 8.3 Vergabe der Zufallsstrom-Nummern (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Präzisiert die vorläufige Konvention unter „Ströme“ (Engine-Ströme mit
+*Freigegeben (WP1.2).* Präzisiert die Konvention unter „Ströme“ (Engine-Ströme mit
 gesetztem Bit 63, Spiel-Ströme ohne) bitkompatibel.
 
 ```rust
@@ -1177,7 +1182,7 @@ pub mod stream {
 
 ### 8.4 Unveränderliche Systemkonfiguration, Beobachter und Content-Epoche (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 ```rust
 // Simulation zusätzlich: step_observed(&mut self, input: TickInput, observer: &mut dyn SystemObserver)
@@ -1318,13 +1323,13 @@ werden soll, spätestens mit dem Rewind-Spike in P2 (PRD-0002 OF-2.3).
 
 ### 9.1 Abhängigkeiten, Features, Re-Exporte und Adapter (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 **Abhängigkeiten (P1):**
 - aus P0: `grimoire_core`, `grimoire_ecs`, `grimoire_platform`, `grimoire_render`, `grimoire_sim`;
 - neu in P1: `grimoire_collide`, `grimoire_sigil`, `grimoire_assets`, `grimoire_debug` als normale Abhängigkeiten;
   `grimoire_debug` ohne Feature `tcp`, außer mit `debug-link`;
-- Zeitpunkt der Kanten (vorläufig, PO-Bestätigung ausstehend): `grimoire_collide` und `grimoire_sigil` werden schon
+- Zeitpunkt der Kanten: `grimoire_collide` und `grimoire_sigil` werden schon
   an M1 mit den Vertrags-Skeletten aus WP1.3 normale Abhängigkeiten der Fassade, weil der Spieler-Proxy
   (`fixtures`, §9.5) `Aabb`, `LayerMask`, `GrazeRing` und `AimTarget` braucht. `grimoire_assets` und
   `grimoire_debug` folgen mit dem Merge ihrer P1-API. Die Integrationsreihenfolge je Meilenstein (M1: Verträge →
@@ -1379,7 +1384,7 @@ Engine-ADR „Crate-Map-Erweiterung P1“.
 
 ### 9.2 API-Ergänzungen (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Alle P0-Signaturen bleiben unverändert.
+*Freigegeben (WP1.2).* Alle P0-Signaturen bleiben unverändert.
 
 ```rust
 pub trait GamePlugin {                                                  // zusätzlich zu P0, nur Default-Methoden (bricht keine Plugins)
@@ -1401,7 +1406,7 @@ pub mod fixtures;            // Spieler-Proxy (§9.5)
 
 pub mod prelude;             // zusätzlich: StageFrame, Camera25D (render, Letzteres ab WP2.2), Collider, CollisionQuery,
                              // LayerMask, Shape (collide), GrazeHits (adapters::sigil_collide) sowie aus sigil: Emitter,
-                             // AimTarget, ClearRequest, ClearFilter, UnitId, SigilConfig (vorläufig, PO-Frage unten);
+                             // AimTarget, ClearRequest, ClearFilter, UnitId, SigilConfig (PO-Entscheid V-8);
                              // alle übrigen Sigil-Typen nur über grimoire::sigil::…;
                              // fixtures nie im Prelude
 pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, debug};
@@ -1417,15 +1422,14 @@ pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, deb
 - `FrameStats` bleibt unverändert (öffentliche Felder, kein `#[non_exhaustive]`); `FrameStats::render` enthält
   `StageStats::base`. Die Zähler des Bullet-Kanals erreichen Plugins über `on_profile` (§9.7).
 - Die Prelude-Ergänzungen prüft der Integrations-PR vor dem Merge auf Namenskollisionen mit bestehenden Spiel-Crates.
-- **PO-Frage (Sigil-Typen im Prelude):** A — sparsame Liste `Emitter`, `AimTarget`, `ClearRequest`, `ClearFilter`,
-  `UnitId`, `SigilConfig` (was ein Spiel zum Aufsetzen und Steuern von Mustern nennt); B — keine Sigil-Typen im
-  Prelude (P1), alles über `grimoire::sigil::…`; C — alle öffentlichen Typen aus §11. Empfehlung: A (vorläufig
-  eingetragen). Die Liste deckt die häufigen Spielbezüge ab und hält die Fläche für Namenskollisionen klein; C
-  vergrößert diese Prüfung, B macht Beispiele und Spielcode länger.
+- **Sigil-Typen im Prelude** (PO-Entscheid V-8): nur die sparsame Liste `Emitter`, `AimTarget`, `ClearRequest`,
+  `ClearFilter`, `UnitId`, `SigilConfig` (was ein Spiel zum Aufsetzen und Steuern von Mustern nennt); alle übrigen
+  Typen aus §11 nur über `grimoire::sigil::…`. Die Liste deckt die häufigen Spielbezüge ab und hält die Fläche für
+  Namenskollisionen klein.
 
 ### 9.3 Hauptschleife (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Ergänzt die Punkte der Hauptschleife; der übrige Wortlaut bleibt.
+*Freigegeben (WP1.2).* Ergänzt die Punkte der Hauptschleife; der übrige Wortlaut bleibt.
 
 - **`init`:** Nach `build` und `window_created` je Plugin richtet die Fassade mit Feature `debug-link` den
   Debug-Link ein (§9.7).
@@ -1467,7 +1471,7 @@ pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, deb
 
 ### 9.4 Mauszielen und Quantisierung (schließt OP-4)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Die Simulation liest nie Kamera-, Zeiger-, Viewport- oder Interpolationszustand. Sie sieht nur die quantisierten
 `i16`-Achsen 2/3 eines `InputFrame`. `quantize_aim` und `sample_aim` liegen in der Fassade
@@ -1505,8 +1509,7 @@ pub fn sample_aim(camera: &Camera25D, cursor: [f32; 2], viewport: [f32; 2], focu
   Damit die Plattformgleichheit auch vor der Quantisierung gilt, nutzen `Camera25D::screen_to_ground` und die
   dafür verwendeten View- und Projektionsgrößen nur Operationen, die Engine-ADR-0004 erlaubt (Grundrechenarten,
   `sqrt`, `grimoire_core::math::dmath`; kein `std`-Trig, kein `mul_add`/`powi`, kein `f32::min`/`max`), obwohl
-  `grimoire_render` keine `clippy.toml` trägt; geprüft im Review und durch den Tabellentest unten (vorläufig,
-  PO-Bestätigung ausstehend).
+  `grimoire_render` keine `clippy.toml` trägt; geprüft im Review und durch den Tabellentest unten.
 - `Camera25D::screen_to_ground(&self, pixel: [f32; 2], viewport: [f32; 2]) -> Option<[f32; 2]>` definiert WP2.2
   (§6) analog zu `Camera2D::screen_to_world`; Bodenkoordinaten: x nach rechts, y vom Betrachter weg, Einheiten der
   Simulation.
@@ -1520,7 +1523,7 @@ pub fn sample_aim(camera: &Camera25D, cursor: [f32; 2], viewport: [f32; 2], focu
 
 ### 9.5 Spieler-Proxy (Feature `fixtures`)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Minimaler, spielneutraler Spieler-Proxy: Folgeziel der Kamera, Ziel der `Aimed`-Bausteine, Zentrum des Graze-Rings
 und Steuerobjekt der Bots „Idle“ und „Zufalls-Dodger“. Er ist die einzige echte Implementierung in WP1 (WP1.3) und
@@ -1603,7 +1606,7 @@ pub mod fixtures {
 
 ### 9.6 Adapter Sigil → Kollision (`grimoire::adapters::sigil_collide`)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 ```rust
 #[non_exhaustive]
@@ -1617,7 +1620,7 @@ pub const BROADPHASE_SYSTEM: &str = "collide.broadphase";
 pub const GRAZE_SYSTEM: &str = "collide.graze";
 ```
 
-- **Lieferung** (vorläufig, PO-Bestätigung ausstehend): Die Ressourcentypen `GrazeProbe` und `GrazeHits` kommen mit
+- **Lieferung:** Die Ressourcentypen `GrazeProbe` und `GrazeHits` kommen mit
   den Vertrags-Skeletten in WP1.3, weil der Spieler-Proxy (§9.5) `GrazeProbe` schreibt. `SigilCollideConfig`,
   `SigilCollidePlugin` und die beiden Systeme folgen in WP11.2.
 
@@ -1650,7 +1653,7 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 
 ### 9.7 Profiler, Stats-Overlay und Debug-Link (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 **Profiler (in jedem Build, PRD-0002 FR-12):**
 
@@ -1658,7 +1661,7 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
   - je Frame die Scopes `sim` (Summe aller `step`), `extract`, `render`, `frame`;
   - je Tick über einen fassadeninternen `SystemObserver`, der die Uhr leiht (`Simulation::step_observed`, §7.2,
     §8.4): je exklusivem System den Lauf, je paralleler Stufe die Aufgabenphase und je Puffer die Anwendung.
-- **Zuordnung zu Subsystemen** (vorläufig): Der Systemname vor dem ersten `.` bestimmt den Scope
+- **Zuordnung zu Subsystemen:** Der Systemname vor dem ersten `.` bestimmt den Scope
   (`sigil.update` → `sigil`, §9.1). Namen ohne Punkt zählen zu `app`. Die Fassade vergibt die `ScopeId`s aus einer
   eigenen Tabelle, geschlüsselt nach diesem Präfix (ebenso für `sim`, `extract`, `render`, `frame`), in Reihenfolge
   des ersten Auftretens, und übergibt das Präfix als Namen an `FrameProfile::record` (§13).
@@ -1701,7 +1704,7 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 
 ### 9.8 InputMap-Preset: Zielachsen 2/3 (Ergänzung P1)
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Gilt ab P1 statt des Satzes „Die Zielachsen 2 und 3 bleiben in P0 0
+*Freigegeben (WP1.2).* Gilt ab P1 statt des Satzes „Die Zielachsen 2 und 3 bleiben in P0 0
 (Mauszielen braucht die Kamera, kommt mit P1).“
 
 Das Preset belegt die Zielachsen 2 und 3 nicht; ohne eigene Bindung liefert `sample` dort 0. Die Hauptschleife
@@ -1722,17 +1725,17 @@ pub fn gate_executors() -> Vec<(String, Arc<dyn Executor>)>;   // Pools mit 1, 2
 - Einzige Thread-Quelle der Simulation (§3); außerhalb der Determinismus-Menge, ohne `clippy.toml`; Abhängigkeiten `grimoire_ecs`, `rayon`, `thiserror`. rayon-Typen erscheinen nicht in der API.
 - `new` baut einen eigenen Pool mit genau `threads` Workern (`grimoire-sim-{i}`), nie den globalen. `run` nutzt `ThreadPool::install` mit `par_iter_mut().with_max_len(1)`; der aufrufende Thread wartet; verschachtelte Aufrufe aus Workern desselben Pools laufen direkt.
 - `gate_executors` ist ein Test-Helfer (Panic bei ungültiger Umgebungsvariable oder Pool-Fehler) für Engine-Gate und Spiel-Harness.
-- *Entwurf WP1.2 — PO-Freigabe ausstehend.* `grimoire_exec/tests/conformance.rs` ruft `grimoire_ecs::conformance`
+- *Freigegeben (WP1.2).* `grimoire_exec/tests/conformance.rs` ruft `grimoire_ecs::conformance`
   (§7, über die Dev-Aktivierung des Features `conformance` der bestehenden Kante) gegen `ThreadPoolExecutor` mit 1,
   2 und N Threads auf.
 
 ## 11. `grimoire_sigil` — Laufzeit v1
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Abhängigkeiten: `grimoire_core`, `grimoire_ecs` (Pool als Ressource, `run_blocks`) und `grimoire_sim`
 (`Simulation`, `derive_block_rng`, `Tick`, `SimSeed`, `stream`, `ContentManifestHash`), festgelegt im Crate-Map-ADR
-(Vorschlag 0008). Das Crate gehört zur Determinismus-Menge (§3). Die Laufzeit lädt nur Binär-Units. Parser,
+(Engine-ADR-0008). Das Crate gehört zur Determinismus-Menge (§3). Die Laufzeit lädt nur Binär-Units. Parser,
 Validator und Compiler liegen in `grimoire_sigilc` (Projekt-ADR-0007, Projekt-ADR-0010-Vorschlag, P-2). Die
 Quelltextsyntax `sigil N` wird getrennt vom Binärformat versioniert (Engine-ADR-0007-Vorschlag).
 
@@ -1796,7 +1799,7 @@ Kopf (Little-Endian, 40 Byte):
 - **`UnitId`** vergibt `sigilc` aus dem kanonischen Content-Pfad der Quelle nach derselben Regel wie
   `AssetId::from_path` (§12, `StableHasher` v1); ergibt die Ableitung 0, meldet `sigilc` einen Fehler. Damit
   bezeichnen Pack-Eintrag, Swap-Nachricht (§13) und Laufzeit eine Unit mit derselben Zahl.
-- **Kanonischer Content-Pfad** (vorläufig, PO-Bestätigung ausstehend): ein `AssetPath` nach §12, relativ zur
+- **Kanonischer Content-Pfad:** ein `AssetPath` nach §12, relativ zur
   Content-Wurzel des Aufrufers, mit der Endung `.sigil`. Er ist byte-gleich mit dem Pfad des Pack-Eintrags und mit
   `unit_path` in `SwapSigilUnit` und `SigilPreview` (§13).
   - `sigilc` (Bibliothek und CLI) erhält diesen Pfad ausdrücklich oder eine Wurzel plus Datei und bildet daraus den
@@ -1846,7 +1849,7 @@ pub enum SigilError;                             // #[non_exhaustive], thiserror
 - `SigilContent` hält die Bibliothek als `Arc`: Snapshots teilen sie, statt sie zu kopieren. Ihr `StableHash` speist
   nur die Epoche (`swaps`, `manifest_hash`), nie Unit-Bytes oder Adressen; die Bytes identifiziert `content_hash`
   über den Manifest-Hash.
-- `SigilLibrary` hält den `Arc<BehaviorRegistry>`, mit dem sie gebaut wurde (vorläufig, PO-Bestätigung ausstehend).
+- `SigilLibrary` hält den `Arc<BehaviorRegistry>`, mit dem sie gebaut wurde.
   Er geht nicht in einen `StableHash` ein; nur `registry_fingerprint()` fließt in den Manifest-Hash (§11.8). So
   erreicht die Fassade die Registry für `replace_unit` über den geladenen Content, ohne eigenen Griff (§9.7, §8.2,
   §8.4).
@@ -1941,7 +1944,7 @@ pub struct ClearRequest { pub filter: ClearFilter }   // Component: Clone, Debug
   Emitter-Index, lokaler Zeit `t − started_at` (für `t < started_at` inaktiv), `origin`, `rotation`, `AimTarget`,
   Seed, Tick und Entity. Das Spiel bewegt Emitter per `CommandBuffer::set` oder `get_mut` und beendet sie per
   Despawn. Zeitangaben in Units sind Ticks; die Einheit `beats` lehnt der Compiler in v1 ab.
-- **Ungültige Emitter-Referenz** (vorläufig, PO-Bestätigung ausstehend): Ein `Emitter`, dessen `unit` nicht in der
+- **Ungültige Emitter-Referenz** (PO-Entscheid V-7): Ein `Emitter`, dessen `unit` nicht in der
   geladenen Bibliothek steht oder dessen `emitter >= unit.emitter_count()` ist, ist in diesem Tick inaktiv. Er
   erzeugt keine Bullets, zieht keine Zufallszahlen und panict nie. Er bleibt in der Welt und wird wieder aktiv,
   sobald ein Swap den Index wieder gültig macht. Das gilt für vom Spiel erzeugte Komponenten ebenso wie nach einem
@@ -2073,15 +2076,13 @@ pub mod stream {                                 // Einträge der Strom-Tabelle 
 - **Hash-Gate:** Ein Szenario mit mehr als drei Pool-Blöcken, Behaviors, Streuung und Clear läuft wie §8 mit
   `SequentialExecutor`, `PermutedExecutor` (Seeds 1 und 2, rückwärts) und in `grimoire_exec/tests/hash_gate.rs` mit
   1, 2 und N Threads; alle Checkpoints sind identisch.
-  - **PO-Frage (Dev-Kanten des Hash-Gates):** `hash_gate.rs` bindet Szenarien anderer Crates per `#[path]` ein und
-    braucht für jede Crate, die eine Szenario-Datei direkt nennt, eine Dev-Kante. Szenarien aus
+  - **Dev-Kanten des Hash-Gates** (PO-Entscheid V-1): `hash_gate.rs` bindet Szenarien anderer Crates per `#[path]`
+    ein und braucht für jede Crate, die eine Szenario-Datei direkt nennt, eine Dev-Kante. Szenarien aus
     `grimoire_sigil/tests` und `grimoire_collide/tests` (§14) nennen `grimoire_sigil::` bzw. `grimoire_collide::`.
-    A — Dev-Kanten `grimoire_exec → grimoire_sigil` und `grimoire_exec → grimoire_collide` (§1; zulässig, weil
-    `grimoire_exec` außerhalb der Determinismus-Menge liegt). B — keine neue Kante; mit `grimoire_exec` geteilte
-    Gate-Szenarien nennen Sigil und Kollision nur über die Fassaden-Re-Exporte `grimoire::sigil` und
-    `grimoire::collide`. Empfehlung: A (in §1 vorläufig eingetragen). Die Szenarien bleiben dann in der eigenen Crate
-    ohne Fassade lauffähig, und die bestehende `#[path]`-Einbindung ändert sich nicht. B verlangte in
-    `grimoire_sigil/tests` eine Dev-Kante zur Fassade, die ihrerseits von `grimoire_sigil` abhängt.
+    Deshalb gelten die Dev-Kanten `grimoire_exec → grimoire_sigil` und `grimoire_exec → grimoire_collide` (§1;
+    zulässig, weil `grimoire_exec` außerhalb der Determinismus-Menge liegt). Die Szenarien bleiben so in der eigenen
+    Crate ohne Fassade lauffähig, und die bestehende `#[path]`-Einbindung ändert sich nicht. Ohne diese Kanten
+    bräuchte `grimoire_sigil/tests` eine Dev-Kante zur Fassade, die ihrerseits von `grimoire_sigil` abhängt.
 
 ### 11.8 Hot-Swap und Content-Epoche
 
@@ -2128,12 +2129,10 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   Bullets und Emitter anderer Units bleiben unberührt. Auch eine byte-identische Unit gilt als Swap. Es gibt keine
   teilweise Anwendung. Ein Swap, der die Emitter-Anzahl einer Unit verringert, ist damit zulässig und hat ein
   definiertes, hashbares Ergebnis.
-- **PO-Frage (verkleinernder Swap, WP5.5/WP8.4):** A — Emitter mit ungültigem Index sind inaktiv und bleiben in der
-  Welt (wie oben); B — `replace_unit` lehnt einen Swap ab, der bestehende `Emitter`-Indizes ungültig macht (neue
-  Variante `SigilError::EmitterOutOfRange { unit, emitter }`), und ändert nichts; C — betroffene Emitter-Entities
-  werden despawnt. Empfehlung: A, weil Live-Editing Emitter-Blöcke entfernen und wieder hinzufügen darf, ohne dass
-  der Editor den Swap scheitern lässt oder Spiel-Entities verschwinden; B blockiert gewöhnliche Bearbeitungen, C
-  greift in Entities des Spiels ein.
+- **Verkleinernder Swap** (PO-Entscheid V-7, WP5.5/WP8.4): Emitter mit ungültigem Index sind inaktiv und bleiben in
+  der Welt (wie oben). `replace_unit` lehnt einen solchen Swap nicht ab und despawnt keine Emitter-Entities. So darf
+  Live-Editing Emitter-Blöcke entfernen und wieder hinzufügen, ohne dass der Editor den Swap scheitern lässt oder
+  Spiel-Entities verschwinden.
 - **Replay v2 (§8.1, WP7.1):** `ReplayHeader::content_manifest` ist `epoch().manifest_hash` direkt nach `install`.
   Jeder `SwapReport` einer aufzeichnenden Sitzung ergibt einen `SwapRecord { tick: effective_tick,
   content_manifest: epoch.manifest_hash }`; mehrere Swaps an derselben Tick-Grenze ergeben einen Eintrag mit dem
@@ -2163,7 +2162,7 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
 
 ## 12. `grimoire_assets` — Pack v1 und `AssetSource`
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Format-Dokumentation: `docs/formats/pack.md` (WP8.3). Dieser Abschnitt ist die verbindliche Kurzfassung. Der
 Manifest-Code wird nach Projekt-ADR-0011 (Vorschlag) aus einer Schema-Quelle erzeugt und muss das hier festgelegte
@@ -2304,11 +2303,9 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
 - `open` liest über `FileSystem::read_limited(path, MAX_PACK_LEN)` (§5; kein `std::fs`, PRD-0002 FR-16). Eine
   größere Datei ergibt `AssetError::TooLarge { path, max: MAX_PACK_LEN }` und wird nie vollständig geladen (§2
   Regel 9). Test mit `MemoryFileSystem`: eine Datei von `MAX_PACK_LEN + 1` Byte liefert `TooLarge`.
-- **PO-Frage (Pack-Größe vor dem Laden, WP8.3):** A — additive bereitgestellte Methode `FileSystem::read_limited`
-  (§5) wie oben; B — §5 bleibt eingefroren, `open` nutzt `FileSystem::read`, prüft `MAX_PACK_LEN` erst nach dem
-  vollständigen Laden und §12 dokumentiert das als Ausnahme von §2 Regel 9. Empfehlung: A, weil nur so die
-  Obergrenze den Speicher schützt; die Änderung bricht keine Implementierung (in Engine- und Spiel-Repo gibt es nur
-  `StdFileSystem` und `MemoryFileSystem`).
+- **Pack-Größe vor dem Laden** (PO-Entscheid V-16, WP8.3): `open` nutzt die additive bereitgestellte Methode
+  `FileSystem::read_limited` (§5) wie oben, weil nur so die Obergrenze den Speicher schützt. Die Änderung bricht
+  keine Implementierung (in Engine- und Spiel-Repo gibt es nur `StdFileSystem` und `MemoryFileSystem`).
 - **`content_hash`** (Standard-Methode, für alle Quellen gleich) = SHA-256(`b"grimoire.content.v1\0"` ‖ Anzahl `u32`
   ‖ je Eintrag in `entries()`-Reihenfolge `id u64`, `kind u16`, `kind_version u32`, `len u64`, `sha256`).
   - Pfade, Compiler und Anwendungsblock gehen nicht ein. Ein `PackReader` und eine `MemorySource` mit gleichem
@@ -2339,7 +2336,7 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
 
 ## 13. `grimoire_debug` — Debug-Protokoll v1, `DebugTransport`, Profiler-Daten
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 Format-Dokumentation: `docs/formats/debug-protocol.md` (WP8.2). Transportdetails (TCP gegen Named Pipe/UDS,
 Token-Ausgabe, Thread-Modell) legt das Engine-ADR „Debug-Link v1“ (WP8.2) fest. Es darf diesen Abschnitt nur per
@@ -2468,7 +2465,7 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
 
 - **Versionierung:**
   - Neue Felder oder eine geänderte Kodierung erhöhen `PROTOCOL_VERSION`.
-  - Für alle Protokollversionen eingefroren (vorläufig, PO-Bestätigung ausstehend): die ID `0x0001` für `Hello`,
+  - Für alle Protokollversionen eingefroren: die ID `0x0001` für `Hello`,
     dessen erstes Nutzlastfeld `protocol_version u16`, `MAX_HELLO_FRAME_LEN` sowie ID und Layout von `Error`
     (`0x0002`). Ein Peer kann so jedes `Hello` einer Version zuordnen und ein `Error(VersionMismatch)` lesen. Das
     übrige `Hello`-Layout ist über Versionen nicht garantiert.
@@ -2477,7 +2474,7 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
   - Eine reservierte ID ergibt `Error(NotSupported)`.
   - `Message::from_frame` liefert für die ID `0x0000`, für freie und reservierte IDs und für den Anwendungsbereich
     `ProtocolError::UnknownMessage(id)`; die Fassade bildet das auf die Antworten unter „Nach dem Handshake“ ab.
-- **Handshake** (Reihenfolge für den ersten Frame einer Verbindung; vorläufig, PO-Bestätigung ausstehend):
+- **Handshake** (Reihenfolge für den ersten Frame einer Verbindung):
   1. Vor dem Handshake nimmt der Transport genau einen Frame an. Ist `len > MAX_HELLO_FRAME_LEN`, schließt er mit
      `Error(TooLarge)`, ohne die Nutzlast zu allokieren.
   2. ID ≠ `0x0001`: `Error(HandshakeRequired)`, schließen.
@@ -2498,12 +2495,13 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
     Transport (TCP: IO-Thread), nicht die Fassade, damit sie auch ohne eintreffende Frames greift. Nach dem
     Handshake gibt es in v1 keine Leerlauf-Frist: Ein Werkzeug darf zwischen zwei Speichervorgängen schweigen.
   - Ein zweiter gleichzeitiger Client erhält `Error(Busy)` und wird geschlossen; der erste bleibt verbunden.
-  - **PO-Frage (Handshake-Reject, WP8.2):** A — harter Reject auf alle drei Felder, auch bei `unknown`;
-    B — nur die Protokollversion weist ab, Engine-Version und Build-Hash werden nur protokolliert (Einengung von
-    WP8.2); C — wie Schritt 7. Empfehlung: C, weil es den harten Reject überall hält, wo er prüfbar ist, und lokale
-    Builds sowie Builds ohne `GRIMOIRE_BUILD_HASH` (§8.1) trotzdem verbinden lässt. Die endgültige Fassung legt das
-    Engine-ADR „Debug-Link v1“ per Vertrags-PR fest.
-- **Nach dem Handshake** (vorläufig, PO-Bestätigung ausstehend): Jede Antwort trägt `in_reply_to = seq` des
+  - **Handshake-Reject** (PO-Entscheid V-13, WP8.2): Es gilt Schritt 7, also Abweisen, wo es prüfbar ist. Eine
+    andere Engine-Version weist immer ab, verschiedene Build-Hashes nur, wenn beide bekannt sind; `unknown` wird mit
+    Warnung angenommen. So bleibt der harte Reject überall, wo er prüfbar ist, und lokale Builds sowie Builds ohne
+    `GRIMOIRE_BUILD_HASH` (§8.1) verbinden sich trotzdem. Weil sich `ENGINE_VERSION` mit jedem Patch-Tag (`0.1.x`,
+    P-7) ändert, müssen Werkzeuge je Tag neu gebaut werden. Die endgültige Fassung legt das Engine-ADR
+    „Debug-Link v1“ per Vertrags-PR fest.
+- **Nach dem Handshake:** Jede Antwort trägt `in_reply_to = seq` des
   auslösenden Frames, und die Verbindung bleibt offen.
   - ID `0x0000`: `Error(Malformed)`.
   - Freie ID: `Error(UnknownMessage)`. Reservierter Bereich oder Anwendungsbereich: `Error(NotSupported)`.
@@ -2557,7 +2555,7 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
     Listener selbst; kein Pfad blockiert unbegrenzt in `accept`, `read` oder `write`.
   - Poll-Intervall, Schreib-Timeout und Handshake-Frist sind die einzigen Zeitgrößen in `grimoire_debug` (Crate ohne
     `clippy.toml`, §1). Sie wirken nur auf den Transport, nie auf Daten, die die Simulation erreichen (§3). Die Werte
-    sind vorläufig (PO-Bestätigung ausstehend); das Engine-ADR „Debug-Link v1“ darf sie per Vertrags-PR ändern.
+    gelten, bis das Engine-ADR „Debug-Link v1“ sie per Vertrags-PR ändert.
 - **Socket-Tests:** Tests mit echten Sockets beginnen mit `if !socket_tests_enabled() { return; }` samt
   Hinweiszeile. Nur die CI setzt `GRIMOIRE_SOCKET_TESTS=1`. Lokal laufen sie erst nach der Firewall-Prüfung in
   Messsitzung 1 (P-4b).
@@ -2590,7 +2588,7 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
   eigene Namenstabelle, die `begin` nicht leert; spätere Aufrufe allokieren nicht. Für eine bekannte `ScopeId` gilt
   der zuerst übergebene Name (`scope_name`). Die Reihenfolge von `scopes()` ist die Reihenfolge der ersten
   Aufzeichnung im Frame. Scope-API, Budgets und CSV/JSON-Export ergänzt WP6.3 additiv.
-  - `to_stats` schlägt nie fehl und kürzt deterministisch (vorläufig, PO-Bestätigung ausstehend): Es behält die
+  - `to_stats` schlägt nie fehl und kürzt deterministisch: Es behält die
     ersten 64 Scopes und die ersten 64 Zähler in Reihenfolge der ersten Aufzeichnung und kürzt jeden Namen an einer
     UTF-8-Zeichengrenze auf höchstens 64 Byte. `Message::Stats(profile.to_stats(&frame)).to_frame(seq)` scheitert
     deshalb nie an `FieldTooLong`.
@@ -2601,9 +2599,9 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
 
 ## 14. `grimoire_collide` — Kollision v0
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
-Umfang nach PO-Entscheid P-3 (Empfehlung A, vorläufig): Formen, Layer-Masken, uniformes Spatial Grid und
+Umfang nach PO-Entscheid P-3 A: Formen, Layer-Masken, uniformes Spatial Grid und
 Graze-Ring-Abfrage als Budget-Nachweis **ohne Gameplay-Wirkung**. Treffer, Graze-Ökonomie (einmal je Bullet,
 Diminishing) und die Parade-Bogen-Abfrage folgen in P2 (PRD-0004 FR-07 Rest, PRD-0005 FR-13). Abhängigkeiten:
 `grimoire_core`, `grimoire_ecs`. Keine Kante zu `grimoire_sim`, `grimoire_sigil` oder `grimoire_render` — Bullets
@@ -2667,7 +2665,7 @@ impl SpatialGrid {
 }
 pub struct BatchHits;            // Clone, Default, Debug; len() -> usize (Anzahl Anfragen), is_empty(), hits(i: usize) -> &[Hit], clear()
 pub enum CollideError;           // #[non_exhaustive], thiserror: InvalidGridConfig(&'static str)
-pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien gültiger Formen (vorläufig)
+pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien gültiger Formen (PO-Entscheid V-18)
 ```
 
 **Semantik:**
@@ -2742,12 +2740,14 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     `MAX_COORD` in gegenüberliegenden Randzellen (der Generator erzeugt nur gültige Formen); `rebuild_par` ist gleich `rebuild`
     mit `SequentialExecutor`, `PermutedExecutor::new(1..=3)` und `reversed()`.
   - Goldener Hash `GOLDEN_QUERY_HASH` über die Treffer einer festen Szene. In `grimoire_exec/tests/hash_gate.rs`
-    folgt dieselbe Szene mit 1, 2 und N Threads (Dev-Kante nach §1, PO-Frage in §11.7).
+    folgt dieselbe Szene mit 1, 2 und N Threads (Dev-Kante nach §1, PO-Entscheid V-1, §11.7).
 - **Bench (WP6.5, PO-Entscheid P-3 A):** In `grimoire_bench` laufen die Szenarien `collide_uniform` und
   `collide_cluster`. Beide haben dieselbe Last: 10.000 Bullet-Kreise, 100 Dummy-Gegner mit `Collider`, je Tick
   `rebuild_par`, `overlapping_batch` der 100 Gegner und eine `graze_ring`-Abfrage. In `collide_cluster` liegen alle
   Bullets in höchstens 4 Zellen um das Graze-Zentrum. Gemessen wird mit 1 und N Threads als Runner-Wert im
-  Ergebnisschema aus §15.1; Budget ≤ 1,5 ms (Gate-Anwendung auf die Cluster-Szene: PO-Frage). Dazu das Beispiel
+  Ergebnisschema aus §15.1; Budget ≤ 1,5 ms. Hartes Gate ist nur
+  `collide_uniform`; `collide_cluster` wird als Trend geführt, und eine Überschreitung ergibt ein Folge-Issue für die
+  P2-Entscheidung über hierarchische oder adaptive Gitter (PO-Entscheid V-17). Dazu das Beispiel
   `collide_query` (Konsole, nur gebaut).
 - **Nicht in v0:** kontinuierliche Kollision — ein Objekt, das sich je Tick weiter als seinen Durchmesser bewegt,
   kann eine Überlappung überspringen. Außerdem nicht enthalten: Strahlabfragen, Parade-Bogen, Trefferantworten,
@@ -2755,7 +2755,7 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
 
 ## 15. `grimoire_bench` — Ergebnis-Schema v1 und Golden-Master-Datei v1
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.*
+*Freigegeben (WP1.2).*
 
 `grimoire_bench` ist keine Simulations-Crate: Sie trägt keine Determinismus-`clippy.toml`, und Wanduhr sowie Threads
 über `grimoire_exec` sind hier erlaubt (§1, §3). Ihre Bibliothek enthält die Schema-Typen für Bench-Ergebnisse
@@ -2768,7 +2768,7 @@ nutzen. Die JSON-Abhängigkeiten (`serde`, `serde_json`) kommen nur hier über `
 kürzester rundreisefähiger Darstellung. Die Regeln gelten auch für Profiler-Export und JSON-Spiegel des
 Debug-Protokolls.
 
-**Größengrenzen und Pfade** (§2 Regel 9; vorläufig, PO-Bestätigung ausstehend): Jeder Leser prüft vor dem Parsen die
+**Größengrenzen und Pfade** (§2 Regel 9): Jeder Leser prüft vor dem Parsen die
 Eingabelänge und danach jede Anzahl und jede freie Textlänge. Werkzeuge, die Dateien lesen, prüfen die Dateigröße vor
 dem Einlesen. Überschreitungen liefern `SchemaError::TooLarge` bzw. `SchemaError::TooManyEntries`, nie einen Panic.
 
@@ -2961,7 +2961,7 @@ pub struct RenewalEntry { pub name: String, pub previous_final_hash: Option<u64>
 
 ## 16. Platzhalter
 
-*Entwurf WP1.2 — PO-Freigabe ausstehend.* Bisher §11; mit den P1-Abschnitten nach hinten verschoben.
+*Freigegeben (WP1.2).* Bisher §11; mit den P1-Abschnitten nach hinten verschoben.
 
 `grimoire_audio` und `grimoire_ui` enthalten in P1 nur ihre Crate-Dokumentation (Audio-Subsystem und Spiel-UI folgen
 in P2). `grimoire_sigil`, `grimoire_assets`, `grimoire_debug` und `grimoire_collide` haben eigene Abschnitte
