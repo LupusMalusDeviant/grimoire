@@ -1,6 +1,6 @@
 # ADR-0006: Paralleler Scheduler mit deterministischer Zusammenführung
 
-- **Status:** Akzeptiert (2026-09-14; PO-Entscheidung per Befragung — freigegeben ist die Umsetzung erst mit dem Hash-Gate aus Baustein 7)
+- **Status:** Akzeptiert (2026-09-14; PO-Entscheidung per Befragung — freigegeben ist die Umsetzung erst mit dem Hash-Gate aus Baustein 7; Hash-Gate erfüllt: Engine-PR-CI 34970030661 grün auf Windows, Linux und macOS, veröffentlicht als `v0.1.1`, Spiel-Gate grün in Spiel-CI 34976845473)
 - **Datum:** 2026-09-14
 - **Autor:** Claude (Ausarbeitung) im Auftrag von Lupus Malus Deviant (PO)
 - **Konsultiert:** Lupus Malus Deviant (PO; sechs Einzelentscheidungen per Befragung am 2026-09-14)

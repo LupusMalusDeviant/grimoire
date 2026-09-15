@@ -4,7 +4,9 @@ Eigenständige 2.5D-Engine in Rust, gebaut from scratch für massenhafte, determ
 Projektil-Simulationen. Erster Konsument ist das Spiel *Fiends n Patrons*; die Engine kennt
 das Spiel nicht und baut, testet und läuft ohne es.
 
-> Status: **Version 0.1.0 — Phase P0 „Fundament“ abgeschlossen.** Fenster, instanzierte Sprites
+> Status: **Version 0.1.1 — paralleler Scheduler (P1, WP1.0).** Engine-ADR-0006 ist umgesetzt: Die Crate
+> `grimoire_exec` verteilt Systeme deterministisch auf Threads; das Hash-Gate mit 1, 2 und N Threads ist auf
+> Windows, Linux und macOS grün. Phase P0 „Fundament“ ist abgeschlossen: Fenster, instanzierte Sprites
 > (ein Draw-Call), eigenes Archetyp-ECS, Fixed-Timestep-Simulation mit goldenem Determinismus-Hash und
 > die Fassade `grimoire` mit `App`, `GamePlugin`, `InputMap` und Hauptschleife stehen. Die CI ist auf
 > Windows, Linux und macOS grün; die Golden-Hashes sind auf allen drei Plattformen identisch
