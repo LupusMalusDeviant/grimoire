@@ -37,6 +37,7 @@ pollster = "1.0.1"
 proptest = "1.11.0"
 raw-window-handle = "0.6.2"
 rayon = "1.12.0"
+sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
 thiserror = "2.0.20"
 wgpu = "30.0.1"
 winit = "0.30.13"
