@@ -5,6 +5,9 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+### Added
+- `grimoire_render`: Render-Vertrag v1 (WP2.2, additiv, Vertragsänderung wartet auf PO-Freigabe V-20): `Camera25D` (Neigung, FOV, Ziel, Look-Ahead-Parameter, `screen_to_ground`/`ground_to_screen` als Strahl-Ebene-Schnitt ohne NaN an Horizont oder bei parallelem Strahl), `MeshInstance` (Mesh-/Material-Handle, Transform, Ebene), `PbrMaterial` (glTF-Metallic-Roughness-kompatibel, optionale Basisfarbe-/Normalen-/ORM-Texturen, `AlphaMode`), `PointLight`, `DirectionalLight` (Key-Light), `AmbientLight` (flach oder Hemisphäre), `BulletLightCap` (PRD-0003 Regel 5 / FR-15). Neues Modul `grimoire_render::stage3d`; `StageFrame`/`StageStats` wachsen additiv; `NullRenderer` validiert und zählt die neuen Kanäle; `grimoire_render` hängt neu (additiv, bereits erlaubte Kante) von `grimoire_core` ab.
+
 ## [0.1.1] - 2026-09-15
 
 Erster P1-Schritt (WP1.0): paralleler Scheduler. Rein additiv, alle P0-Goldens unverändert; nach der
