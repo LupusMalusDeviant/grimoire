@@ -8,7 +8,7 @@ das Spiel nicht und baut, testet und läuft ohne es.
 > (ein Draw-Call), eigenes Archetyp-ECS, Fixed-Timestep-Simulation mit goldenem Determinismus-Hash und
 > die Fassade `grimoire` mit `App`, `GamePlugin`, `InputMap` und Hauptschleife stehen. Die CI ist auf
 > Windows, Linux und macOS grün; die Golden-Hashes sind auf allen drei Plattformen identisch
-> (Engine-ADR-0004 angenommen). Alle Rechte vorbehalten.
+> (Engine-ADR-0004 angenommen).
 
 ## Hello Grimoire
 
@@ -99,3 +99,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Die Toolchain ist über `rust-toolchain.toml` gepinnt und wird von rustup automatisch installiert.
+
+## Lizenz
+
+Copyright (c) 2026 Lupus Malus Deviant. Alle Rechte vorbehalten. Das Repo ist öffentlich einsehbar,
+räumt aber keine Rechte zur Nutzung, Bearbeitung oder Weitergabe ein. Es gilt die Datei
+[LICENSE](LICENSE); die Entscheidung beschreibt
+[Engine-ADR-0009](docs/adr/0009-lizenz-alle-rechte-vorbehalten.md).
