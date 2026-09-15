@@ -2,6 +2,7 @@
 
 use grimoire_core::impl_stable_hash;
 
+use crate::binio::{FRAME_SIZE, Reader, read_frame, write_frame};
 use crate::error::SimError;
 
 /// Number of input slots (players or bots) per tick.
@@ -80,8 +81,6 @@ pub struct InputLog {
 }
 
 const HEADER_SIZE: usize = 32;
-const SLOT_SIZE: usize = 4 * 2 + 4;
-const FRAME_SIZE: usize = MAX_INPUT_SLOTS * SLOT_SIZE;
 
 impl InputLog {
     /// Magic bytes at the start of every encoded log.
@@ -108,12 +107,7 @@ impl InputLog {
         bytes.extend_from_slice(&self.tick_rate_hz.to_le_bytes());
         bytes.extend_from_slice(&(self.frames.len() as u64).to_le_bytes());
         for frame in &self.frames {
-            for slot in &frame.slots {
-                for axis in slot.axes {
-                    bytes.extend_from_slice(&axis.to_le_bytes());
-                }
-                bytes.extend_from_slice(&slot.buttons.to_le_bytes());
-            }
+            write_frame(&mut bytes, frame);
         }
         bytes
     }
@@ -129,7 +123,7 @@ impl InputLog {
     /// [`SimError::UnsupportedVersion`], [`SimError::InvalidTickRate`] for 0 Hz and
     /// [`SimError::FrameDataLength`] when the payload is not exactly `count × 48` bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SimError> {
-        let mut reader = Reader { bytes, offset: 0 };
+        let mut reader = Reader::new(bytes);
         if reader.take::<8>()? != Self::MAGIC {
             return Err(SimError::BadMagic);
         }
@@ -158,44 +152,12 @@ impl InputLog {
         let count = remaining / FRAME_SIZE;
         let mut frames = Vec::with_capacity(count);
         for _ in 0..count {
-            let mut frame = TickInput::default();
-            for slot in &mut frame.slots {
-                for axis in &mut slot.axes {
-                    *axis = i16::from_le_bytes(reader.take()?);
-                }
-                slot.buttons = u32::from_le_bytes(reader.take()?);
-            }
-            frames.push(frame);
+            frames.push(read_frame(&mut reader)?);
         }
         Ok(Self {
             seed,
             tick_rate_hz,
             frames,
         })
-    }
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl Reader<'_> {
-    fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], SimError> {
-        let chunk = self
-            .bytes
-            .get(self.offset..)
-            .and_then(|rest| rest.first_chunk::<N>())
-            .ok_or(SimError::UnexpectedEnd {
-                offset: self.offset,
-                needed: N,
-                available: self.remaining(),
-            })?;
-        self.offset += N;
-        Ok(*chunk)
     }
 }
