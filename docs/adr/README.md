@@ -15,5 +15,6 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 | [0004](0004-deterministische-gleitkommaarithmetik.md) | Deterministische Gleitkommaarithmetik |
 | [0005](0005-grimoire-core-als-blatt-crate.md) | `grimoire_core` als abhängigkeitsfreie Blatt-Crate |
 | [0006](0006-paralleler-scheduler-deterministische-zusammenfuehrung.md) | Paralleler Scheduler mit deterministischer Zusammenführung |
+| [0007](0007-sigil-quelltextsyntax-v1.md) | Sigil-Quelltextsyntax v1 (Vorschlag; Nummer vorläufig bis zum Merge) |
 
 Den aktuellen Status jeder Entscheidung nennt ihre Datei.
