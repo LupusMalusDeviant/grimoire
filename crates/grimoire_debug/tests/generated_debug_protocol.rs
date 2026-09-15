@@ -374,14 +374,121 @@ proptest! {
 // --- Golden byte fixtures ------------------------------------------------------------------
 
 mod golden {
-    //! Byte-for-byte golden fixtures for a handful of messages (contract §13, §2 rule 10), hand
-    //! checked against the field layout in `schema/debug_protocol_v1.gschema` /
-    //! `docs/formats/debug-protocol.md`. Follows the same convention as
-    //! `grimoire_assets`'s `tests/pack_format.rs`: a `regenerate_*` test (run explicitly, never
-    //! part of the normal suite) writes the fixture from its logical content, and every other
-    //! test treats the checked-in file as fixed.
+    //! Byte-for-byte golden fixtures for a handful of messages (contract §13, §2 rule 10).
+    //!
+    //! The source of truth for each fixture is a hand-authored byte-literal constant below
+    //! (`HELLO_BYTES`, `ERROR_BYTES`, `STATS_BYTES`, `SWAP_SIGIL_UNIT_BYTES`), computed by hand,
+    //! field by field, from `schema/debug_protocol_v1.gschema` / contract §13's field tables and
+    //! "Kodierung der Nutzlast" encoding rules — **never** by calling the generated `encode()`.
+    //! Project ADR-0011 ("Negativ") is explicit that these fixtures must stay independent of the
+    //! generator: "die Fixtures dürfen deshalb nie vom Generator selbst erzeugt werden", because
+    //! their whole point is to catch a shared bug in the emitter that would otherwise make the
+    //! generated `encode` and `decode` sides agree with each other while both disagree with the
+    //! contract. A fixture written by running `encode()` on a sample value cannot catch that: it
+    //! only proves `encode`/`decode` are inverses of one another, not that either matches §13.
+    //!
+    //! Each literal is checked two ways: `encode(&sample)` must equal it exactly, and decoding it
+    //! must reproduce `sample`. The checked-in `.bin` files under `tests/fixtures/debug_v1/`
+    //! (used above all so a future C# conformance suite can read the same bytes, project ADR-0011
+    //! §13 row) are written from these literals by `regenerate_golden_fixtures`, which — like the
+    //! literals themselves — no longer touches `encode()` at all.
 
     use super::*;
+
+    /// `sample_hello()`, byte-for-byte (contract §13 `Hello`, little-endian throughout):
+    /// - `protocol_version: u16 = 1` -> `01 00`
+    /// - `role: PeerRole = Tool (0)`, one `u8` -> `00`
+    /// - `engine_version: Str≤64 = "0.1.1"` (5 ASCII bytes) -> `u32` length `05 00 00 00` + bytes
+    /// - `build_hash: Str≤64 = "deadbeef" repeated 4 times` (32 ASCII bytes) -> `u32` length
+    ///   `20 00 00 00` (32) + bytes
+    /// - `token: [u8; 32] = [0xAA; 32]`, no length prefix (fixed-size array)
+    /// - `stats_interval_frames: u16 = 30` -> `1E 00`
+    #[rustfmt::skip]
+    const HELLO_BYTES: &[u8] = &[
+        0x01, 0x00, // protocol_version = 1
+        0x00, // role = Tool
+        0x05, 0x00, 0x00, 0x00, // engine_version: length = 5
+        b'0', b'.', b'1', b'.', b'1', // engine_version = "0.1.1"
+        0x20, 0x00, 0x00, 0x00, // build_hash: length = 32
+        b'd', b'e', b'a', b'd', b'b', b'e', b'e', b'f', // build_hash = "deadbeef" x4...
+        b'd', b'e', b'a', b'd', b'b', b'e', b'e', b'f',
+        b'd', b'e', b'a', b'd', b'b', b'e', b'e', b'f',
+        b'd', b'e', b'a', b'd', b'b', b'e', b'e', b'f',
+        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // token = [0xAA; 32]...
+        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+        0x1E, 0x00, // stats_interval_frames = 30
+    ];
+
+    /// `sample_error_msg()`, byte-for-byte (contract §13 `ErrorMsg`):
+    /// - `code: ErrorCode = VersionMismatch (2)`, `u16` per the catalogue's `ErrorCode` exception
+    ///   -> `02 00`
+    /// - `in_reply_to: u32 = 7` -> `07 00 00 00`
+    /// - `message: Str≤1024 = "protocol version mismatch"` (25 ASCII bytes) -> `u32` length
+    ///   `19 00 00 00` (25) + bytes
+    #[rustfmt::skip]
+    const ERROR_BYTES: &[u8] = &[
+        0x02, 0x00, // code = VersionMismatch (2), u16
+        0x07, 0x00, 0x00, 0x00, // in_reply_to = 7
+        0x19, 0x00, 0x00, 0x00, // message: length = 25
+        b'p', b'r', b'o', b't', b'o', b'c', b'o', b'l', b' ', // "protocol "
+        b'v', b'e', b'r', b's', b'i', b'o', b'n', b' ', // "version "
+        b'm', b'i', b's', b'm', b'a', b't', b'c', b'h', // "mismatch"
+    ];
+
+    /// `sample_stats()`, byte-for-byte (contract §13 `Stats`, `StatsScope`, `StatsCounter`).
+    /// `Stats`'s own scalar fields come first, in field order:
+    /// - `frame: u64 = 100`, `sim_tick: u64 = 100`, `ticks_this_frame: u32 = 1`
+    /// - `alpha: f32 = 0.5` -> bit pattern `0x3F00_0000`, little-endian `00 00 00 3F`
+    /// - `frame_time_ns: u64 = 16_000_000` -> `0x00F4_2400`, little-endian `00 24 F4 00 00 00 00 00`
+    /// - `fps: f32 = 60.0` -> bit pattern `0x4270_0000`, little-endian `00 00 70 42`
+    /// - `dropped_time_ns: u64 = 0`, `content_swaps: u32 = 0`, `content_manifest: u64 = 0`
+    ///
+    /// Then `scopes: Vec≤64<StatsScope>` with one element (`u32` count `1`, then one `StatsScope`
+    /// per field: `scope: u16 = 4`, `name: Str≤64 = "physics"` (7 bytes), `total_ns: u64 =
+    /// 123_456` (`0x1E240`, LE `40 E2 01 00 00 00 00 00`), `calls: u32 = 10`, `budget_ns: u64 =
+    /// 200_000` (`0x30D40`, LE `40 0D 03 00 00 00 00 00`), `estimate: bool = false` -> `00`).
+    ///
+    /// Then `counters: Vec≤64<StatsCounter>` with one element (`u32` count `1`, then one
+    /// `StatsCounter`: `name: Str≤64 = "draw_calls"` (10 bytes), `value: u64 = 42`).
+    #[rustfmt::skip]
+    const STATS_BYTES: &[u8] = &[
+        0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // frame = 100
+        0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sim_tick = 100
+        0x01, 0x00, 0x00, 0x00, // ticks_this_frame = 1
+        0x00, 0x00, 0x00, 0x3F, // alpha = 0.5
+        0x00, 0x24, 0xF4, 0x00, 0x00, 0x00, 0x00, 0x00, // frame_time_ns = 16_000_000
+        0x00, 0x00, 0x70, 0x42, // fps = 60.0
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // dropped_time_ns = 0
+        0x00, 0x00, 0x00, 0x00, // content_swaps = 0
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // content_manifest = 0
+        0x01, 0x00, 0x00, 0x00, // scopes: count = 1
+        0x04, 0x00, // scopes[0].scope = 4
+        0x07, 0x00, 0x00, 0x00, b'p', b'h', b'y', b's', b'i', b'c', b's', // scopes[0].name = "physics"
+        0x40, 0xE2, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, // scopes[0].total_ns = 123_456
+        0x0A, 0x00, 0x00, 0x00, // scopes[0].calls = 10
+        0x40, 0x0D, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, // scopes[0].budget_ns = 200_000
+        0x00, // scopes[0].estimate = false
+        0x01, 0x00, 0x00, 0x00, // counters: count = 1
+        0x0A, 0x00, 0x00, 0x00, // counters[0].name: length = 10
+        b'd', b'r', b'a', b'w', b'_', b'c', b'a', b'l', b'l', b's', // counters[0].name = "draw_calls"
+        0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // counters[0].value = 42
+    ];
+
+    /// `sample_swap_sigil_unit()`, byte-for-byte (contract §13 `SwapSigilUnit`):
+    /// - `unit_path: Str≤255 = "sigils/basic_bolt.sigil"` (23 ASCII bytes) -> `u32` length
+    ///   `17 00 00 00` (23) + bytes
+    /// - `unit_bytes: Bytes≤MAX_UNIT_BYTES = [1, 2, 3, 4]` -> `u32` length `04 00 00 00` + bytes
+    #[rustfmt::skip]
+    const SWAP_SIGIL_UNIT_BYTES: &[u8] = &[
+        0x17, 0x00, 0x00, 0x00, // unit_path: length = 23
+        b's', b'i', b'g', b'i', b'l', b's', b'/', // "sigils/"
+        b'b', b'a', b's', b'i', b'c', b'_', b'b', b'o', b'l', b't', // "basic_bolt"
+        b'.', b's', b'i', b'g', b'i', b'l', // ".sigil"
+        0x04, 0x00, 0x00, 0x00, // unit_bytes: length = 4
+        0x01, 0x02, 0x03, 0x04, // unit_bytes
+    ];
 
     fn fixture_path(name: &str) -> String {
         format!(
@@ -396,14 +503,18 @@ mod golden {
         })
     }
 
+    /// Writes the checked-in `.bin` files from the hand-authored literals above — never from
+    /// `encode()` (see this module's own docs for why that would defeat the fixtures' purpose).
+    /// Run explicitly; not part of the normal suite, and its own output changes nothing this
+    /// module's other tests check, since those compare against the literals directly.
     #[test]
     #[ignore = "regenerates the golden fixtures on disk; run explicitly, not as part of the normal suite"]
     fn regenerate_golden_fixtures() {
         for (name, bytes) in [
-            ("hello", encode(&sample_hello())),
-            ("error", encode(&sample_error_msg())),
-            ("stats", encode(&sample_stats())),
-            ("swap_sigil_unit", encode(&sample_swap_sigil_unit())),
+            ("hello", HELLO_BYTES),
+            ("error", ERROR_BYTES),
+            ("stats", STATS_BYTES),
+            ("swap_sigil_unit", SWAP_SIGIL_UNIT_BYTES),
         ] {
             std::fs::write(fixture_path(name), bytes).expect("write golden fixture");
         }
@@ -431,52 +542,65 @@ mod golden {
     impl_encodable!(Hello, ErrorMsg, Stats, SwapSigilUnit);
 
     #[test]
-    fn hello_fixture_decodes_to_the_expected_value() {
-        let bytes = fixture_bytes("hello");
-        assert_eq!(Hello::decode(&bytes).unwrap(), sample_hello());
+    fn hello_bytes_decode_to_the_expected_value() {
+        assert_eq!(Hello::decode(HELLO_BYTES).unwrap(), sample_hello());
     }
 
     #[test]
-    fn hello_fixture_is_reproduced_byte_for_byte_by_encode() {
-        assert_eq!(encode(&sample_hello()), fixture_bytes("hello"));
+    fn hello_encode_matches_the_hand_written_bytes() {
+        assert_eq!(encode(&sample_hello()), HELLO_BYTES);
     }
 
     #[test]
-    fn error_fixture_decodes_to_the_expected_value() {
-        let bytes = fixture_bytes("error");
-        assert_eq!(ErrorMsg::decode(&bytes).unwrap(), sample_error_msg());
+    fn hello_fixture_file_matches_the_hand_written_bytes() {
+        assert_eq!(fixture_bytes("hello"), HELLO_BYTES);
     }
 
     #[test]
-    fn error_fixture_is_reproduced_byte_for_byte_by_encode() {
-        assert_eq!(encode(&sample_error_msg()), fixture_bytes("error"));
+    fn error_bytes_decode_to_the_expected_value() {
+        assert_eq!(ErrorMsg::decode(ERROR_BYTES).unwrap(), sample_error_msg());
     }
 
     #[test]
-    fn stats_fixture_decodes_to_the_expected_value() {
-        let bytes = fixture_bytes("stats");
-        assert_eq!(Stats::decode(&bytes).unwrap(), sample_stats());
+    fn error_encode_matches_the_hand_written_bytes() {
+        assert_eq!(encode(&sample_error_msg()), ERROR_BYTES);
     }
 
     #[test]
-    fn stats_fixture_is_reproduced_byte_for_byte_by_encode() {
-        assert_eq!(encode(&sample_stats()), fixture_bytes("stats"));
+    fn error_fixture_file_matches_the_hand_written_bytes() {
+        assert_eq!(fixture_bytes("error"), ERROR_BYTES);
     }
 
     #[test]
-    fn swap_sigil_unit_fixture_decodes_to_the_expected_value() {
-        let bytes = fixture_bytes("swap_sigil_unit");
+    fn stats_bytes_decode_to_the_expected_value() {
+        assert_eq!(Stats::decode(STATS_BYTES).unwrap(), sample_stats());
+    }
+
+    #[test]
+    fn stats_encode_matches_the_hand_written_bytes() {
+        assert_eq!(encode(&sample_stats()), STATS_BYTES);
+    }
+
+    #[test]
+    fn stats_fixture_file_matches_the_hand_written_bytes() {
+        assert_eq!(fixture_bytes("stats"), STATS_BYTES);
+    }
+
+    #[test]
+    fn swap_sigil_unit_bytes_decode_to_the_expected_value() {
         assert_eq!(
-            SwapSigilUnit::decode(&bytes).unwrap(),
+            SwapSigilUnit::decode(SWAP_SIGIL_UNIT_BYTES).unwrap(),
             sample_swap_sigil_unit()
         );
     }
 
     #[test]
-    fn swap_sigil_unit_fixture_is_reproduced_byte_for_byte_by_encode() {
-        assert_eq!(
-            encode(&sample_swap_sigil_unit()),
-            fixture_bytes("swap_sigil_unit")
-        );
+    fn swap_sigil_unit_encode_matches_the_hand_written_bytes() {
+        assert_eq!(encode(&sample_swap_sigil_unit()), SWAP_SIGIL_UNIT_BYTES);
+    }
+
+    #[test]
+    fn swap_sigil_unit_fixture_file_matches_the_hand_written_bytes() {
+        assert_eq!(fixture_bytes("swap_sigil_unit"), SWAP_SIGIL_UNIT_BYTES);
     }
 }
