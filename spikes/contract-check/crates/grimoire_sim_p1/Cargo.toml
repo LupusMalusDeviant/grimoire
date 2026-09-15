@@ -1,0 +1,19 @@
+[package]
+name = "grimoire_sim_p1"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Expected compile error: a stream constant with owner 0 (claim "im const-Kontext ein Übersetzungsfehler").
+claim-const-panic = []
+
+[dependencies]
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+grimoire_ecs_p1.workspace = true
+grimoire_sim.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

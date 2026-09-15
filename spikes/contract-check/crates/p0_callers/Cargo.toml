@@ -1,0 +1,30 @@
+[package]
+name = "p0_callers"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Snippets that must keep failing: each documents a boundary the contract sets on purpose.
+# StageInfo is an output-only type without a constructor (§2 rule 13 exemption).
+expect-fail-stage-info = []
+# StageFrame has no camera field before WP2.2 (§9.2).
+expect-fail-camera-field = ["grimoire_p1/wp2-2-camera"]
+
+[dependencies]
+grimoire.workspace = true
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+grimoire_ecs_p1.workspace = true
+grimoire_sim.workspace = true
+grimoire_sim_p1.workspace = true
+grimoire_platform.workspace = true
+grimoire_platform_p1.workspace = true
+grimoire_render.workspace = true
+grimoire_render_p1.workspace = true
+grimoire_p1.workspace = true
+grimoire_collide.workspace = true
+grimoire_assets.workspace = true
+grimoire_debug.workspace = true
+grimoire_bench.workspace = true
+grimoire_sigil.workspace = true

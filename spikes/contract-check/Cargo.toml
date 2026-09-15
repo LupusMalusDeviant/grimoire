@@ -1,0 +1,43 @@
+# Contract compile check: compiles the rust blocks of docs/architektur/crate-vertraege.md as stubs.
+# Standalone workspace, not a member of the root workspace; validates signatures only (see README.md).
+# *_p1 crates hold P1 additions to existing crates; they depend on the real crates by path.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace.dependencies]
+grimoire = { path = "../../crates/grimoire" }
+grimoire_core = { path = "../../crates/grimoire_core" }
+grimoire_ecs = { path = "../../crates/grimoire_ecs" }
+grimoire_exec = { path = "../../crates/grimoire_exec" }
+grimoire_platform = { path = "../../crates/grimoire_platform" }
+grimoire_render = { path = "../../crates/grimoire_render" }
+grimoire_sim = { path = "../../crates/grimoire_sim" }
+grimoire_ecs_p1 = { path = "crates/grimoire_ecs_p1" }
+grimoire_sim_p1 = { path = "crates/grimoire_sim_p1" }
+grimoire_render_p1 = { path = "crates/grimoire_render_p1" }
+grimoire_platform_p1 = { path = "crates/grimoire_platform_p1" }
+grimoire_p1 = { path = "crates/grimoire_p1" }
+grimoire_collide = { path = "crates/grimoire_collide" }
+grimoire_sigil = { path = "crates/grimoire_sigil" }
+grimoire_assets = { path = "crates/grimoire_assets" }
+grimoire_debug = { path = "crates/grimoire_debug" }
+grimoire_sigilc = { path = "crates/grimoire_sigilc" }
+grimoire_link = { path = "crates/grimoire_link" }
+grimoire_bench = { path = "crates/grimoire_bench" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+thiserror = "2.0.20"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
