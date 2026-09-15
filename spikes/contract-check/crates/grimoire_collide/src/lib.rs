@@ -444,8 +444,11 @@ pub const MAX_COORD: f32 = 1.0e9;
 pub mod conformance {
     use super::{CollisionQuery, GridItem};
 
-    pub fn collision_query<Q: CollisionQuery>(make: impl Fn(&[GridItem]) -> Q) {
-        let _ = make;
+    pub fn collision_query<'a, Q: CollisionQuery>(
+        items: &'a [GridItem],
+        make: impl Fn(&'a [GridItem]) -> Q,
+    ) {
+        let _ = (items, make);
         unimplemented!()
     }
 }

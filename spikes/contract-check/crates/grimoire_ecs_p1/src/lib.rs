@@ -13,7 +13,7 @@ pub fn slice_block_ranges(len: usize) -> impl ExactSizeIterator<Item = Range<usi
     let count = len.div_ceil(QUERY_BLOCK_SIZE);
     (0..count).map(move |index| {
         let start = index * QUERY_BLOCK_SIZE;
-        start..(start + QUERY_BLOCK_SIZE).min(len)
+        start..start + (len - start).min(QUERY_BLOCK_SIZE)
     })
 }
 

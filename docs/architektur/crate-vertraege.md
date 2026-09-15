@@ -1779,7 +1779,9 @@ Kopf (Little-Endian, 40 Byte):
 **Semantik:**
 - **Nutzlast:** `section_count: u32`, dann je Abschnitt 24 Byte (`kind: u32`, `reserved: u32 = 0`, `offset: u64`
   relativ zum Nutzlastbeginn, `len: u64`). Die Abschnitte stehen aufsteigend nach `kind` und `offset`, überlappen
-  nicht und liegen vollständig in der Nutzlast. Abschnittsarten in v1: 1 `BulletTypes` (Pflicht), 2 `Programs`
+  nicht, liegen vollständig in der Nutzlast und beginnen (mit geprüfter Arithmetik) nicht vor dem Ende der
+  Abschnittstabelle selbst, also bei `offset >= 4 + section_count * 24`; sonst `SectionLayout`. Abschnittsarten in
+  v1: 1 `BulletTypes` (Pflicht), 2 `Programs`
   (Bausteine und Modifikatorstapel), 3 `Emitters` (Pflicht), 4 `Transforms`, 5 `Curves`, 6 `BehaviorRefs` und
   7 `Names` (nur Diagnose, gehasht, ohne Laufzeitwirkung). Eine unbekannte Art ergibt `UnknownSection`; neue Arten
   heben `FORMAT_VERSION`. Das innere Layout jeder Art beschreibt `docs/formats/sigil.md` (WP4.1/WP4.2, P-9 A) unter
@@ -2435,7 +2437,7 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
   - `Bytes` = `u32`-Länge + Bytes
   - `Vec<T>` = `u32`-Anzahl mit Höchstwert je Feld
   - `Option<T>` = `u8`-Tag + Wert
-  - Enums als `u8`
+  - Enums als `u8`, außer explizit anders angegeben: `ErrorCode` im Nachrichtenkatalog steht als `u16`
   - Keine Rest-Bytes (`TrailingBytes`).
 - JSON-Spiegel (Werkzeuge, Logs) folgen §2 Regel 11 (`u64` als 16 kleine Hexziffern, nie als JSON-Zahl).
 
@@ -2518,7 +2520,9 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
   - Die aus `unit_path` abgeleitete `AssetId` (§12) muss gleich der `UnitId` im Kopf der Unit sein; sonst folgt
     `SwapAck` mit Status 1.
   - Mehrere Swaps derselben Unit vor einer Tick-Grenze: Nur der letzte wird angewendet, die früheren erhalten
-    `SwapAck` mit Status 2.
+    `SwapAck` mit Status 2. Danach wird die Warteschlange in Empfangsreihenfolge angewendet (verschiedene Units
+    also in der Reihenfolge ihrer jeweils letzten Swap-Nachricht): Das ist Vertragsbestandteil, weil die Reihenfolge
+    von `replace_unit`-Aufrufen den `state_hash` beeinflusst (§11.8).
   - `SwapAck` wird nach der Anwendung gesendet. Ein Decoder- oder Validierungsfehler ergibt Status 1 mit Grund, der
     Zustand bleibt dann unverändert.
 - **`SigilPreview`:** In P1 antwortet die Engine mit `Error(NotSupported)`. Die Editor-Vorschau nutzt
@@ -2728,8 +2732,9 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     (anders als `QUERY_BLOCK_SIZE` in §7): Eine Änderung erneuert keine Goldens.
   - Blockaufgaben laufen über `grimoire_ecs::run_blocks` (§7.1); bei höchstens einem Block wird der Executor nicht
     aufgerufen.
-  - Panics wie in §7: Nach dem Ende aller Aufgaben wird der Panic mit dem kleinsten Blockindex weitergereicht. Das
-    Gitter ist danach leer, `out` geleert.
+  - Panics wie in §7: Nach dem Ende aller Aufgaben wird der Panic mit dem kleinsten Blockindex weitergereicht. Bei
+    `rebuild_par` ist das Gitter danach leer. Bei `overlapping_batch` (nur `&self`, kann das Gitter nicht ändern)
+    bleibt das Gitter unverändert, `out` wird geleert.
 - **Leistung:** `overlapping` und `graze_ring` allokieren nicht, sobald `out` ausreichend Kapazität hat; `rebuild`
   allokiert nach dem Einschwingen nicht. `BatchHits` behält seine Kapazität; `overlapping_batch` darf je Aufruf
   abhängig von der Blockanzahl allokieren, nie je Treffer.

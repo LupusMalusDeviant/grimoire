@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grimoire_core",
  "grimoire_ecs",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libm",
 ]
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_ecs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grimoire_core",
  "thiserror 2.0.20",
@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_exec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grimoire_ecs",
  "rayon",
@@ -641,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_gpu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grimoire_platform",
  "log",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "raw-window-handle",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "grimoire_gpu",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_sim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grimoire_core",
  "grimoire_ecs",
