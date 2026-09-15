@@ -273,6 +273,39 @@ fn exclusive_systems_are_not_checked() {
     schedule.run(&mut world);
 }
 
+/// An exclusive system is not checked even when a parallel system runs its schedule on a scratch
+/// world: the outer system's context must not leak into the nested schedule or its blocks.
+#[test]
+fn exclusive_systems_nested_in_a_parallel_system_are_not_checked() {
+    let mut world = world();
+    world.set_executor(Arc::new(PermutedExecutor::reversed()));
+    let nested = |_: &World, _: &mut CommandBuffer| {
+        let mut scratch = World::new();
+        scratch.set_executor(Arc::new(PermutedExecutor::new(3)));
+        scratch.insert_resource(Score { value: 7 });
+        for i in 0..(QUERY_BLOCK_SIZE + 1) {
+            scratch.spawn((Vel { x: i as f32 },));
+        }
+        let mut inner = Schedule::new();
+        inner.add_system(system_fn("inner", |scratch| {
+            assert_eq!(
+                scratch.resource::<Score>().map(|score| score.value),
+                Some(7)
+            );
+            let _ = scratch.query::<&Vel>().count();
+            let blocks = scratch.par_blocks::<&Vel, _>(|block| block.len());
+            assert_eq!(blocks.iter().sum::<usize>(), QUERY_BLOCK_SIZE + 1);
+            let _ = scratch.snapshot();
+        }));
+        inner.run(&mut scratch);
+    };
+    let mut schedule = Schedule::new();
+    schedule
+        .add_parallel_system(parallel_system_fn("outer", Access::new(), nested))
+        .add_parallel_system(parallel_system_fn("second", Access::new(), nested));
+    schedule.run(&mut world);
+}
+
 #[test]
 fn declared_and_undeclarable_access_passes() {
     let mut world = world();
