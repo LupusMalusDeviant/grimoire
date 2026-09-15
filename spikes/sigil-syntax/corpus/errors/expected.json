@@ -1,0 +1,294 @@
+[
+  {
+    "id": "e01",
+    "slug": "key-typo",
+    "title_de": "Tippfehler im Schlüssel",
+    "base_pattern": "01-ring-burst",
+    "ron": {
+      "file": "errors/e01-key-typo.ron",
+      "phase": "schema",
+      "line": 34,
+      "column": 17,
+      "token": "cuont",
+      "node_path": "emitters.burst.block.cuont",
+      "cause": "Unknown field `cuont` in block `Ring`.",
+      "fix_hint": "Did you mean `count`? Allowed fields of `Ring`: count, start.",
+      "note": "serde with deny_unknown_fields names the field and the allowed ones; which position ron attaches (start or end of the identifier) is to be measured."
+    },
+    "sigil": {
+      "file": "errors/e01-key-typo.sigil",
+      "phase": "schema",
+      "line": 30,
+      "column": 5,
+      "token": "cuont",
+      "node_path": "emitters.burst.block.cuont",
+      "cause": "Unknown field `cuont` in block `ring`.",
+      "fix_hint": "Did you mean `count`? Allowed fields of `ring`: count, start."
+    }
+  },
+  {
+    "id": "e02",
+    "slug": "wrong-type",
+    "title_de": "Falscher Typ (Gleitkomma statt Ganzzahl)",
+    "base_pattern": "02-aimed-stream",
+    "ron": {
+      "file": "errors/e02-wrong-type.ron",
+      "phase": "schema",
+      "line": 43,
+      "column": 24,
+      "token": "3.5",
+      "node_path": "emitters.stream.block.count",
+      "cause": "Field `count` expects an integer, found the float `3.5`.",
+      "fix_hint": "Use a whole number of bullets, e.g. `count: 3,`.",
+      "note": "serde reports `invalid type: floating point, expected u16` without the field name; the node path needs a span-tracking layer on top of ron."
+    },
+    "sigil": {
+      "file": "errors/e02-wrong-type.sigil",
+      "phase": "schema",
+      "line": 39,
+      "column": 13,
+      "token": "3.5",
+      "node_path": "emitters.stream.block.count",
+      "cause": "Field `count` expects an integer, found the float `3.5`.",
+      "fix_hint": "Use a whole number of bullets, e.g. `count = 3`."
+    }
+  },
+  {
+    "id": "e03",
+    "slug": "missing-field",
+    "title_de": "Fehlendes Pflichtfeld",
+    "base_pattern": "04-mirrored-spiral",
+    "ron": {
+      "file": "errors/e03-missing-field.ron",
+      "phase": "schema",
+      "line": 27,
+      "column": 19,
+      "token": "\"bloom\"",
+      "node_path": "emitters.bloom.speed",
+      "cause": "Emitter `bloom` is missing the required field `speed`.",
+      "fix_hint": "Add `speed: UnitsPerTick(<value>),`, e.g. `speed: UnitsPerTick(0.09),`.",
+      "note": "serde raises `missing field` only when the struct ends, so ron most likely points at the closing parenthesis of the emitter instead of its name (to be measured)."
+    },
+    "sigil": {
+      "file": "errors/e03-missing-field.sigil",
+      "phase": "schema",
+      "line": 23,
+      "column": 9,
+      "token": "bloom",
+      "node_path": "emitters.bloom.speed",
+      "cause": "Emitter `bloom` is missing the required field `speed`.",
+      "fix_hint": "Add a line `speed = <value>u/t`, e.g. `speed = 0.09u/t`."
+    }
+  },
+  {
+    "id": "e04",
+    "slug": "unbalanced-bracket",
+    "title_de": "Nicht geschlossene Klammer",
+    "base_pattern": "03-subemitter-cascade",
+    "ron": {
+      "file": "errors/e04-unbalanced-bracket.ron",
+      "phase": "parse",
+      "line": 33,
+      "column": 9,
+      "token": "Bullet",
+      "node_path": "bullets.seed",
+      "related": {
+        "label": "opening parenthesis",
+        "line": 18,
+        "column": 15,
+        "token": "("
+      },
+      "cause": "The parenthesis of `Bullet(` opened at line 18 is not closed before the next `Bullet(`.",
+      "fix_hint": "Insert `),` before this line.",
+      "note": "ron has no item keywords to resynchronise on: it reads `Bullet` as a field name of the seed struct, so the likely raw message is `unknown field Bullet` (deny_unknown_fields) or `expected ':'`; the opener line needs extra bookkeeping (to be measured)."
+    },
+    "sigil": {
+      "file": "errors/e04-unbalanced-bracket.sigil",
+      "phase": "parse",
+      "line": 30,
+      "column": 1,
+      "token": "bullet",
+      "node_path": "bullets.seed",
+      "related": {
+        "label": "opening brace",
+        "line": 17,
+        "column": 13,
+        "token": "{"
+      },
+      "cause": "`bullet` cannot start a member inside `bullet seed`; the `{` opened at line 17 is not closed.",
+      "fix_hint": "Insert `}` on its own line before this line."
+    }
+  },
+  {
+    "id": "e05",
+    "slug": "out-of-range",
+    "title_de": "Wert außerhalb des Bereichs",
+    "base_pattern": "01-ring-burst",
+    "ron": {
+      "file": "errors/e05-out-of-range.ron",
+      "phase": "validate",
+      "line": 34,
+      "column": 24,
+      "token": "0",
+      "node_path": "emitters.burst.block.count",
+      "cause": "`count` of block `Ring` must be in 1..=512, found 0; a ring of 0 bullets has no defined angle step.",
+      "fix_hint": "Use at least 1 bullet, e.g. `count: 24,`."
+    },
+    "sigil": {
+      "file": "errors/e05-out-of-range.sigil",
+      "phase": "validate",
+      "line": 30,
+      "column": 13,
+      "token": "0",
+      "node_path": "emitters.burst.block.count",
+      "cause": "`count` of block `ring` must be in 1..=512, found 0; a ring of 0 bullets has no defined angle step.",
+      "fix_hint": "Use at least 1 bullet, e.g. `count = 24`."
+    }
+  },
+  {
+    "id": "e06",
+    "slug": "unknown-behaviour",
+    "title_de": "Unbekannte Behaviour-ID",
+    "base_pattern": "05-wave-line-composite",
+    "ron": {
+      "file": "errors/e06-unknown-behaviour.ron",
+      "phase": "validate",
+      "line": 43,
+      "column": 24,
+      "token": "\"seek_target_weak2\"",
+      "node_path": "bullets.satellite.behaviour",
+      "cause": "Unknown behaviour `seek_target_weak2`; registered behaviours: orbit_parent, seek_target_weak.",
+      "fix_hint": "Did you mean `seek_target_weak`? New behaviours must be registered in Rust first (FR-10)."
+    },
+    "sigil": {
+      "file": "errors/e06-unknown-behaviour.sigil",
+      "phase": "validate",
+      "line": 38,
+      "column": 15,
+      "token": "seek_target_weak2",
+      "node_path": "bullets.satellite.behaviour",
+      "cause": "Unknown behaviour `seek_target_weak2`; registered behaviours: orbit_parent, seek_target_weak.",
+      "fix_hint": "Did you mean `seek_target_weak`? New behaviours must be registered in Rust first (FR-10)."
+    }
+  },
+  {
+    "id": "e07",
+    "slug": "wrong-unit",
+    "title_de": "Falsche Einheit (Ticks statt Grad)",
+    "base_pattern": "02-aimed-stream",
+    "ron": {
+      "file": "errors/e07-wrong-unit.ron",
+      "phase": "schema",
+      "line": 44,
+      "column": 25,
+      "token": "Ticks",
+      "node_path": "emitters.stream.block.spread",
+      "cause": "Field `spread` expects `Deg(..)`, found `Ticks(..)`.",
+      "fix_hint": "Write `spread: Deg(12.0),`.",
+      "note": "Only detectable if the ron version in use checks newtype struct names against the expected type; otherwise `Ticks(12)` silently deserialises as `Deg(12.0)` and no diagnostic appears at all (to be measured)."
+    },
+    "sigil": {
+      "file": "errors/e07-wrong-unit.sigil",
+      "phase": "schema",
+      "line": 40,
+      "column": 14,
+      "token": "12t",
+      "node_path": "emitters.stream.block.spread",
+      "cause": "Field `spread` expects an angle in `deg`, found the tick quantity `12t`.",
+      "fix_hint": "Write `spread = 12deg`."
+    }
+  },
+  {
+    "id": "e08",
+    "slug": "duplicate-emitter",
+    "title_de": "Doppelter Emitter-Name",
+    "base_pattern": "05-wave-line-composite",
+    "ron": {
+      "file": "errors/e08-duplicate-emitter.ron",
+      "phase": "validate",
+      "line": 66,
+      "column": 19,
+      "token": "\"tide\"",
+      "node_path": "emitters[1].name",
+      "related": {
+        "label": "first definition",
+        "line": 48,
+        "column": 19,
+        "token": "\"tide\""
+      },
+      "cause": "Duplicate emitter name `tide`; first defined at line 48.",
+      "fix_hint": "Rename one of the emitters; emitter names must be unique within a unit.",
+      "note": "Found by the validator because emitters are a list; a RON map keyed by name would silently keep only the last entry when deserialised into a BTreeMap."
+    },
+    "sigil": {
+      "file": "errors/e08-duplicate-emitter.sigil",
+      "phase": "validate",
+      "line": 57,
+      "column": 9,
+      "token": "tide",
+      "node_path": "emitters[1].name",
+      "related": {
+        "label": "first definition",
+        "line": 41,
+        "column": 9,
+        "token": "tide"
+      },
+      "cause": "Duplicate emitter name `tide`; first defined at line 41.",
+      "fix_hint": "Rename one of the emitters; emitter names must be unique within a unit."
+    }
+  },
+  {
+    "id": "e09",
+    "slug": "comma-misuse",
+    "title_de": "Komma-Fehler (doppeltes Komma in Liste)",
+    "base_pattern": "04-mirrored-spiral",
+    "ron": {
+      "file": "errors/e09-comma-misuse.ron",
+      "phase": "parse",
+      "line": 49,
+      "column": 51,
+      "token": ",",
+      "node_path": "emitters.bloom.modifiers[2].keys",
+      "cause": "Unexpected `,` in list `keys`: expected a value or `]`.",
+      "fix_hint": "Remove the extra comma; a single trailing comma is allowed.",
+      "note": "Trailing commas are legal in RON; only the doubled comma is an error."
+    },
+    "sigil": {
+      "file": "errors/e09-comma-misuse.sigil",
+      "phase": "parse",
+      "line": 44,
+      "column": 29,
+      "token": ",",
+      "node_path": "emitters.bloom.modifiers[2].keys",
+      "cause": "Unexpected `,` in list `keys`: expected a value or `]`.",
+      "fix_hint": "Remove the extra comma; a single trailing comma is allowed."
+    }
+  },
+  {
+    "id": "e10",
+    "slug": "wrong-version",
+    "title_de": "Falscher Versions-Header",
+    "base_pattern": "03-subemitter-cascade",
+    "ron": {
+      "file": "errors/e10-wrong-version.ron",
+      "phase": "validate",
+      "line": 10,
+      "column": 14,
+      "token": "2",
+      "node_path": "version",
+      "cause": "Unsupported Sigil version 2; this compiler reads version 1.",
+      "fix_hint": "Set `version: 1,` or migrate the file with a newer `sigilc`.",
+      "note": "The version is an ordinary field: the file is deserialised with the v1 schema before the version can be checked, so a real v2 file would first produce schema errors for its new fields unless the compiler pre-scans `version:`."
+    },
+    "sigil": {
+      "file": "errors/e10-wrong-version.sigil",
+      "phase": "parse",
+      "line": 1,
+      "column": 7,
+      "token": "2",
+      "node_path": "version",
+      "cause": "Unsupported Sigil version 2; this compiler reads `sigil 1`.",
+      "fix_hint": "Change the header to `sigil 1` or migrate the file with a newer `sigilc`."
+    }
+  }
+]

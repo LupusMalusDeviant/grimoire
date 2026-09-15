@@ -1,0 +1,58 @@
+#![enable(implicit_some)]
+// 04-mirrored-spiral: one spiral arm, mirrored into three counter-rotating pairs, whose
+// bullets breathe with a tempo curve (fast launch, near stop, hold, release).
+// Covers: block spiral, modifiers rotate + mirror (n-fold) + speed_curve (4 keyframes,
+//         smooth interpolation), flag grazeable, stacked modifiers in written order.
+Sigil(
+    version: 1,
+    meta: Meta(
+        name: "Mirrored Spiral",
+        difficulty: ["hard", "curtain"],
+        density: 540, // 90 shots x 2 mirrored x 3 folds
+    ),
+    bullets: [
+        // Petal: the only bullet type of this unit.
+        Bullet(
+            name: "petal",
+            silhouette: "petal",
+            palette: "enemy.rose",
+            glow: 0.5,
+            radius: Units(0.18),
+            damage: 1,
+            flags: [Grazeable],
+        ),
+    ],
+    emitters: [
+        Emitter(
+            name: "bloom",
+            bullet: "petal",
+            repeat: Times(90),
+            interval: Ticks(2),
+            speed: UnitsPerTick(0.09),
+            block: Spiral(
+                arms: 1,
+                step: Deg(11.0), // angle added per shot
+                start: Deg(90.0),
+            ),
+            modifiers: [
+                Rotate(
+                    rate: DegPerTick(0.5), // slow drift of the whole figure on top of the spiral step
+                ),
+                Mirror(
+                    axis: Deg(90.0), // mirror across the vertical axis: counter-rotating twin arm
+                    folds: 3, // repeat the mirrored pair three times around the circle (6 arms)
+                ),
+                SpeedCurve(
+                    // Tempo curve over bullet age: fast launch, near stop, hold, release.
+                    keys: [
+                        (at: Ticks(0), mul: 1.6),
+                        (at: Ticks(20), mul: 0.3),
+                        (at: Ticks(60), mul: 0.3),
+                        (at: Ticks(90), mul: 1.2),
+                    ],
+                    interp: Smooth,
+                ),
+            ],
+        ),
+    ],
+)

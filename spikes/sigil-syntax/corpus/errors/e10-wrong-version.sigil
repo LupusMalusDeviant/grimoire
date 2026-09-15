@@ -1,0 +1,125 @@
+sigil 2
+// 03-subemitter-cascade: a ring of seeds turns into fan emitters; their shards change type
+// after a distance, become emitters again, and the last generation bursts.
+// Covers: block ring, block fan, transforms become_emitter + change_type + burst, triggers
+//         time + distance, emitter role sub, cascade depth 3 (the v1 maximum), despawn_vfx.
+// Cascade chain (depth counts transforms that create bullets or emitters):
+//   seed -become_emitter-> bloom (1) fires shard -change_type-> ember
+//   ember -become_emitter-> spark (2) fires mote -burst-> dust (3)
+
+meta {
+  name = "Seed Cascade"
+  difficulty = [hard, cascade]
+  density = 300 // 6 seeds x 5 shards x 3 motes x 3 dust = 270, rounded up
+}
+
+// Generation 0: slow seed; smashing it early prevents the whole cascade.
+bullet seed {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.7
+  radius = 0.35u
+  damage = 2
+  flags = [smashable, grazeable]
+  transform become_emitter {
+    when = time 50t
+    emitter = bloom
+  }
+}
+
+// Generation 1: shard fired by bloom; turns into an ember after 4 units of travel.
+bullet shard {
+  silhouette = shard
+  palette = enemy.amber
+  glow = 0.5
+  radius = 0.15u
+  damage = 1
+  flags = [grazeable]
+  transform change_type {
+    when = distance 4u
+    to = ember
+  }
+}
+
+// Ember: keeps the shard's trajectory, new silhouette so the change stays readable.
+bullet ember {
+  silhouette = diamond
+  palette = enemy.amber
+  glow = 0.9
+  radius = 0.15u
+  damage = 1
+  flags = [grazeable]
+  transform become_emitter {
+    when = time 30t
+    emitter = spark
+  }
+}
+
+// Generation 2: mote fired by spark; bursts into dust.
+bullet mote {
+  silhouette = ring
+  palette = enemy.violet
+  glow = 0.6
+  radius = 0.12u
+  damage = 1
+  flags = [grazeable]
+  transform burst {
+    when = time 40t
+    bullet = dust
+    speed = 0.06u/t
+    block fan {
+      count = 3
+      spread = 60deg
+      center = 0deg // relative to the mote's heading
+    }
+  }
+}
+
+// Generation 3: final dust; any further creating transform would exceed the depth limit.
+bullet dust {
+  silhouette = rice
+  palette = enemy.violet
+  glow = 0.3
+  radius = 0.08u
+  damage = 1
+  flags = [grazeable]
+  despawn_vfx = dust_puff
+}
+
+emitter seeds {
+  bullet = seed
+  delay = 0t
+  repeat = 1
+  interval = 1t
+  speed = 0.04u/t
+  block ring {
+    count = 6
+    start = 30deg
+  }
+}
+
+// Sub-emitter spawned at each seed's position; never runs on its own.
+emitter bloom {
+  role = sub
+  bullet = shard
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block fan {
+    count = 5
+    spread = 72deg
+    center = 0deg // relative to the seed's heading
+  }
+}
+
+emitter spark {
+  role = sub
+  bullet = mote
+  repeat = 1
+  interval = 1t
+  speed = 0.08u/t
+  block ring {
+    count = 3
+    start = 0deg
+  }
+}

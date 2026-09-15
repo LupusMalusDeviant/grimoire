@@ -1,0 +1,63 @@
+sigil 1
+// 02-aimed-stream: aimed three-way stream at the player plus a seeded scatter emitter.
+// Covers: block aimed (count + spread), block scatter (seeded), modifier sine_offset,
+//         flag grazeable, empty flag list, emitter offset, repeat forever, meta patron.
+
+meta {
+  name = "Aimed Stream"
+  difficulty = [normal, pressure]
+  density = 140
+  patron = hollow_saint // patron affiliation for the director (FR-11)
+}
+
+// Rice-shaped needle: fast, thin, grazeable.
+bullet needle {
+  silhouette = rice
+  palette = enemy.amber
+  glow = 0.4
+  radius = 0.12u
+  damage = 1
+  flags = [grazeable]
+}
+
+// Star fragment of the scatter field; not grazeable so it reads as pure hazard.
+bullet star {
+  silhouette = star
+  palette = enemy.violet
+  glow = 0.8
+  radius = 0.2u
+  damage = 2
+  flags = []
+}
+
+emitter stream {
+  bullet = needle
+  repeat = forever
+  interval = 6t // one volley every 6 ticks
+  speed = 0.18u/t
+  block aimed {
+    count = 3.5
+    spread = 12deg // total spread of the volley around the aim line
+  }
+  modifier sine_offset {
+    amplitude = 0.4u // lateral weave, keeps the stream from being a straight wall
+    period = 40t
+    phase = 0deg
+  }
+}
+
+emitter jitter {
+  bullet = star
+  offset = (x = 0u, y = -0.5u)
+  delay = 20t
+  repeat = forever
+  interval = 30t
+  speed = 0.07u/t
+  block scatter {
+    count = 5
+    cone = 50deg
+    direction = 270deg // towards the bottom of the screen
+    speed_jitter = 0.3 // +-30 % speed variation per bullet
+    seed = jitter_main // named RNG stream, deterministic per pattern instance
+  }
+}

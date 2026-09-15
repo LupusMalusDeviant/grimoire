@@ -1,0 +1,139 @@
+#![enable(implicit_some)]
+// 03-subemitter-cascade: a ring of seeds turns into fan emitters; their shards change type
+// after a distance, become emitters again, and the last generation bursts.
+// Covers: block ring, block fan, transforms become_emitter + change_type + burst, triggers
+//         time + distance, emitter role sub, cascade depth 3 (the v1 maximum), despawn_vfx.
+// Cascade chain (depth counts transforms that create bullets or emitters):
+//   seed -become_emitter-> bloom (1) fires shard -change_type-> ember
+//   ember -become_emitter-> spark (2) fires mote -burst-> dust (3)
+Sigil(
+    version: 1,
+    meta: Meta(
+        name: "Seed Cascade",
+        difficulty: ["hard", "cascade"],
+        density: 300, // 6 seeds x 5 shards x 3 motes x 3 dust = 270, rounded up
+    ),
+    bullets: [
+        // Generation 0: slow seed; smashing it early prevents the whole cascade.
+        Bullet(
+            name: "seed",
+            silhouette: "orb",
+            palette: "enemy.crimson",
+            glow: 0.7,
+            radius: Units(0.35),
+            damage: 2,
+            flags: [Smashable, Grazeable],
+            transforms: [
+                BecomeEmitter(
+                    when: Time(Ticks(50)),
+                    emitter: "bloom",
+                ),
+            ],
+        ),
+        // Generation 1: shard fired by bloom; turns into an ember after 4 units of travel.
+        Bullet(
+            name: "shard",
+            silhouette: "shard",
+            palette: "enemy.amber",
+            glow: 0.5,
+            radius: Units(0.15),
+            damage: 1,
+            flags: [Grazeable],
+            transforms: [
+                ChangeType(
+                    when: Distance(Units(4.0)),
+                    to: "ember",
+                ),
+            ],
+        ),
+        // Ember: keeps the shard's trajectory, new silhouette so the change stays readable.
+        Bullet(
+            name: "ember",
+            silhouette: "diamond",
+            palette: "enemy.amber",
+            glow: 0.9,
+            radius: Units(0.15),
+            damage: 1,
+            flags: [Grazeable],
+            transforms: [
+                BecomeEmitter(
+                    when: Time(Ticks(30)),
+                    emitter: "spark",
+                ),
+            ],
+        ),
+        // Generation 2: mote fired by spark; bursts into dust.
+        Bullet(
+            name: "mote",
+            silhouette: "ring",
+            palette: "enemy.violet",
+            glow: 0.6,
+            radius: Units(0.12),
+            damage: 1,
+            flags: [Grazeable],
+            transforms: [
+                Burst(
+                    when: Time(Ticks(40)),
+                    bullet: "dust",
+                    speed: UnitsPerTick(0.06),
+                    block: Fan(
+                        count: 3,
+                        spread: Deg(60.0),
+                        center: Deg(0.0), // relative to the mote's heading
+                    ),
+                ),
+            ],
+        ),
+        // Generation 3: final dust; any further creating transform would exceed the depth limit.
+        Bullet(
+            name: "dust",
+            silhouette: "rice",
+            palette: "enemy.violet",
+            glow: 0.3,
+            radius: Units(0.08),
+            damage: 1,
+            flags: [Grazeable],
+            despawn_vfx: "dust_puff",
+        ),
+    ],
+    emitters: [
+        Emitter(
+            name: "seeds",
+            bullet: "seed",
+            delay: Ticks(0),
+            repeat: Times(1),
+            interval: Ticks(1),
+            speed: UnitsPerTick(0.04),
+            block: Ring(
+                count: 6,
+                start: Deg(30.0),
+            ),
+        ),
+        // Sub-emitter spawned at each seed's position; never runs on its own.
+        Emitter(
+            name: "bloom",
+            role: Sub,
+            bullet: "shard",
+            repeat: Times(1),
+            interval: Ticks(1),
+            speed: UnitsPerTick(0.1),
+            block: Fan(
+                count: 5,
+                spread: Deg(72.0),
+                center: Deg(0.0), // relative to the seed's heading
+            ),
+        ),
+        Emitter(
+            name: "spark",
+            role: Sub,
+            bullet: "mote",
+            repeat: Times(1),
+            interval: Ticks(1),
+            speed: UnitsPerTick(0.08),
+            block: Ring(
+                count: 3,
+                start: Deg(0.0),
+            ),
+        ),
+    ],
+)

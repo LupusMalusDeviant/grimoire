@@ -1,0 +1,144 @@
+(* sigil-1.ebnf
+
+   Proposed own source grammar "sigil 1" for Sigil bullet patterns.
+   Spike OF-4.1 (plan 0002, WP1.4). Status: proposal for the comparison with RON, not a decision.
+
+   Notation: ISO/IEC 14977 EBNF.
+     "="  definition        ","  concatenation     "|"  alternative
+     "[ ]" optional         "{ }" zero or more     "( )" grouping
+     "? ?" special sequence described in prose     ";"  end of rule
+   Terminals in double quotes are literal token texts. Keywords are written as terminals but
+   are lexed as ordinary identifiers (see "Contextual keywords").
+
+   Design goals
+   - Lossless concrete syntax tree: whitespace and comments are trivia attached to tokens, so
+     `sigilc fmt` and `sigilc set` can reproduce every byte outside an edited value.
+   - One construct per line: items and members end at a newline, so every diagnostic has a
+     natural line anchor and a parameter edit touches exactly one line.
+   - Generic syntax, typed schema: the grammar does not know which fields exist. Field names,
+     value types, units and ranges come from the shared data model (schema-model.txt) and are
+     checked in the schema pass. RON and sigil 1 therefore differ only in surface syntax.
+   - Error recovery: item keywords at the start of a line (meta, import, bullet, emitter) and
+     "}" are synchronisation points, so one missing brace yields one diagnostic, not a cascade.
+
+   Contextual keywords
+     sigil, meta, import, as, bullet, emitter, from, block, modifier, transform,
+     time, distance, event
+   They are keywords only in the positions used below and ordinary identifiers everywhere
+   else, so `bullet = orb` is a valid field inside an emitter body. Member position is decided
+   with two tokens of lookahead: `ident "="` is a field, `("block" | "modifier" | "transform")
+   ident "{"` is a nested member, anything else is an error.
+
+   Node paths (diagnostics and `sigilc set <file> <path>=<value>`; identical for the RON variant)
+     version                                          (the header number)
+     imports.<alias>.path                             imports.ring.path
+     meta.<field>                                     meta.density
+     bullets.<name>.<field>                           bullets.orb.glow
+     bullets.<name>.flags[<i>]                        bullets.orb.flags[1]
+     bullets.<name>.transforms[<i>].<field>           bullets.seed.transforms[0].emitter
+     bullets.<name>.transforms[<i>].block.<field>     bullets.mote.transforms[0].block.count
+     emitters.<name>.<field>                          emitters.burst.interval
+     emitters.<name>.offset.<x|y>                     emitters.jitter.offset.y
+     emitters.<name>.block.<field>                    emitters.burst.block.count
+     emitters.<name>.modifiers[<i>].<field>           emitters.bloom.modifiers[1].folds
+     emitters.<name>.modifiers[<i>].keys[<k>].<at|mul>
+   Named things (imports, bullets, emitters) are addressed by name, unnamed list elements by
+   their 0-based index in written order; transforms[i] counts the transform members of one
+   bullet, modifiers[i] the modifier members of one emitter. The kind of a block, modifier or
+   transform is not part of the path, so changing a kind keeps shared paths stable. An emitter
+   declared with `from` uses the inherited paths for its overrides
+   (emitters.finale.block.count). If a name is defined twice, the diagnostic falls back to the
+   index form (emitters[1].name).
+*)
+
+
+(* ======================================================================================= *)
+(* Lexical grammar                                                                         *)
+(* ======================================================================================= *)
+
+(* Tokens are matched longest-first. Space and tab are trivia. A newline is the token NEWLINE
+   at bracket depth 0; inside "(" ")" and "[" "]" the lexer demotes it to trivia, so lists and
+   records may span lines. Braces do not change the bracket depth. Comments are trivia and may
+   stand on their own line or after a construct. Source files are UTF-8 without BOM; columns
+   in diagnostics count Unicode scalar values, starting at 1. *)
+
+newline        = [ ? U+000D ? ], ? U+000A ? ;
+space          = ? U+0020 ? | ? U+0009 ? ;
+comment        = "//", { ? any character except U+000A ? } ;
+
+letter         = ? "a" to "z" ? | ? "A" to "Z" ? ;
+digit          = ? "0" to "9" ? ;
+ident          = ( letter | "_" ), { letter | digit | "_" } ;
+
+int_lit        = [ "-" ], digit, { digit } ;
+float_lit      = [ "-" ], digit, { digit }, ".", digit, { digit } ;
+number         = float_lit | int_lit ;
+
+(* A unit follows its number without whitespace. The list is ordered longest-first.
+   "beats" is reserved: it lexes, and the schema pass of sigil 1 rejects it (plan 0002 WP4.2;
+   the beat clock arrives in P2). Wall-clock units such as ms or s do not exist; a number
+   followed by any other letters is the lexical error "unknown unit". *)
+unit           = "deg/t" | "deg" | "u/t2" | "u/t" | "u" | "t" | "beats" ;
+quantity       = number, unit ;
+
+string         = '"', { string_char | escape }, '"' ;
+string_char    = ? any character except '"', "\" and U+000A ? ;
+escape         = "\", ( '"' | "\" | "n" | "t" ) ;
+
+punctuation    = "{" | "}" | "(" | ")" | "[" | "]" | "=" | "," | "." ;
+
+
+(* ======================================================================================= *)
+(* Syntactic grammar                                                                       *)
+(* ======================================================================================= *)
+
+(* The header is the first line of the file: "sigil" at line 1, column 1, no BOM and no
+   comment before it. The version number is checked right after the header is parsed and
+   before anything else, so a file of another version yields exactly one diagnostic. *)
+file           = header, { NEWLINE }, { item, item_end } ;
+header         = "sigil", int_lit, ( NEWLINE | EOF ) ;
+item_end       = ( NEWLINE, { NEWLINE } ) | EOF ;
+
+item           = import_item | meta_item | bullet_item | emitter_item ;
+import_item    = "import", string, "as", ident ;
+meta_item      = "meta", body ;
+bullet_item    = "bullet", ident, body ;
+emitter_item   = "emitter", ident, [ "from", ref ], body ;
+
+(* "{" stays on the line of its owner; every member ends with a newline; "}" starts a line
+   (after optional indentation). "{}" on one line is an empty body. *)
+body           = "{", { NEWLINE }, { member, NEWLINE, { NEWLINE } }, "}" ;
+member         = field | nested ;
+field          = path, "=", value ;
+nested         = ( "block" | "modifier" | "transform" ), ident, body ;
+path           = ident, { ( ".", ident ) | ( "[", int_lit, "]" ) } ;
+
+value          = quantity | float_lit | int_lit | string | trigger | ref | list | record ;
+
+(* A trigger is recognised when "time", "distance" or "event" is followed by a quantity or an
+   identifier on the same line; otherwise the word is an ordinary ref. *)
+trigger        = ( "time" | "distance" | "event" ), ( quantity | ref ) ;
+
+(* Identifiers, dotted identifiers (enemy.crimson) and import-qualified names (ring.burst). *)
+ref            = ident, { ".", ident } ;
+
+(* Trailing commas are allowed; an empty element (",," or "[,") is a parse error. *)
+list           = "[", [ value, { ",", value }, [ "," ] ], "]" ;
+record         = "(", [ record_field, { ",", record_field }, [ "," ] ], ")" ;
+record_field   = ident, "=", value ;
+
+
+(* ======================================================================================= *)
+(* Notes for the schema pass (details in schema-model.txt)                                 *)
+(* ======================================================================================= *)
+
+(* - Allowed items: at most one meta (required), any number of imports, bullets, emitters.
+   - Allowed members per owner: meta and bullet bodies take fields; a bullet body also takes
+     `transform <kind>`; an emitter body takes fields, exactly one `block <kind>` and any
+     number of `modifier <kind>` (applied in written order); a burst transform takes exactly
+     one `block <kind>`; an emitter with `from` takes only override fields (dotted paths).
+   - Kinds: blocks ring, spiral, fan, aimed, wave, line, scatter; modifiers speed_curve,
+     rotate, accelerate, curve, sine_offset, mirror; transforms burst, change_type, reverse,
+     become_emitter; triggers time, distance, event.
+   - Every field has one value shape (integer, float, quantity with one fixed unit, ref,
+     string, list, record, trigger); a mismatch is a schema error at the value token. *)

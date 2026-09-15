@@ -1,0 +1,71 @@
+#![enable(implicit_some)]
+// 02-aimed-stream: aimed three-way stream at the player plus a seeded scatter emitter.
+// Covers: block aimed (count + spread), block scatter (seeded), modifier sine_offset,
+//         flag grazeable, empty flag list, emitter offset, repeat forever, meta patron.
+Sigil(
+    version: 1,
+    meta: Meta(
+        name: "Aimed Stream",
+        difficulty: ["normal", "pressure"],
+        density: 140,
+        patron: "hollow_saint", // patron affiliation for the director (FR-11)
+    ),
+    bullets: [
+        // Rice-shaped needle: fast, thin, grazeable.
+        Bullet(
+            name: "needle",
+            silhouette: "rice",
+            palette: "enemy.amber",
+            glow: 0.4,
+            radius: Units(0.12),
+            damage: 1,
+            flags: [Grazeable],
+        ),
+        // Star fragment of the scatter field; not grazeable so it reads as pure hazard.
+        Bullet(
+            name: "star",
+            silhouette: "star",
+            palette: "enemy.violet",
+            glow: 0.8,
+            radius: Units(0.2),
+            damage: 2,
+            flags: [],
+        ),
+    ],
+    emitters: [
+        Emitter(
+            name: "stream",
+            bullet: "needle",
+            repeat: Forever,
+            interval: Ticks(6), // one volley every 6 ticks
+            speed: UnitsPerTick(0.18),
+            block: Aimed(
+                count: 3.5,
+                spread: Deg(12.0), // total spread of the volley around the aim line
+            ),
+            modifiers: [
+                SineOffset(
+                    amplitude: Units(0.4), // lateral weave, keeps the stream from being a straight wall
+                    period: Ticks(40),
+                    phase: Deg(0.0),
+                ),
+            ],
+        ),
+        Emitter(
+            name: "jitter",
+            bullet: "star",
+            offset: (x: Units(0.0), y: Units(-0.5)),
+            delay: Ticks(20),
+            repeat: Forever,
+            interval: Ticks(30),
+            speed: UnitsPerTick(0.07),
+            block: Scatter(
+                count: 5,
+                cone: Deg(50.0),
+                direction: Deg(270.0), // towards the bottom of the screen
+                speed_jitter: 0.3, // +-30 % speed variation per bullet
+                seed: "jitter_main", // named RNG stream, deterministic per pattern instance
+            ),
+        ),
+    ],
+)

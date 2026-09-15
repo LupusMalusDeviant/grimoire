@@ -1,0 +1,244 @@
+// schema-model.txt
+//
+// Shared data model of Sigil v1 for spike OF-4.1 (plan 0002, WP1.4). Status: proposal.
+//
+// The model is written as a Rust/serde type sketch. It is NOT compiled and is not part of the
+// workspace. The RON variant maps it 1:1 through serde (RON files start with
+// `#![enable(implicit_some)]`, so optional fields are written without `Some(..)` and omitted
+// fields take their default). The own grammar "sigil 1" (sigil-1.ebnf) maps to the same model
+// through the table at the end of this file. Both variants share the node paths described in
+// sigil-1.ebnf.
+//
+// Conventions
+// - Time in simulation ticks, angles in degrees, distances in world units. Angles: 0 deg is
+//   the +x axis of the gameplay plane, positive is counterclockwise, 270 deg points towards the
+//   bottom of the screen. Block angles of sub-emitters and bursts are relative to the heading
+//   of the bullet that spawned them.
+// - Open identifier sets (silhouettes, palettes, VFX, behaviours, events, RNG streams) are
+//   strings in RON and bare refs in sigil 1; closed sets (flags, kinds, interpolation) are enums.
+// - Readability rules (PRD-0003 rules 3 and 4, plan 0002 WP4.2): bullet types of one unit,
+//   including the types of imported emitters, differ pairwise in silhouette; palettes must
+//   live in the enemy palette space (`enemy.*`).
+// - Registry assumed by this corpus (FR-10): behaviours `orbit_parent`, `seek_target_weak`.
+//   Events assumed: `phase_end`, `player_parry`.
+// - Maximum cascade depth in v1: 3. Depth counts the transforms that create bullets or
+//   emitters (burst, become_emitter) along the longest chain from a root emitter; change_type
+//   and reverse do not count. Cycles through change_type or sub-emitters are errors.
+// - Semantics beyond what a syntax comparison needs (exact spawn geometry, interpolation
+//   formulas) are out of scope here and belong to WP4/WP5.
+
+use serde::Deserialize;
+use std::collections::BTreeMap;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sigil {
+    pub version: u32, // must be 1; RON: checked after deserialisation, sigil 1: header line
+    #[serde(default)]
+    pub imports: Vec<Import>,
+    pub meta: Meta,
+    pub bullets: Vec<Bullet>,
+    pub emitters: Vec<EmitterItem>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Import {
+    pub path: String,  // relative to the importing file
+    pub alias: String, // unique within the unit
+}
+
+// Pattern metadata for director and balancing dashboard (FR-11).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Meta {
+    pub name: String,
+    pub difficulty: Vec<String>, // tags, e.g. easy, normal, hard, opener, curtain
+    pub density: u32,            // estimated bullets on screen at peak, 1..=20000
+    #[serde(default)]
+    pub patron: Option<String>, // patron affiliation, optional
+}
+
+// Bullet specification (FR-04, FR-05) with its transforms (FR-03).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bullet {
+    pub name: String,       // unique within the unit
+    pub silhouette: String, // visual id, pairwise distinct within the unit
+    pub palette: String,    // visual id in the enemy palette space (enemy.*)
+    pub glow: f32,          // 0.0..=1.0
+    pub radius: Units,      // > 0, <= 8
+    pub damage: u32,        // 0..=100
+    #[serde(default)]
+    pub flags: Vec<Flag>, // each flag at most once
+    #[serde(default)]
+    pub despawn_vfx: Option<String>, // hook played on bullet clear (FR-12)
+    #[serde(default)]
+    pub behaviour: Option<String>, // registered BulletBehavior id (FR-10)
+    #[serde(default)]
+    pub transforms: Vec<Transform>,
+}
+
+#[derive(Deserialize)]
+pub enum Flag {
+    Smashable,   // sigil 1: smashable
+    Reflectable, // sigil 1: reflectable
+    EnvActive,   // sigil 1: env_active
+    Grazeable,   // sigil 1: grazeable
+}
+
+#[derive(Deserialize)]
+pub enum EmitterItem {
+    // A full emitter definition.
+    #[serde(deny_unknown_fields)]
+    Emitter {
+        name: String, // unique within the unit
+        #[serde(default)]
+        role: Role, // Root runs with the pattern, Sub only via become_emitter
+        bullet: String, // bullet type of this unit
+        #[serde(default)]
+        offset: Offset, // relative to the owner (enemy or spawning bullet)
+        #[serde(default)]
+        delay: Ticks, // before the first shot, >= 0
+        repeat: Repeat,
+        interval: Ticks,     // between shots, >= 1
+        speed: UnitsPerTick, // base speed, > 0, <= 4
+        block: Block,
+        #[serde(default)]
+        modifiers: Vec<Modifier>, // applied in written order
+    },
+    // Reuse of an imported emitter with parameter overrides (composition, no logic).
+    // Keys are node paths relative to the emitter. Values are untyped until the compiler
+    // checks them against the target field (see README: open point about ron::Value).
+    #[serde(deny_unknown_fields)]
+    Use {
+        name: String,
+        from: String, // "<alias>.<emitter name>"
+        #[serde(default)]
+        overrides: BTreeMap<String, ron::Value>,
+    },
+}
+
+#[derive(Deserialize, Default)]
+pub enum Role {
+    #[default]
+    Root,
+    Sub,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Offset {
+    pub x: Units,
+    pub y: Units,
+}
+
+#[derive(Deserialize)]
+pub enum Repeat {
+    Times(u32), // 1..=100000; sigil 1: plain integer
+    Forever,    // sigil 1: forever
+}
+
+// Building blocks (FR-01). All counts are 1..=512.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum Block {
+    Ring { count: u16, start: Deg },
+    Spiral { arms: u16, step: Deg, start: Deg }, // step: angle added per shot
+    Fan { count: u16, spread: Deg, center: Deg },
+    Aimed { count: u16, spread: Deg }, // at the player target; spread 0..=360
+    Wave { count: u16, amplitude: Units, wavelength: Units, direction: Deg },
+    Line { count: u16, spacing: Units, direction: Deg },
+    Scatter { count: u16, cone: Deg, direction: Deg, speed_jitter: f32, seed: String },
+    // speed_jitter: 0.0..=1.0 fraction; seed: named RNG stream (derive_rng), deterministic
+}
+
+// Modifiers (FR-02), stackable.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum Modifier {
+    SpeedCurve { keys: Vec<Key>, interp: Interp }, // 2..=16 keys, strictly increasing `at`
+    Rotate { rate: DegPerTick },                   // emitter rotation, -45..=45
+    Accelerate {
+        rate: UnitsPerTick2,
+        #[serde(default)]
+        max_speed: Option<UnitsPerTick>,
+    },
+    Curve { turn: DegPerTick }, // heading turn rate of each bullet, -45..=45
+    SineOffset {
+        amplitude: Units, // lateral, 0..=8
+        period: Ticks,    // >= 1
+        #[serde(default)]
+        phase: Deg,
+    },
+    Mirror {
+        axis: Deg,
+        #[serde(default = "one")]
+        folds: u16, // 1..=8 rotational copies of the mirrored pair
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Key {
+    pub at: Ticks, // bullet age
+    pub mul: f32,  // speed multiplier, 0.0..=8.0
+}
+
+#[derive(Deserialize)]
+pub enum Interp {
+    Linear,
+    Step,
+    Smooth,
+}
+
+// Transforms (FR-03). burst and become_emitter consume the bullet.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum Transform {
+    Burst { when: Trigger, bullet: String, speed: UnitsPerTick, block: Block },
+    ChangeType { when: Trigger, to: String },
+    Reverse { when: Trigger },
+    BecomeEmitter { when: Trigger, emitter: String }, // emitter must have role Sub
+}
+
+#[derive(Deserialize)]
+pub enum Trigger {
+    Time(Ticks),      // bullet age;           sigil 1: time 50t
+    Distance(Units),  // travelled distance;   sigil 1: distance 4u
+    Event(String),    // named engine event;   sigil 1: event phase_end
+}
+
+// Units as newtypes. Whether RON rejects `Ticks(12)` where `Deg` is expected depends on the
+// struct-name check of the ron version in use (open point, see README).
+#[derive(Deserialize, Default)] pub struct Ticks(pub u32);          // sigil 1: 30t
+#[derive(Deserialize, Default)] pub struct Deg(pub f32);            // sigil 1: 7.5deg
+#[derive(Deserialize, Default)] pub struct Units(pub f32);          // sigil 1: 0.25u
+#[derive(Deserialize)]          pub struct UnitsPerTick(pub f32);   // sigil 1: 0.05u/t
+#[derive(Deserialize)]          pub struct UnitsPerTick2(pub f32);  // sigil 1: 0.002u/t2
+#[derive(Deserialize)]          pub struct DegPerTick(pub f32);     // sigil 1: 0.5deg/t
+
+// ------------------------------------------------------------------------------------------
+// Mapping RON <-> sigil 1
+// ------------------------------------------------------------------------------------------
+// RON                                              sigil 1
+// Sigil(version: 1, ...)                           header line `sigil 1`
+// imports: [Import(path: "a.ron", alias: "a")]     import "a.sigil" as a
+// meta: Meta(name: "N", ...)                       meta { name = "N" ... }
+// bullets: [Bullet(name: "orb", ...)]              bullet orb { ... }
+// transforms: [BecomeEmitter(...)]                 transform become_emitter { ... } (in bullet)
+// emitters: [Emitter(name: "burst", ...)]          emitter burst { ... }
+// Use(name: "f", from: "a.b", overrides: {...})    emitter f from a.b { path = value ... }
+// block: Ring(count: 24, ...)                      block ring { count = 24 ... }
+// modifiers: [Rotate(rate: ...)]                   modifier rotate { rate = ... }
+// PascalCase variants (EnvActive, SpeedCurve)      snake_case refs (env_active, speed_curve)
+// strings for open ids ("enemy.crimson")           bare refs (enemy.crimson)
+// Ticks(30) Deg(7.5) Units(0.25)                   30t 7.5deg 0.25u
+// UnitsPerTick(0.05) UnitsPerTick2(0.002)          0.05u/t 0.002u/t2
+// DegPerTick(0.5)                                  0.5deg/t
+// Times(4) / Forever                               4 / forever
+// Time(Ticks(50)) Distance(Units(4.0))             time 50t, distance 4u
+// Event("phase_end")                               event phase_end
+// (x: Units(0.0), y: Units(-0.5))                  (x = 0u, y = -0.5u)
+// (at: Ticks(20), mul: 0.3)                        (at = 20t, mul = 0.3)
+// Root / Sub, Linear / Step / Smooth               root / sub, linear / step / smooth

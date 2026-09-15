@@ -1,0 +1,90 @@
+#![enable(implicit_some)]
+// 05-wave-line-composite: a curved wave of blades, a rail of orbiting satellites and the ring
+// of 01-ring-burst reused as a finale.
+// Covers: import with parameter overrides (composition), block wave, block line, modifier
+//         curve, transform reverse on an event trigger, flags env_active + reflectable,
+//         behaviour reference (escape hatch), meta patron.
+Sigil(
+    version: 1,
+    imports: [
+        Import(path: "01-ring-burst.ron", alias: "ring"),
+    ],
+    meta: Meta(
+        name: "Tide and Rail",
+        difficulty: ["normal", "mixed"],
+        density: 220,
+        patron: "ember_court",
+    ),
+    bullets: [
+        // Blade: interacts with the level (env_active) and can be parried back (reflectable).
+        Bullet(
+            name: "blade",
+            silhouette: "blade",
+            palette: "enemy.teal",
+            glow: 0.5,
+            radius: Units(0.3),
+            damage: 2,
+            flags: [EnvActive, Reflectable],
+            transforms: [
+                Reverse(
+                    when: Event("phase_end"), // all blades turn around when the boss phase ends
+                ),
+            ],
+        ),
+        // Satellite: motion comes from a registered Rust behaviour (FR-10).
+        Bullet(
+            name: "satellite",
+            silhouette: "crescent",
+            palette: "enemy.teal",
+            glow: 0.9,
+            radius: Units(0.2),
+            damage: 1,
+            flags: [Grazeable],
+            behaviour: "orbit_parent",
+        ),
+    ],
+    emitters: [
+        Emitter(
+            name: "tide",
+            bullet: "blade",
+            repeat: Times(8),
+            interval: Ticks(20),
+            speed: UnitsPerTick(0.06),
+            block: Wave(
+                count: 9,
+                amplitude: Units(1.5),
+                wavelength: Units(6.0),
+                direction: Deg(270.0),
+            ),
+            modifiers: [
+                Curve(
+                    turn: DegPerTick(0.8), // bends the wave front into an arc
+                ),
+            ],
+        ),
+        Emitter(
+            name: "rail",
+            bullet: "satellite",
+            offset: (x: Units(-4.0), y: Units(2.0)),
+            delay: Ticks(60),
+            repeat: Times(3),
+            interval: Ticks(40),
+            speed: UnitsPerTick(0.04),
+            block: Line(
+                count: 7,
+                spacing: Units(0.8),
+                direction: Deg(0.0),
+            ),
+        ),
+        // Reuses the ring emitter of 01-ring-burst; only the listed parameters differ.
+        Use(
+            name: "finale",
+            from: "ring.burst",
+            overrides: {
+                "delay": Ticks(240),
+                "repeat": Times(1),
+                "block.count": 12,
+            },
+        ),
+    ],
+)

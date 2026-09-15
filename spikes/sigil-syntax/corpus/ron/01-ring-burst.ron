@@ -1,0 +1,45 @@
+#![enable(implicit_some)]
+// 01-ring-burst: repeated ring burst whose bullets accelerate outwards.
+// Covers: block ring, modifier accelerate, flags smashable + grazeable, visual metadata
+//         (silhouette, palette, glow), despawn_vfx, emitter delay/repeat/interval, meta.
+Sigil(
+    version: 1,
+    meta: Meta(
+        name: "Ring Burst",
+        difficulty: ["easy", "opener"],
+        density: 96, // estimated bullets on screen at peak
+    ),
+    bullets: [
+        // Slow round orb; melee can smash it, grazing charges the ultimate.
+        Bullet(
+            name: "orb",
+            silhouette: "orb",
+            palette: "enemy.crimson",
+            glow: 0.6,
+            radius: Units(0.25),
+            damage: 1,
+            flags: [Smashable, Grazeable],
+            despawn_vfx: "soul_wisp", // played on bullet clear (FR-12)
+        ),
+    ],
+    emitters: [
+        Emitter(
+            name: "burst",
+            bullet: "orb",
+            delay: Ticks(30), // telegraph time before the first ring
+            repeat: Times(4),
+            interval: Ticks(45),
+            speed: UnitsPerTick(0.05),
+            block: Ring(
+                count: 24,
+                start: Deg(7.5), // offset from the cardinal axes
+            ),
+            modifiers: [
+                Accelerate(
+                    rate: UnitsPerTick2(0.002),
+                    max_speed: UnitsPerTick(0.2), // cap keeps late bullets readable
+                ),
+            ],
+        ),
+    ],
+)
