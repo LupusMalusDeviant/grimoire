@@ -106,6 +106,20 @@ jobs:
         run: bash .github/scripts/check-crate-map.sh --self-test
       - name: Crate dependencies follow the crate map (contract §1, engine ADR-0008)
         run: bash .github/scripts/check-crate-map.sh
+      # Every CI script is parsed before it can run on main. The trend-publishing script only
+      # runs on push to main, so a parse error in it passed every pull request until now.
+      - name: CI shell scripts parse
+        run: |
+          status=0
+          for script in .github/scripts/*.sh; do
+            if bash -n "$script"; then
+              echo "ok: $script"
+            else
+              echo "::error title=Shell-Syntaxfehler::$script"
+              status=1
+            fi
+          done
+          exit $status
       # Project ADR-0011 (schema codegen), Plan-0002 WP8.1: regenerates the debug-protocol and
       # pack-manifest Rust types/codecs and their docs/formats/*.md pages from schema/*.gschema
       # and fails if that changes anything the previous step didn't already catch as a checked-in
@@ -180,7 +194,9 @@ jobs:
       # even if a Test step above failed, so a red run still says what it rendered on.
       - name: Report GPU adapter and skipped GPU tests
         if: ${{ !cancelled() }}
-        run: bash .github/scripts/report-gpu-adapter.sh "${{ matrix.os }}" ci-logs/test.log ci-logs/test-offscreen-cpu.log
+        env:
+          RUNNER_LABEL: ${{ matrix.os }}
+        run: bash .github/scripts/report-gpu-adapter.sh "$RUNNER_LABEL" ci-logs/test.log ci-logs/test-offscreen-cpu.log
       # Examples open windows: build them, never run them in CI.
       - name: Build examples
         run: cargo build --workspace --examples --locked

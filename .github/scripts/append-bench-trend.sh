@@ -11,7 +11,7 @@
 # own worktree for bench-trends and never touches the caller's checked-out branch or files).
 set -euo pipefail
 
-RESULTS="${1:?path to this run's BenchResult JSONL file}"
+RESULTS="${1:?path to the BenchResult JSONL file of the current run}"
 SHA="${2:?commit sha this run measured}"
 BRANCH=bench-trends
 TREND_FILE="trend/results.jsonl"
