@@ -141,6 +141,41 @@ fn oversized_paths_count_fails_before_allocating() {
 }
 
 #[test]
+fn encode_rejects_entry_count_disagreeing_with_paths_len() {
+    // `paths` is `vec_using(entry_count, ..)` (contract §12): its wire count is `entry_count`,
+    // not a separate length prefix, so nothing else stops `encode` from writing a manifest whose
+    // declared `entry_count` and its actual number of `paths` disagree unless the emitter checks
+    // it explicitly (the loophole this test guards against). A manifest with `entry_count` set to
+    // something other than `paths.len()` must fail encoding instead of producing wire bytes a
+    // reader would misinterpret.
+    let mut value = sample_manifest();
+    assert_eq!(
+        value.entry_count as usize,
+        value.paths.len(),
+        "sanity: valid to start with"
+    );
+    value.entry_count = 3; // sample_manifest() has exactly 2 paths
+
+    // `encode` takes an output buffer by reference rather than returning `Vec<u8>` (like the
+    // frame envelope's own `encode_frame` convention it follows), so on error `bytes` still holds
+    // whatever earlier fields were already written; that is harmless (documented in
+    // `grimoire_schemagen::emit_rust`) precisely because the call below returns `Err`, and a
+    // caller only trusts `bytes` after a fully `Ok` `encode` call — this test's point is that the
+    // call *fails* at all, not that `bytes` stays empty.
+    let mut bytes = Vec::new();
+    let error = value.encode(&mut bytes).unwrap_err();
+    assert_eq!(
+        error,
+        PackManifestV1Error::CountMismatch {
+            field: "paths",
+            count_field: "entry_count",
+            declared: 3,
+            actual: 2,
+        }
+    );
+}
+
+#[test]
 fn oversized_application_length_fails_before_allocating() {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&1u32.to_le_bytes()); // manifest_version

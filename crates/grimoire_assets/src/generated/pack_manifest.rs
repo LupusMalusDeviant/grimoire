@@ -362,6 +362,23 @@ pub enum PackManifestV1Error {
         /// Raw wire value.
         value: u32,
     },
+    /// A `vec_using` field's element count disagrees with the earlier field it reuses
+    /// as its wire count (contract §12's manifest: `paths.len()` must equal
+    /// `entry_count`). Encoding stops here instead of writing a manifest whose declared
+    /// count does not match the number of elements written.
+    #[error(
+        "field {field:?} has {actual} element(s), but its count field {count_field:?} says {declared}"
+    )]
+    CountMismatch {
+        /// Name of the vector field.
+        field: &'static str,
+        /// Name of the field it was supposed to agree with.
+        count_field: &'static str,
+        /// Value of the count field.
+        declared: usize,
+        /// Actual number of elements in the vector.
+        actual: usize,
+    },
 }
 
 /// The manifest section of a pack v1 file: compiler provenance, one path per TOC entry (in TOC
@@ -392,6 +409,14 @@ impl PackManifestBody {
         writer.str_u16("compiler", 64, &self.compiler)?;
         writer.str_u16("compiler_version", 64, &self.compiler_version)?;
         writer.u32(self.entry_count);
+        if self.entry_count as usize != self.paths.len() {
+            return Err(PackManifestV1Error::CountMismatch {
+                field: "paths",
+                count_field: "entry_count",
+                declared: self.entry_count as usize,
+                actual: self.paths.len(),
+            });
+        }
         if self.paths.len() > 65536 {
             return Err(PackManifestV1Error::FieldTooLong {
                 field: "paths",

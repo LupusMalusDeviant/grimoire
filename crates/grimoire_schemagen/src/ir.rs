@@ -47,6 +47,11 @@ pub enum ErrorType {
     /// `UnexpectedEnd { offset, needed, available }`, `TrailingBytes { extra }`,
     /// `InvalidUtf8 { field }`, `FieldTooLong { field, len, max }` and
     /// `InvalidEnum { field, value }` (field names and shapes exactly as listed, contract §13).
+    /// If a schema using this error type also declares a [`TypeRef::VecUsing`] field, the
+    /// referenced type must additionally declare a sixth variant,
+    /// `CountMismatch { field: &'static str, count_field: &'static str, declared: usize, actual: usize }`
+    /// (see [`crate::emit_rust`]'s `VecUsing` handling); no schema with an external error type
+    /// declares one today, so this requirement is not yet exercised.
     External(String),
 }
 
@@ -94,10 +99,9 @@ pub struct EnumDef {
     /// of failing with `InvalidEnum` (contract §13: "`ErrorCode` ... unbekannter Code ->
     /// `Malformed`" — an `Error` message must stay decodable even when it carries a code from a
     /// newer protocol version, since `Error`'s id and layout are frozen across all versions).
-    /// Must name a variant declared in this same enum; [`crate::parser::parse`] does not
-    /// currently check that (only two schemas exist, both hand-written and covered by the golden
-    /// fixtures), so a typo here would surface as a Rust compile error in the generated file
-    /// rather than a schema-parse error.
+    /// Must name a variant declared in this same enum; [`crate::parser::parse`] rejects a
+    /// `fallback` naming an undeclared variant as a schema-parse error, so a typo here is caught
+    /// at schema-parse time rather than surfacing as a Rust compile error in the generated file.
     pub fallback: Option<String>,
     /// Doc comment lines for the enum itself.
     pub doc: Vec<String>,

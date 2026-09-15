@@ -524,6 +524,40 @@ fn write_self_contained_error(out: &mut String, error_ident: &str, schema: &Sche
     let _ = writeln!(out, "        value: u32,");
     let _ = writeln!(out, "    }},");
 
+    let _ = writeln!(
+        out,
+        "    /// A `vec_using` field's element count disagrees with the earlier field it reuses"
+    );
+    let _ = writeln!(
+        out,
+        "    /// as its wire count (contract §12's manifest: `paths.len()` must equal"
+    );
+    let _ = writeln!(
+        out,
+        "    /// `entry_count`). Encoding stops here instead of writing a manifest whose declared"
+    );
+    let _ = writeln!(
+        out,
+        "    /// count does not match the number of elements written."
+    );
+    let _ = writeln!(
+        out,
+        "    #[error(\"field {{field:?}} has {{actual}} element(s), but its count field {{count_field:?}} says {{declared}}\")]"
+    );
+    let _ = writeln!(out, "    CountMismatch {{");
+    let _ = writeln!(out, "        /// Name of the vector field.");
+    let _ = writeln!(out, "        field: &'static str,");
+    let _ = writeln!(
+        out,
+        "        /// Name of the field it was supposed to agree with."
+    );
+    let _ = writeln!(out, "        count_field: &'static str,");
+    let _ = writeln!(out, "        /// Value of the count field.");
+    let _ = writeln!(out, "        declared: usize,");
+    let _ = writeln!(out, "        /// Actual number of elements in the vector.");
+    let _ = writeln!(out, "        actual: usize,");
+    let _ = writeln!(out, "    }},");
+
     let _ = writeln!(out, "}}");
     out.push('\n');
 }
@@ -801,9 +835,28 @@ fn write_encode(
             write_encode(out, &format!("{indent}    "), "item", true, elem, ctx)?;
             let _ = writeln!(out, "{indent}}}");
         }
-        TypeRef::VecUsing { max, elem, .. } => {
-            // No count is written here: the wire count is an earlier field's own value
-            // (contract §12's manifest reuses `entry_count`), already encoded by its own field.
+        TypeRef::VecUsing {
+            count_field,
+            max,
+            elem,
+        } => {
+            // The vector's element count is never written here (the wire count is an earlier
+            // field's own value, contract §12's manifest reuses `entry_count`), so an encoder
+            // that let the two disagree would silently write a manifest whose declared count
+            // does not match the number of elements that follow it — a corrupt manifest a reader
+            // decodes wrongly rather than rejects. Checked here, before anything else about this
+            // field is written, so `self.{count_field}` always names the sibling field this
+            // `vec_using` field was declared against (contract §2 rule 9's "no corrupt output"
+            // spirit, applied to the encode side rather than decode).
+            let _ = writeln!(
+                out,
+                "{indent}if self.{count_field} as usize != {expr}.len() {{"
+            );
+            let _ = writeln!(
+                out,
+                "{indent}    return Err({error_ident}::CountMismatch {{ field: {field:?}, count_field: {count_field:?}, declared: self.{count_field} as usize, actual: {expr}.len() }});"
+            );
+            let _ = writeln!(out, "{indent}}}");
             // The length is still checked against `max` before allocating anything downstream,
             // exactly like `Vec` (contract §2 rule 9); only the wire representation differs.
             let _ = writeln!(out, "{indent}if {expr}.len() > {max} {{");
