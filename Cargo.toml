@@ -25,6 +25,7 @@ grimoire_gpu = { path = "crates/grimoire_gpu" }
 grimoire_platform = { path = "crates/grimoire_platform" }
 grimoire_render = { path = "crates/grimoire_render" }
 grimoire_sigil = { path = "crates/grimoire_sigil" }
+grimoire_sigilc = { path = "crates/grimoire_sigilc" }
 grimoire_sim = { path = "crates/grimoire_sim" }
 grimoire_ui = { path = "crates/grimoire_ui" }
 

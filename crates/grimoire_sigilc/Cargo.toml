@@ -1,0 +1,28 @@
+[package]
+name = "grimoire_sigilc"
+description = "Sigil compiler library and CLI `sigilc`: offline parser, validator and compiler for the Sigil pattern language; never a dependency of a runtime crate (engine ADR-0008)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sigilc"
+path = "src/bin/sigilc.rs"
+
+# Determinism-set crate (contract §3): its output (binary Sigil units) enters content hashes,
+# golden masters and replays and must be byte-identical on Windows, Linux and macOS, so it obeys
+# the same rules as the simulation crates even though it never runs at game time. `sim`/`ecs` are
+# needed for the future `sigilc simulate` subcommand (Plan 0002 WP5.6), not for compiling alone.
+[dependencies]
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+grimoire_sigil.workspace = true
+grimoire_sim.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
