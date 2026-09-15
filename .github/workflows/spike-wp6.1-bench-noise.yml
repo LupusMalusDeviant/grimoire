@@ -246,9 +246,16 @@ jobs:
           END=$(date +%s)
           echo "raw_run2_seconds=$((END - START))" >> "$GITHUB_ENV"
       - name: Setup gungraun (installs gungraun-runner + Valgrind per its own strategy)
+        # runner-version pinned explicitly (matches the `gungraun = "0.19.4"` dev-dependency in
+        # spikes/bench-noise/Cargo.toml/.lock): `runner-version: auto` reads the project's
+        # Cargo.lock to detect the matching version, but `defaults.run.working-directory` above
+        # only applies to `run:` steps, not `uses:` actions, so auto-detection looked for it at
+        # the repo root (the engine workspace, which has no gungraun dependency) and failed with
+        # "Unable to detect gungraun-runner version" (a workflow config bug, not an environment
+        # fault; first observed in run 35020976939).
         uses: gungraun/setup-gungraun@62591572561bb2f4ed2ae300b8a8bea99ea8ddaf # v1.1.3
         with:
-          runner-version: auto
+          runner-version: "0.19.4"
           valgrind-strategy: system
       - name: gungraun path, run 1 (timed)
         run: |
