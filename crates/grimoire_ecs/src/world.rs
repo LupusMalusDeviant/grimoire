@@ -491,3 +491,13 @@ impl fmt::Debug for WorldSnapshot {
         f.debug_tuple("WorldSnapshot").field(&self.world).finish()
     }
 }
+
+impl WorldSnapshot {
+    /// Resource `R` captured in this snapshot, if it was present then (contract §7.3).
+    ///
+    /// Delegates to [`World::resource`]; reading never allocates and does not change any hash.
+    #[must_use]
+    pub fn resource<R: Resource>(&self) -> Option<&R> {
+        self.world.resource::<R>()
+    }
+}

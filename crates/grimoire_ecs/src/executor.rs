@@ -114,3 +114,19 @@ impl Executor for PermutedExecutor {
         }
     }
 }
+
+#[cfg(all(test, feature = "conformance"))]
+mod conformance_tests {
+    use super::*;
+
+    #[test]
+    fn sequential_executor_is_conformant() {
+        crate::conformance::executor(&SequentialExecutor);
+    }
+
+    #[test]
+    fn permuted_executor_is_conformant() {
+        crate::conformance::executor(&PermutedExecutor::new(1));
+        crate::conformance::executor(&PermutedExecutor::reversed());
+    }
+}

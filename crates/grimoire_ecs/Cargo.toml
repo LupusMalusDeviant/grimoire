@@ -9,6 +9,10 @@ repository.workspace = true
 license-file.workspace = true
 publish.workspace = true
 
+[features]
+# Trait conformance suites (contract §2 rule 12); off by default, no third-party dependency.
+conformance = []
+
 [dependencies]
 grimoire_core.workspace = true
 thiserror.workspace = true
