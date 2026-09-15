@@ -9,25 +9,31 @@
 - **Autor:** Claude (unbeaufsichtigter Lauf) im Auftrag von Lupus Malus Deviant (PO)
 - **Vorläufig:** Alle Bewertungen und die Empfehlung sind vorläufig. Die Bestätigung durch den PO steht aus.
 - **Messdaten:** [`spikes/sigil-syntax/results.md`](../../spikes/sigil-syntax/results.md), Stand Commit
-  `c3239ad`. Reproduzierbar mit `cargo test` in `spikes/sigil-syntax/proto`.
+  `8558c7d` (nach dem Review vom 2026-09-15; erste Fassung `c3239ad`). Reproduzierbar mit
+  `cargo test` in `spikes/sigil-syntax/proto`.
 
 ## Kurzfassung
 
 - Beide Prototyp-Parser lesen alle fünf Korpus-Muster ohne Befund und erzeugen dasselbe aufgelöste Modell.
-- **Diagnosen:** Die eigene Grammatik „sigil 1“ trifft in allen zehn Fehlerfällen Position und Knotenpfad.
-  Sie erreicht 119 von 120 Punkten, RON mit `ron` 0.12.2 und eigener Zusatzschicht 96 von 120. Die Lücke
-  entsteht fast ganz bei Syntaxfehlern und beim fehlenden Pflichtfeld (e02, e03, e04, e07, e09).
+- **Diagnosen:** Die eigene Grammatik „sigil 1“ trifft in allen zehn Fehlerfällen des Korpus Position und
+  Knotenpfad. Sie erreicht 119 von 120 Punkten, RON mit `ron` 0.12.2 und eigener Zusatzschicht 102 von 120.
+  Die Lücke entsteht ganz bei den Syntaxfehlern e02, e04 und e09, und dort an `ron` selbst. Fehlendes
+  Pflichtfeld (e03) und falsche Einheit (e07) lagen in der ersten Fassung ebenfalls zurück (96 von 120).
+  Das lag an der dünnen RON-Zusatzschicht, nicht an `ron`, und ist mit wenigen Zeilen behoben.
+- **Außerhalb des Korpus:** Syntaxspezifische Sonden zeigen bei sigil 1 bis zu drei Diagnosen je Fehler,
+  darunter falsche Folgebefunde. „Genau eine Diagnose“ gilt nur für die zehn Korpusfälle.
 - **Rundreise:** Einen Wert an einem Knotenpfad setzen, ohne Kommentare zu verlieren, gelingt in
   **beiden** Syntaxen, aber nur mit einem selbst geschriebenen verlustfreien Baum. Der Weg über das
   `ron`-Crate verliert alle Kommentare und schreibt rund 40 Zeilen um.
 - **Ergonomie:** sigil 1 braucht 87 % der Zeilen, 56 % der signifikanten Tokens und 69 % der Zeichen von RON.
+  Die Token-Differenz stammt zu 40 % aus Trennkommas und zu 31 % aus Einheiten-Hüllen (Richtwert).
 - **Aufwand:** Die sigil-Seite umfasst im Spike 2 241 Codezeilen. Die RON-Seite braucht für dieselben
-  Pfade, Positionen und `set`-Operationen ebenfalls 630 Zeilen eigenen Code.
+  Pfade, Positionen und `set`-Operationen ebenfalls 713 Zeilen eigenen Code.
 - **Generierbarkeit ist nicht gemessen.** Codex war zweimal nicht verfügbar. Die sechs
   Dateien von Claude sagen über fremde Autoren nichts aus.
-- **Empfehlung (vorläufig):** eigene Grammatik „sigil 1“, unter zwei Bedingungen vor der Abnahme. Die
-  Codex-Messung zur Generierbarkeit wird nachgeholt, und die Handbewertungen bekommen eine unabhängige
-  Zweitbewertung (Abschnitt 7).
+- **Empfehlung (vorläufig):** eigene Grammatik „sigil 1“, unter drei Bedingungen vor der Abnahme. Die
+  Codex-Messung zur Generierbarkeit wird nachgeholt, die Handbewertungen bekommen eine unabhängige
+  Zweitbewertung, und syntaxspezifische Fehlerfälle kommen in den Korpus (Abschnitt 7).
 
 ## 1 Frage
 
@@ -87,7 +93,8 @@ ihn geschrieben, weil beide Codex-Läufe für den Entwurf nach dem Timeout ohne 
 
   Zusammen decken die Muster alle Bausteine, Modifikatoren, Transformationen, Trigger und Flags aus
   PRD-0004 FR-01 bis FR-05 ab. Dazu kommen Behaviour-Referenz, Metadaten, Kaskadentiefe am Limit und
-  Komposition. Die Abdeckungsmatrix steht im Korpus-README.
+  Komposition. Die Abdeckungsmatrix steht im Korpus-README. Die Ablehnungen aus FR-08 (Tiefe über 3,
+  Zyklus) und `beats` enthält der bewertete Korpus nicht; sie stehen nur in den Sonden (Abschnitt 4.1).
 - **Zehn Fehlerfälle in beiden Syntaxen:** Tippfehler im Schlüssel (e01), falscher Typ (e02), fehlendes
   Pflichtfeld (e03), nicht geschlossene Klammer (e04), Wert außerhalb des Bereichs (e05), unbekanntes
   Behaviour (e06), falsche Einheit (e07), doppelter Emitter-Name (e08), doppeltes Komma (e09) und falsche
@@ -106,23 +113,35 @@ Für jeden Fall zählt die erste Diagnose, verglichen mit `expected.json`. Die T
 
 | Spalte | RON | sigil 1 | Bewertung |
 |---|---:|---:|---|
-| Position (Zeile:Spalte) | 27 | 30 | automatisch |
-| Ursache | 22 | 30 | von Hand, vorläufig |
-| Fix-Hinweis | 19 | 29 | von Hand, vorläufig |
-| Knotenpfad | 28 | 30 | automatisch |
-| **Summe (höchstens 120)** | **96** | **119** | |
+| Position (Zeile:Spalte) | 29 | 30 | automatisch |
+| Ursache | 24 | 30 | von Hand, vorläufig |
+| Fix-Hinweis | 20 | 29 | von Hand, vorläufig |
+| Knotenpfad | 29 | 30 | automatisch |
+| **Summe (höchstens 120)** | **102** | **119** | |
 
-- **sigil 1:** Alle zehn Fälle treffen Soll-Position und Soll-Knotenpfad. Jede Datei liefert genau eine
-  Diagnose. Der eine fehlende Punkt ist der Fix-Hinweis bei e03, der keinen Beispielwert nennt.
+In der ersten Fassung stand RON bei 96 (Position 27, Ursache 22, Hinweis 19, Pfad 28). Den Unterschied
+machen e03 und e07; siehe „Ursachen trennen“ unten.
+
+- **sigil 1:** Alle zehn Korpusfälle treffen Soll-Position und Soll-Knotenpfad, und jede dieser Dateien
+  liefert genau eine Diagnose. Außerhalb des Korpus gilt das nicht (Sonden unten). Der eine fehlende Punkt
+  ist der Fix-Hinweis bei e03, der keinen Beispielwert nennt.
 - **RON: Rohmeldungen von `ron` 0.12.2 in den Fällen mit Abstand:**
 
   | Fall | Rohmeldung | Position Ist (Soll) | Befund |
   |---|---|---|---|
   | e02 | `Expected comma` | 43:25 (43:24) | `ron` liest `3` als Ganzzahl und stolpert über `.5`. Ein Typfehler erscheint als Syntaxfehler, ohne Hinweis. |
-  | e03 | `Unexpected missing field named speed in Emitter` | 55:9 (27:19) | Die Position ist die schließende Klammer, 28 Zeilen unter dem Emitter; `bloom` wird nicht genannt. |
+  | e03 | `Unexpected missing field named speed in Emitter` | 55:9 (27:19) | Die Position ist die schließende Klammer, 28 Zeilen unter dem Emitter; `bloom` wird nicht genannt. Die Zusatzschicht verlegt die Meldung über den Scanner auf `bloom` (27:19) und nennt den Emitter. |
   | e04 | `Unexpected field named Bullet in Bullet, expected one of name, silhouette …` | 33:9 (33:9) | Die öffnende Klammer bleibt unerwähnt. Der Hinweis zählt Felder auf und führt in die falsche Richtung. |
-  | e07 | `Expected struct Deg but found Ticks` | 44:25 (44:25) | Die Position ist exakt, das Feld wird nicht genannt. |
+  | e07 | `Expected struct Deg but found Ticks` | 44:25 (44:25) | Die Position ist exakt, das Feld wird nicht genannt. Die Zusatzschicht ergänzt Feld und Wert (`spread: Deg(12.0)`). |
   | e09 | `Expected opening ( for struct Key` | 49:51 (49:51) | Die Position ist exakt, die Ursache irreführend. Der Pfad zeigt auf das nicht vorhandene `keys[3]`. |
+
+- **Ursachen trennen:** Zu `ron` selbst gehören e02, e04 und e09. Dort sind Fehlerklasse oder Ursache
+  falsch, und der Fehlercode enthält nicht, was eine bessere Meldung bräuchte. Diese drei Fälle machen die
+  ganzen 17 Punkte Abstand aus. e03 und e07 dagegen waren Lücken der dünnen RON-Zusatzschicht: Der Scanner
+  kannte den Pfad zum Besitzer schon, `ron_front.rs` nutzte ihn aber nicht. Die erste Fassung hatte der
+  RON-Seite damit deutlich weniger Diagnoseaufwand gegeben als der sigil-Seite. Nach dem Review verlegt die
+  Schicht das fehlende Feld auf den Emitter und nennt bei der falschen Einheit Feld und Wert, zusammen gut
+  80 Zeilen in `ron_front.rs` (einschließlich des Rohaufrufs für `results.md` 2.2). Das bringt 6 Punkte.
 
 - **e05, e06, e08, e10:** Diese Befunde kommen aus dem gemeinsamen Validator und erreichen in beiden
   Syntaxen 3/3. Die RON-Positionen dafür liefert der eigene Scanner, nicht `ron`.
@@ -135,6 +154,16 @@ Für jeden Fall zählt die erste Diagnose, verglichen mit `expected.json`. Die T
 - **Mehrere Fehler in einer Datei (Zusatzmessung):** RON bricht immer beim ersten Fehler ab. sigil 1 setzt
   nach einem Syntaxfehler wieder auf und meldet danach noch den Schemafehler (e03 + e09: 2 Diagnosen). Im
   Schema-Pass brechen beide beim ersten Befund ab, weil serde derive das tut (e02 + e07: 1 Diagnose).
+- **Sonden außerhalb des Korpus (`results.md` 2.7):** Der Fehlerkorpus enthält nur Mutationen, die in beiden
+  Syntaxen gleich aussehen. Zwölf Sonden ergänzen syntaxspezifische Fehlerbilder und die Ablehnungen aus
+  FR-08. Sie sind nicht bewertet.
+  - sigil 1: `count: 24` ergibt drei Diagnosen, `count = 24 start = 7.5deg` auf einer Zeile zwei. Beide
+    enthalten einen falschen Befund „fehlendes Pflichtfeld“, obwohl das Feld dasteht. `radius = 0.25 u` und
+    `delay = 30s` ergeben je zwei Diagnosen, `30s` ohne Hinweis. Eine fehlende Einheit (`speed = 0.05`) und
+    `30beats` ergeben je eine gute Einzeldiagnose.
+  - RON: Ein fehlender Newtype (`speed: 0.05`) heißt „Expected opening `(` for struct `UnitsPerTick`“, ein
+    fehlender Strukturname „Expected identifier“, beide ohne Hinweis.
+  - Beide: Kaskadenzyklus und Kaskadentiefe 4 meldet der gemeinsame Validator mit genau einer Diagnose.
 
 So sieht ein Modder den Unterschied (Auszug aus `results.md` 2.6, Fall e02):
 
@@ -195,8 +224,8 @@ Spiral-Emitter von Muster 04 heißt `bloom`.
 - **Deutung:** Das belegt nur, dass Grammatik, Schema und Prototyp in sich stimmig sind. Claude hat
   Grammatik, Schema, Aufgabentexte und Prüfer selbst geschrieben. Wie gut ein fremder Autor die Syntax
   trifft, ist damit nicht gemessen.
-- **Nachholen:** Sobald Codex verfügbar ist, die Prompts des unbeaufsichtigten Laufs (`gen-g*.prompt.md`)
-  erneut an Codex geben. Die beiden Antworten je Muster als `generability/codex/<brief>.ron` und `.sigil`
+- **Nachholen:** Sobald Codex verfügbar ist, die Prompts aus `spikes/sigil-syntax/generability/prompts/`
+  (unverändert aus dem unbeaufsichtigten Lauf übernommen, Aufruf im README dort) erneut an Codex geben. Die beiden Antworten je Muster als `generability/codex/<brief>.ron` und `.sigil`
   ablegen, dann `cargo run -- report --write` ausführen. Der Code zählt die Diagnosen schon nach Phase und
   Art und prüft RON ≡ sigil 1 je Autor.
 
@@ -210,10 +239,11 @@ Spiral-Emitter von Muster 04 heißt `bloom`.
 | signifikante Tokens | 1 588 | 883 | 56 % |
 | Zeichen ohne Leerraum und Kommentare | 4 600 | 3 166 | 69 % |
 
-Die Token-Differenz stammt vor allem aus den Einheiten: `Ticks(20)` sind vier Tokens, `20t` ist eines.
-Dazu kommen Anführungszeichen um offene Bezeichner und die Kopfzeile `#![enable(implicit_some)]`. Die
-Kommentarzeilen sind in beiden Varianten gleich. Die Tokens zählt der jeweilige Scanner; die Zahl ist nur
-ein Richtwert.
+Die Token-Differenz von 705 stammt vor allem aus Trennkommas und Einheiten-Hüllen. Kommas machen 280 Tokens
+aus (40 %), Einheiten-Hüllen 216 (31 %): `Ticks(20)` sind vier Tokens, `20t` ist eines. Die Kopfzeile
+`#![enable(implicit_some)]` bringt 30 (4 %), der Rest aus Strukturnamen, `name:`-Feldern und Klammern 179
+(25 %). Die Aufteilung erzeugt der Prototyp (`results.md` 5.1). Die Kommentarzeilen sind in beiden Varianten
+gleich. Die Tokens zählt der jeweilige Scanner; Gesamtzahl und Aufteilung sind nur Richtwerte.
 
 **Spirale mit Tempokurve (Muster 04, `speed_curve`):**
 
@@ -241,10 +271,12 @@ SpeedCurve(                                    modifier speed_curve {
 
 (Kommentarzeile des Originals für die Gegenüberstellung weggelassen.)
 
-**Fehlersicht eines Modders** (`results.md` 2.6): sigil 1 zeigt auf das Token, das zu ändern ist, nennt
-Feld und Besitzer und schlägt einen konkreten Ersatz vor. Bei e04 nennt sie die Zeile der öffnenden
-Klammer. RON-Syntaxfehler führen oft in die falsche Richtung (e02, e04, e09), und ein fehlendes Feld zeigt
-auf eine schließende Klammer weit unter der Stelle, an der man suchen würde (e03).
+**Fehlersicht eines Modders** (`results.md` 2.6): In den Korpusfällen zeigt sigil 1 auf das Token, das zu
+ändern ist, und nennt Feld und Besitzer. In den meisten Fällen schlägt sie auch einen konkreten Ersatz vor;
+Ausnahmen sind e03 (Hinweis ohne Beispielwert) und e08 (Umbenennen ohne konkreten Namen). Bei e04 nennt sie
+die Zeile der öffnenden Klammer. RON-Syntaxfehler führen oft in die falsche Richtung (e02, e04, e09). Ein
+fehlendes Feld meldet `ron` an der schließenden Klammer weit unter der Stelle, an der man suchen würde
+(e03); die Zusatzschicht verlegt die Meldung auf den Emitter.
 
 ### 4.5 Implementierungsaufwand
 
@@ -253,10 +285,11 @@ Codezeilen des Spikes nach `rustfmt`, ohne Leer- und Kommentarzeilen, ohne Tests
 | Teil | Module | Codezeilen |
 |---|---|---:|
 | sigil-Seite | `sigil.rs` 1 476, `tree.rs` 765 | 2 241 |
-| RON-Seite, trotzdem eigener Code | `ron_front.rs` 116, `ron_cst.rs` 514 | 630 |
+| RON-Seite, trotzdem eigener Code | `ron_front.rs` 199, `ron_cst.rs` 514 | 713 |
 | gemeinsam, unabhängig von der Syntax | `model.rs` 284, `check.rs` 962, `diag.rs` 170 | 1 416 |
 
-Die sigil-Seite ist rund 3,6-mal so groß wie die RON-Seite. Die RON-Seite ist aber nicht null: Wer
+Die sigil-Seite ist rund 3,1-mal so groß wie die RON-Seite (in der ersten Fassung 3,6 bei 630 Zeilen; die
+Nacharbeit für e03 und e07 hat `ron_front.rs` um 83 Zeilen vergrößert). Die RON-Seite ist aber nicht null: Wer
 Knotenpfade, Positionen für Validierungsbefunde oder `set` braucht, schreibt auch dort einen eigenen
 Scanner. Der Vorteil „kein eigener Parser“ gilt für RON also nur ohne diese Anforderungen, und Plan 0002
 verlangt sie (WP1.4 Rundreise, WP4.1 verlustfreier Syntaxbaum und Knotenpfade in Diagnosen).
@@ -267,11 +300,11 @@ Vorläufige Einschätzung von Claude; die Bestätigung durch den PO steht aus.
 
 | Kriterium | RON | sigil 1 | Beleg | Einschätzung |
 |---|---|---|---|---|
-| Fehlermeldungen | 96/120; Syntaxfehler oft irreführend; nur erster Fehler; Hinweise nur mit eigener Schicht | 119/120; Wiederaufsetzen nach Syntaxfehlern | 4.1 | **Vorteil sigil 1, gemessen**, aber auf Soll-Texte hin geschrieben (Befangenheit, Abschnitt 6) |
+| Fehlermeldungen | 102/120; Syntaxfehler oft irreführend (an `ron` selbst); nur erster Fehler; Hinweise und Positionen nur mit eigener Schicht | 119/120 im Korpus; Wiederaufsetzen nach Syntaxfehlern; bei syntaxspezifischen Sonden Folgefehler | 4.1 | **Vorteil sigil 1 bei Syntaxfehlern, gemessen**, aber auf Soll-Texte hin geschrieben (Befangenheit, Abschnitt 6) |
 | Rundreise und `set` ohne Kommentarverlust | erfüllt mit eigenem Scanner (zweiter Parser); über `ron` nicht erfüllt | erfüllt mit demselben Parser | 4.2 | **Gleichstand im Ergebnis**; bei RON bleibt das Risiko zweier Parser |
 | Editier-Ergonomie | tiefere Verschachtelung, Einheiten als Hülle, Kommas über Ebenen | 56 % der Tokens, flache Blöcke, Einheiten als Suffix | 4.4 | **Vorteil sigil 1, gemessen** an Länge und Einrückung; nicht an echten Moddern |
 | Generierbarkeit durch Agenten | Syntax ist öffentlich bekannt und vermutlich in Trainingsdaten vertreten (nicht geprüft) | neue Syntax, nur über Doku, Beispiele und Diagnosen erlernbar | 4.3 | **Nicht gemessen.** Das Risiko liegt eher bei sigil 1 und ist der wichtigste offene Punkt |
-| Aufwand und Wartung | 630 Zeilen eigener Code plus Abhängigkeit von `ron`-Verhalten je Version | 2 241 Zeilen eigener Parser, dafür keine Fremdabhängigkeit im Parser | 4.5 | **Vorteil RON**, bei den geforderten Fähigkeiten etwa Faktor 3,6 statt „null gegen alles“ |
+| Aufwand und Wartung | 713 Zeilen eigener Code plus Abhängigkeit von `ron`-Verhalten je Version | 2 241 Zeilen eigener Parser, dafür keine Fremdabhängigkeit im Parser | 4.5 | **Vorteil RON**, bei den geforderten Fähigkeiten etwa Faktor 3,1 statt „null gegen alles“ |
 
 Zwei Befunde gelten unabhängig von der Wahl. Erstens liefern Schema- und Validierungsbefunde nur dann
 Knotenpfade und gute Positionen, wenn ein eigener verlustfreier Baum existiert. Zweitens melden beide
@@ -293,11 +326,13 @@ eigenen, nicht abbrechenden Schema-Pass.
 - **Nur der erste Schemafehler.** Beide Varianten melden je Lauf nur den ersten Schemafehler, weil serde
   derive dort aufhört. Nur sigil 1 setzt nach Syntaxfehlern wieder auf.
 - **Nur `ron` 0.12.2.** Andere Versionen verhalten sich anders, etwa bei der Prüfung von Newtype-Namen.
-  Eine echte v2-Datei wurde nicht gemessen; RON prüft die Version erst nach der vollständigen
-  Deserialisierung mit dem v1-Schema.
+  Eine echte v2-Datei wurde nicht gemessen. Dass der Prototyp die Version in RON erst nach der vollständigen
+  Deserialisierung prüft, ist ein Artefakt des Prototyps: Der im ADR vorgeschlagene Vorab-Scan der
+  Kopfzeile ist nicht umgesetzt.
 - **Nicht gemessen:** Parse-Geschwindigkeit, Hot-Reload, Editor-Unterstützung (LSP), sehr große Dateien und
   Rückmeldungen echter Modder. Das Wiederaufsetzen von sigil 1 ist nur an den Fehlerarten des Korpus
-  geprüft.
+  bewertet; syntaxspezifische Fehlerbilder, Kaskadentiefe über 3, Zyklen und `beats` stehen nur als
+  unbewertete Sonden in `results.md` 2.7.
 - **Abweichungen vom Auftrag:**
   - Die Parser sind handgeschrieben, ohne Kombinator-Crate.
   - Der Rundreise-Pfad ist `emitters.bloom.*` statt `spiral_left`.
@@ -305,8 +340,14 @@ eigenen, nicht abbrechenden Schema-Pass.
   - Fehlerkopien mit Import (e06, e08) werden gegen das Verzeichnis ihres Basismusters aufgelöst.
 - **Code-Zustand:** `cargo clippy` meldet 11 Stilwarnungen (zusammenlegbares `if`, große `Err`-Variante,
   Einrückung von Doc-Listen); für den Spike bleiben sie stehen. `Cargo.lock` ist zur Reproduzierbarkeit
-  eingecheckt. Engine-Workspace, Wurzel-`Cargo.toml` und CI sind unberührt; nichts wurde gepusht.
-- **Prosa-Zahlen.** Zahlen im Fließtext von `results.md` (etwa 27/30, 2 200 Zeilen, 87 %) sind von Hand
+  eingecheckt. Engine-Workspace, Wurzel-`Cargo.toml` und CI sind unberührt. Der Branch ist ohne PR gepusht;
+  ein Branch-Push löst keine CI aus, weil `ci.yml` bei `push` nur `main` beobachtet.
+- **CI-Kosten eines späteren PR:** `ci.yml` nimmt unter `paths-ignore` nur `**/*.md` und `docs/**` aus. Der
+  Spike enthält `.rs`-, `.ron`-, `.sigil`-, `.py`- und `.json`-Dateien sowie `Cargo.toml`/`Cargo.lock`
+  unter `spikes/`; ein PR startet also die volle Drei-OS-Matrix, obwohl der Engine-Workspace unberührt ist.
+  Ob `spikes/**` in `paths-ignore` gehört, entscheidet der PO. Zu prüfen ist dabei, ob übersprungene
+  Pflicht-Checks den Merge blockieren.
+- **Prosa-Zahlen.** Zahlen im Fließtext von `results.md` (etwa 29/30, 2 200 Zeilen, 87 %) sind von Hand
   aus den generierten Blöcken übernommen. `cargo test` prüft nur die generierten Blöcke.
 
 ## 7 Empfehlung
@@ -317,9 +358,9 @@ mit verlustfreiem Syntaxbaum als Quelltextsyntax v1. Begründung und Gegenargume
 bewertet.
 
 - **Dafür:** PRD-0004 nennt Fehlermeldungen und Editier-Ergonomie als Kriterien, und bei beiden liegt
-  sigil 1 gemessen vorn. Das Setzen an Knotenpfaden erfordert in beiden Syntaxen eigenen Code, daher
-  schrumpft der Aufwandsvorteil von RON auf etwa den Faktor 3,6. Bei RON bliebe zudem ein zweiter Parser
-  neben `ron` zu pflegen.
+  sigil 1 gemessen vorn, bei den Fehlermeldungen allerdings nur noch bei Syntaxfehlern. Das Setzen an
+  Knotenpfaden erfordert in beiden Syntaxen eigenen Code, daher schrumpft der Aufwandsvorteil von RON auf
+  etwa den Faktor 3,1. Bei RON bliebe zudem ein zweiter Parser neben `ron` zu pflegen.
 - **Dagegen:** gut 2 200 Zeilen eigener Parser, der gewartet, dokumentiert und gegen beliebige Eingaben
   gehärtet werden muss. Keine Editor-Unterstützung von Haus aus. Und das nicht gemessene Risiko, dass
   Agenten eine unbekannte Syntax schlechter treffen.
@@ -331,6 +372,10 @@ bewertet.
    nicht aus, sollte der PO RON oder KDL neu gewichten.
 2. **Zweitbewertung** der Handbewertungen für e02, e03, e04, e07 und e09 durch ein zweites Modell oder den
    PO.
+3. **Syntaxspezifische Fehlerfälle** in den Fehlerkorpus aufnehmen und bewerten: für sigil 1 `:` statt `=`,
+   mehrere Felder auf einer Zeile, Leerzeichen vor der Einheit und eine Wallclock-Einheit; für RON ein
+   fehlender Newtype und ein fehlender Strukturname; für beide Kaskadentiefe über 3, ein Zyklus und `beats`.
+   Die falschen Folgebefunde von sigil 1 sollten vorher behoben sein.
 
 ## 8 Offene Fragen für den PO (vorbereitet, nicht entschieden)
 

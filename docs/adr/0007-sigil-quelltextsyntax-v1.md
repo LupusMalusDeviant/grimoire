@@ -1,6 +1,6 @@
 # ADR-0007: Sigil-Quelltextsyntax v1
 
-- **Status:** Vorgeschlagen
+- **Status:** Vorgeschlagen (Nummer vorläufig: 0007 ist die nächste freie Nummer auf dem Branch `p1/wp1.4-sigil-syntax-spike`; parallele P1-Branches können Engine-ADRs anlegen, die endgültige Nummer steht erst beim Merge fest)
 - **Datum:** 2026-09-15
 - **Autor:** Claude (Ausarbeitung, unbeaufsichtigter Lauf) im Auftrag von Lupus Malus Deviant (PO)
 - **Konsultiert:** — (PO-Entscheidung in Sammelsitzung B ausstehend)
@@ -20,13 +20,16 @@ Der Spike WP1.4 hat beide Kandidaten gemessen. Bericht:
 [`docs/spikes/of-4.1-sigil-quelltextsyntax.md`](../spikes/of-4.1-sigil-quelltextsyntax.md), Rohdaten:
 [`spikes/sigil-syntax/results.md`](../../spikes/sigil-syntax/results.md). Kurz:
 
-- **Fehlermeldungen:** sigil 1 erreicht 119 von 120 Punkten, RON mit `ron` 0.12.2 und eigener Zusatzschicht
-  96. RON verliert vor allem bei Syntaxfehlern und beim fehlenden Pflichtfeld.
+- **Fehlermeldungen:** sigil 1 erreicht in den zehn Korpusfällen 119 von 120 Punkten, RON mit `ron` 0.12.2
+  und eigener Zusatzschicht 102. RON verliert nur noch bei den Syntaxfehlern e02, e04 und e09, und dort an
+  `ron` selbst. Fehlendes Pflichtfeld und falsche Einheit lagen in der ersten Fassung ebenfalls zurück; das
+  lag an der dünnen RON-Zusatzschicht und ist mit wenigen Zeilen behoben.
 - **Rundreise:** Einen Wert an einem Knotenpfad ohne Kommentarverlust setzen gelingt in beiden Syntaxen,
   aber nur mit einem selbst geschriebenen verlustfreien Baum. Über das `ron`-Crate gehen alle Kommentare
   verloren.
-- **Länge:** sigil 1 braucht 56 % der Tokens von RON.
-- **Aufwand:** 2 241 Zeilen eigener Parser gegen 630 Zeilen eigene Zusatzschicht für RON.
+- **Länge:** sigil 1 braucht 56 % der Tokens von RON. Das ist nur ein Richtwert, weil jeder Scanner anders
+  zählt; die Differenz stammt zu 40 % aus Trennkommas und zu 31 % aus Einheiten-Hüllen.
+- **Aufwand:** 2 241 Zeilen eigener Parser gegen 713 Zeilen eigene Zusatzschicht für RON.
 - **Generierbarkeit** durch Agenten ist nicht gemessen, weil Codex nicht verfügbar war.
 
 Plan 0002 WP1.4 verlangt außerdem einen Versions-Header `sigil 1`, eine Migrationsregel und die Schließung
@@ -64,23 +67,28 @@ künftige Syntaxversionen gekennzeichnet und migriert?
 
 Idiomatisches serde-RON mit `#![enable(implicit_some)]`, PascalCase-Varianten und Einheiten als Newtypes
 (`Ticks(20)`, `Deg(11.0)`). `ron` parst und deserialisiert. Eine eigene Schicht leitet Fix-Hinweise aus
-den Fehlercodes ab, ein eigener verlustfreier Scanner liefert Knotenpfade, Positionen und `set`. Die
-Version steht im Feld `version: 1`. Den Header `sigil 1` müsste ein Vorab-Scan etwa aus einer ersten
-Kommentarzeile `// sigil 1` lesen, weil RON keine eigene Kopfzeile kennt. **Gemessen** im Spike.
+den Fehlercodes ab, ein eigener verlustfreier Scanner liefert Knotenpfade, Positionen und `set`. Im Spike
+steht die Version im Feld `version: 1`. RON kennt keine eigene Kopfzeile; für den Versions-Header unten
+schlägt der Autor deshalb einen Vorab-Scan vor: Er liest Zeile 1 `sigil 1` und übergibt den Rest der Datei
+mit einer Leerzeile an ihrer Stelle an `ron`, damit Zeilennummern stimmen. Eine Datei mit Header ist dann
+kein reines RON mehr. Die Alternative, ein Kommentar `// sigil 1`, bliebe gültiges RON, widerspräche aber
+der Header-Regel (kein Kommentar vor dem Header) und ist deshalb nicht vorgeschlagen. Der Vorab-Scan ist im
+Spike nicht umgesetzt. **Gemessen** im Spike.
 
 **Positiv:**
 - Kein eigener Parser für das Modell: serde derive liefert Schema-Pass und Typprüfung.
 - RON ist im Rust-Umfeld verbreitet und öffentlich dokumentiert. Dass Agenten es gut treffen, liegt nahe, ist aber nicht gemessen.
-- Kleinerer eigener Code: 630 Zeilen im Spike für Hinweise, Pfade, Positionen und `set`.
+- Kleinerer eigener Code: 713 Zeilen im Spike für Hinweise, Pfade, Positionen und `set`.
+- Schema-Befunde lassen sich mit wenigen Zeilen Zusatzschicht auf das Niveau von sigil 1 heben: Das fehlende Pflichtfeld (e03) verlegt sie über den Scanner vom Strukturende auf den Emitter, bei der falschen Einheit (e07) nennt sie Feld und Wert.
 - `ron` 0.12.2 prüft Newtype-Namen, eine falsche Einheit (`Ticks` statt `Deg`) wird also erkannt.
 
 **Negativ:**
-- Syntaxfehler führen gemessen in die falsche Richtung. `3.5` statt Ganzzahl heißt „Expected comma“, eine fehlende Klammer erscheint als unbekanntes Feld `Bullet`, ein doppeltes Komma als fehlende Struktur `Key`. Ein fehlendes Pflichtfeld zeigt auf das Strukturende, 28 Zeilen unter dem Emitter.
+- Syntaxfehler führen gemessen in die falsche Richtung, und das liegt an `ron` selbst, nicht an der Zusatzschicht: Fehlerklasse oder Ursache sind falsch, und der Fehlercode enthält nicht, was ein Hinweis bräuchte. `3.5` statt Ganzzahl heißt „Expected comma“, eine fehlende Klammer erscheint als unbekanntes Feld `Bullet`, ein doppeltes Komma als fehlende Struktur `Key` (e02, e04, e09). Außerhalb des Korpus meldet ein fehlender Newtype (`speed: 0.05`) „Expected opening `(` for struct `UnitsPerTick`“ und ein fehlender Strukturname „Expected identifier“, beide ohne Hinweis (Sonden, `results.md` 2.7).
 - `ron` bricht beim ersten Fehler ab und trennt Syntax- und Schemafehler nicht sauber.
 - Verlustfreies Editieren braucht einen zweiten Parser neben `ron`, der dieselbe Sprache anders liest. Jede Abweichung zwischen beiden ist eine eigene Fehlerquelle.
-- Einheiten als Hülle kosten Tokens und Verschachtelung: 1 588 gegen 883 Tokens, ein Stützpunkt steht auf 24 statt 6 Leerzeichen Einrückung.
+- Trennkommas und Einheiten als Hülle kosten Tokens und Verschachtelung: 1 588 gegen 883 Tokens (Richtwert; 280 der 705 Tokens Differenz sind Kommas, 216 Einheiten-Hüllen), ein Stützpunkt steht auf 24 statt 6 Leerzeichen Einrückung.
 - Die Einheitenprüfung hängt an der `ron`-Version und daran, dass nichts über `ron::Value` läuft. Dort wird `Ticks(240)` stillschweigend zu `Deg(240.0)`; Overrides müssen deshalb als `RawValue` gehalten werden.
-- Die Version wird erst nach der vollständigen Deserialisierung mit dem v1-Schema geprüft. Eine echte v2-Datei würde zuerst Schemafehler melden (nicht gemessen).
+- Der Versions-Header braucht eine Vorverarbeitung außerhalb von `ron` (Vorab-Scan, siehe oben), und eine Datei mit Header ist kein reines RON mehr. Dass der Spike die Version erst nach der vollständigen Deserialisierung prüft, ist dagegen ein Artefakt des Prototyps, keine Eigenschaft von RON: Mit dem Vorab-Scan wird sie vorher geprüft. Ohne ihn würde eine echte v2-Datei zuerst Schemafehler melden (nicht gemessen).
 
 ### Option 2: Eigene Grammatik „sigil 1“ mit verlustfreiem Syntaxbaum
 
@@ -93,16 +101,17 @@ Fehlern wieder auf und senkt in einen Wertebaum mit Spans ab. Darüber läuft ei
 **Gemessen** im Spike.
 
 **Positiv:**
-- Beste gemessene Diagnosen: 119/120 Punkte, alle zehn Fälle mit exakter Position und exaktem Knotenpfad, genau eine Diagnose je Fehler.
+- Beste gemessene Diagnosen: 119/120 Punkte, alle zehn Korpusfälle mit exakter Position, exaktem Knotenpfad und genau einer Diagnose je Datei. Das gilt nur für diese zehn Fälle (siehe Negativ).
 - Nach einem Syntaxfehler setzt der Parser wieder auf und meldet danach noch Schemafehler.
 - Ein Parser für alles: Kompilieren, `fmt`, `set` und `migrate` arbeiten auf demselben verlustfreien Baum.
-- Kompakter und flacher: 56 % der Tokens und 87 % der Zeilen von RON. Modifikatoren sind eigenständige Blöcke ohne Kommas über mehrere Ebenen.
+- Kompakter und flacher: 56 % der Tokens (Richtwert, siehe Kontext) und 87 % der Zeilen von RON. Modifikatoren sind eigenständige Blöcke ohne Kommas über mehrere Ebenen.
 - Einheiten stehen am Literal und bleiben in Overrides erhalten, unabhängig von einer Drittcrate.
 - Der Versions-Header wird vor allem anderen geprüft; eine fremde Version ergibt genau eine Diagnose.
 - Keine Fremdabhängigkeit im Parser, das Format bleibt unter eigener Kontrolle.
 
 **Negativ:**
-- Eigener Parser mit rund 2 241 Zeilen im Spike, etwa 3,6-mal so viel eigener Code wie die RON-Schicht. Er muss gewartet, dokumentiert und gegen beliebige Eingaben gehärtet werden (Fuzzing).
+- Eigener Parser mit rund 2 241 Zeilen im Spike, etwa 3,1-mal so viel eigener Code wie die RON-Schicht (713 Zeilen). Er muss gewartet, dokumentiert und gegen beliebige Eingaben gehärtet werden (Fuzzing).
+- Syntaxspezifische Fehlerbilder außerhalb des Korpus sind gemessen schwächer. `count: 24` (RON-Gewohnheit) ergibt drei Diagnosen, zwei Felder auf einer Zeile ergeben zwei, jeweils mit einem falschen Folgebefund „fehlendes Pflichtfeld“. `0.25 u` und `30s` ergeben je zwei Diagnosen, `30s` ohne Hinweis (Sonden, `results.md` 2.7). Der Fehlerkorpus enthält nur Mutationen, die in beiden Syntaxen gleich aussehen.
 - Die Syntax ist neu: Agenten und Modder kennen sie nicht aus anderen Projekten. Ob Agenten sie gut treffen, ist nicht gemessen und das größte offene Risiko.
 - Keine Editor-Unterstützung von Haus aus: Syntaxhervorhebung, Formatierer und später LSP sind Eigenbau.
 - Die 30/30-Werte sind befangen, denn Grammatik, Soll-Meldungen und Parser stammen vom selben Autor. Sie zeigen, was erreichbar ist, nicht was ohne Aufwand entsteht.
@@ -152,7 +161,7 @@ Spezifikation und Crate-Dokumentation.
 PRD-0004 nennt Fehlermeldungen und Editier-Ergonomie als Kriterien, und bei beiden liegt sigil 1 gemessen
 vorn. Der Hauptvorteil von RON, kein eigener Parser, trägt nicht so weit, wie es scheint: Plan 0002 verlangt
 Knotenpfade in Diagnosen und verlustfreies Setzen von Werten, und dafür braucht auch RON einen eigenen
-Scanner. Übrig bleibt ein Aufwandsunterschied von etwa Faktor 3,6 statt „null gegen alles“, und dazu das
+Scanner. Übrig bleibt ein Aufwandsunterschied von etwa Faktor 3,1 statt „null gegen alles“, und dazu das
 Risiko zweier Parser für eine Sprache. KDL (Option 3) ist die ernsthafteste Alternative, weil das Crate
 verlustfreies Editieren mitbringt. Es ist aber nicht gemessen, und Einheiten sowie Schema bleiben
 Eigenbau. TOML (Option 4) passt schlecht zur tiefen Verschachtelung der Patterns.
@@ -166,8 +175,14 @@ deshalb **Bedingungen vor der Abnahme** vor:
    neu gewichten.
 2. **Zweitbewertung** der Handbewertungen für die Fälle e02, e03, e04, e07 und e09 durch ein zweites Modell
    oder den PO.
+3. **Syntaxspezifische Fehlerfälle** in den Fehlerkorpus aufnehmen und bewerten: für sigil 1 `:` statt `=`,
+   mehrere Felder auf einer Zeile, Leerzeichen vor der Einheit und eine Wallclock-Einheit; für RON ein
+   fehlender Newtype und ein fehlender Strukturname; für beide Kaskadentiefe über 3, ein Kaskadenzyklus und
+   `beats`. Ausgangspunkt sind die Sonden in `results.md` 2.7. Die falschen Folgebefunde von sigil 1 sollten
+   vor der Bewertung behoben sein.
 
-**Versions-Header (für jede Option vorgeschlagen, in Option 1 als Vorab-Scan):**
+**Versions-Header (für jede Option vorgeschlagen; in Option 1 liest ein Vorab-Scan die Kopfzeile und übergibt
+den Rest an `ron`):**
 
 - Zeile 1 beginnt in Spalte 1 mit `sigil <N>`, wobei `<N>` eine positive Ganzzahl ist. Vor dem Header
   stehen weder BOM noch Kommentar. v1-Dateien beginnen mit `sigil 1`.
@@ -184,8 +199,8 @@ deshalb **Bedingungen vor der Abnahme** vor:
 2. **Additive Änderungen bleiben in `N`:** neue Arten, neue optionale Felder, deren Fehlen die bisherige
    Bedeutung behält. Ein älteres `sigilc` meldet solche Konstrukte als unbekannt und weist darauf hin, dass
    ein neueres `sigilc` nötig sein könnte.
-3. **Übergangsfenster:** `sigilc` für `N+1` liest `N` weiter, mindestens bis zum Ende der folgenden Phase,
-   und warnt dabei mit Migrationshinweis. Die Länge des Fensters legt der PO fest.
+3. **Übergangsfenster:** `sigilc` für `N+1` liest `N` weiter und warnt dabei mit Migrationshinweis. Die Länge
+   des Fensters legt der PO fest; der Autor schlägt als Untergrenze das Ende der folgenden Phase vor.
 4. **`sigilc migrate`** schreibt eine Datei schrittweise von `N` auf `N+1` um, bei größeren Sprüngen als
    Kette. Es arbeitet auf dem verlustfreien Syntaxbaum: Kommentare und Formatierung außerhalb geänderter
    Knoten bleiben erhalten. Die Migration ist idempotent.
@@ -221,7 +236,7 @@ Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2
 
 ### Positiv
 
-- Modder und Agenten bekommen Diagnosen, die auf das zu ändernde Token zeigen, Feld und Besitzer nennen und einen konkreten Ersatz vorschlagen; auch bei Syntaxfehlern.
+- Modder und Agenten bekommen Diagnosen, die auf das zu ändernde Token zeigen und Feld und Besitzer nennen, auch bei Syntaxfehlern. In den meisten Korpusfällen schlagen sie einen konkreten Ersatz vor; Ausnahmen sind e03 (Hinweis ohne Beispielwert) und e08 (Umbenennen ohne konkreten Namen). Für syntaxspezifische Fehlerbilder gilt das erst nach der Nacharbeit aus Bedingung 3.
 - Kompilieren, `fmt`, `set` und `migrate` arbeiten auf einem einzigen verlustfreien Syntaxbaum. Die Tooling-Suite kann Werte schreiben, ohne Kommentare zu zerstören.
 - Einheiten stehen sichtbar am Literal und werden in Overrides ohne Sonderfall geprüft.
 - Das Format hängt nicht vom Verhalten einer Drittcrate-Version ab. Versionen und Migration liegen vollständig in eigener Hand.
@@ -233,19 +248,19 @@ Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2
 - Eigener Parser von geschätzt gut 2 000 Zeilen in `grimoire_sigilc`, dazu Pflege, Fuzzing und Formatdokumentation. Die Spike-Zahlen sind unoptimierter Prototyp-Code.
 - Keine Editor-Unterstützung von Haus aus: Syntaxhervorhebung, Formatierer und später LSP sind Eigenbau.
 - Agenten kennen die Syntax nicht aus anderen Projekten. Die Generierbarkeit hängt an Formatdoku, Beispielen und Diagnoseschleife und ist bis zur Nachmessung ein Risiko.
-- Die gemessene Diagnosequalität ist befangen und muss sich an fremden Fehlerbildern erst bewähren. Das Wiederaufsetzen ist nur für die Korpus-Fehlerarten geprüft.
+- Die gemessene Diagnosequalität ist befangen und muss sich an fremden Fehlerbildern erst bewähren. Das Wiederaufsetzen ist nur für die Korpus-Fehlerarten ausgelegt; syntaxspezifische Sonden zeigen schon Folgefehler.
 - Mehrere Schemafehler je Lauf meldet der Spike nicht; das bräuchte einen eigenen, nicht abbrechenden Schema-Pass statt serde derive.
 - Lehnt der PO P-2 ab (R20), braucht die C#-Seite einen eigenen Parser für diese Grammatik.
 
 ### Folge-Entscheidungen
 
-- **Vor der Abnahme:** Generierbarkeitsmessung mit Codex nachholen, Handbewertungen zweitbewerten (Bedingungen im Vorschlag).
+- **Vor der Abnahme:** Generierbarkeitsmessung mit Codex nachholen, Handbewertungen zweitbewerten, syntaxspezifische Fehlerfälle aufnehmen (Bedingungen im Vorschlag).
 - **P-2 / Projekt-ADR-0010** (Compiler-Hoheit in Rust): Bei Ablehnung gewinnt die Verfügbarkeit fremder Parser-Implementierungen an Gewicht (Option 3 oder 4).
 - **Länge des Übergangsfensters** beim Lesen alter Syntaxversionen (Migrationsregel, Punkt 3).
 - **Mehrfachbefunde im Schema-Pass:** ob `sigilc` alle Schemafehler einer Datei meldet, und wie (eigener Pass statt serde derive).
 - **Endgültige Grammatik und Schema** in WP4.1 und WP4.2: Feldnamen, Arten, Bereiche; die Korpus-Annahmen sind vorläufig.
 - **Editor-Unterstützung:** TextMate-Grammatik für Syntaxhervorhebung jetzt oder LSP später (Tooling-Suite, PRD-0016).
-- **Falls Option 1 gewählt wird:** Overrides als `RawValue`, `ron` exakt pinnen, Upgrades gegen den Konformitätskorpus prüfen; Form des Versions-Headers (Vorab-Scan) festlegen.
+- **Falls Option 1 gewählt wird:** Overrides als `RawValue`, `ron` exakt pinnen, Upgrades gegen den Konformitätskorpus prüfen; Vorab-Scan des Versions-Headers bestätigen und umsetzen.
 - **`SimVec`-Fallback** (OF-4.2) nur über ein Folge-ADR zu ADR-0004.
 
 ### Review
@@ -253,11 +268,6 @@ Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2
 **Reality-Check geplant für:** nach WP4.1, sobald `sigilc check` gegen den Konformitätskorpus läuft und die ersten Referenz-Patterns von Agenten stammen; spätestens an M4 (Ende P1)
 
 ## Weitere Informationen
-
-**Nummer vorläufig:** 0007 ist die nächste freie Nummer auf diesem Branch
-(`p1/wp1.4-sigil-syntax-spike`). Parallele P1-Branches können Engine-ADRs anlegen, etwa das
-Crate-Map-ADR aus WP1.3. Die endgültige Nummer steht erst beim Merge fest; Verweise auf „Engine-ADR-0007“
-sind bis dahin vorläufig.
 
 ### Scope
 
@@ -273,7 +283,7 @@ und Diagnoseformat an der Quelle, umgesetzt in `grimoire_sigilc` (`sigilc check`
 
 ### Tooling-Empfehlung
 
-- Spike-Korpus (`spikes/sigil-syntax/corpus/`) samt `expected.json` als Grundstock des Konformitätskorpus aus WP4.1 übernehmen, ergänzt um mehrzeilige Fehlerbilder und echte v2-Dateien.
+- Spike-Korpus (`spikes/sigil-syntax/corpus/`) samt `expected.json` als Grundstock des Konformitätskorpus aus WP4.1 übernehmen, ergänzt um die syntaxspezifischen Sonden, Kaskadentiefe über 3, Kaskadenzyklen, `beats`, mehrzeilige Fehlerbilder und echte v2-Dateien.
 - Property-Tests `parse → fmt → parse` und „Verkettung aller Tokens = Quelldatei“ (Verlustfreiheit), dazu Fuzzing von Lexer und Parser; Ziel: kein Panic bei beliebiger Eingabe.
 - `sigilc check --json` als Rückmeldungsschleife für Agenten; die Messung zur Generierbarkeit (`cargo run -- report`) als wiederholbarer Test mit neuen Aufgabentexten.
 - Golden-Test über den Korpus: gleiche Binär-Unit auf Windows, Linux und macOS (OF-4.2, ADR-0004).
