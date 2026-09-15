@@ -54,5 +54,7 @@ pub use error::EcsError;
 pub use executor::{Executor, PermutedExecutor, SequentialExecutor};
 pub use query::{Query, QueryIter, QueryIterMut, ReadOnlyQuery, With, Without};
 pub use resource::Resource;
-pub use schedule::{Schedule, System, system_fn};
+pub use schedule::{
+    ParallelSystem, Schedule, Stage, StageMode, System, parallel_system_fn, system_fn,
+};
 pub use world::{World, WorldSnapshot};

@@ -5,7 +5,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use grimoire_core::{StableHasher, impl_stable_hash};
-use grimoire_ecs::{Access, CommandBuffer, Executor, PermutedExecutor, SequentialExecutor, World};
+use std::any::Any;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::AtomicBool;
+
+use grimoire_ecs::{
+    Access, CommandBuffer, Entity, Executor, PermutedExecutor, Schedule, SequentialExecutor, World,
+    parallel_system_fn, system_fn,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 struct Pos {
@@ -267,4 +274,162 @@ fn access_ignores_duplicate_declarations() {
     assert_eq!(once, twice);
     assert_ne!(Access::new().read::<Pos>(), Access::new().write::<Pos>());
     assert_ne!(Access::new(), Access::new().structural());
+}
+
+/// Text of a panic payload created by `panic!` with a literal or a format string.
+fn payload_text(payload: &(dyn Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-text payload>")
+}
+
+fn populated() -> World {
+    let mut world = World::new();
+    for i in 0..10 {
+        world.spawn((Pos { x: i as f32 },));
+    }
+    world
+}
+
+fn bump(world: &mut World) {
+    for pos in world.query_mut::<&mut Pos>() {
+        pos.x += 1.0;
+    }
+}
+
+fn double(world: &World, commands: &mut CommandBuffer) {
+    for (entity, pos) in world.query::<(Entity, &Pos)>() {
+        commands.set(entity, Pos { x: pos.x * 2.0 });
+    }
+}
+
+fn spawn_vel(_: &World, commands: &mut CommandBuffer) {
+    commands.spawn((Vel { x: 1.0 },));
+}
+
+#[test]
+fn a_panicking_stage_applies_none_of_its_commands() {
+    let armed = Arc::new(AtomicBool::new(true));
+    let trigger = Arc::clone(&armed);
+    let mut schedule = Schedule::new();
+    schedule
+        .add_system(system_fn("bump", bump))
+        .add_parallel_system(parallel_system_fn(
+            "double",
+            Access::new().read::<Pos>().write::<Pos>(),
+            double,
+        ))
+        .add_parallel_system(parallel_system_fn("boom", Access::new(), move |_, _| {
+            if trigger.swap(false, Ordering::Relaxed) {
+                panic!("boom");
+            }
+        }))
+        .add_parallel_system(parallel_system_fn(
+            "spawn_vel",
+            Access::new().structural(),
+            spawn_vel,
+        ));
+    assert_eq!(schedule.stages().len(), 2);
+
+    let mut world = populated();
+    let result = catch_unwind(AssertUnwindSafe(|| schedule.run(&mut world)));
+    let payload = result.expect_err("the stage panics");
+    assert_eq!(payload_text(payload.as_ref()), "boom");
+    assert!(!armed.load(Ordering::Relaxed));
+
+    // Only the exclusive stage before the panicking stage is applied.
+    let mut after_bump = populated();
+    bump(&mut after_bump);
+    assert_eq!(hash(&world), hash(&after_bump));
+
+    // The next run starts from empty buffers: nothing of the failed stage is applied late.
+    schedule.run(&mut world);
+    let mut reference = Schedule::new();
+    reference
+        .add_system(system_fn("bump", bump))
+        .add_parallel_system(parallel_system_fn(
+            "double",
+            Access::new().read::<Pos>().write::<Pos>(),
+            double,
+        ))
+        .add_parallel_system(parallel_system_fn(
+            "spawn_vel",
+            Access::new().structural(),
+            spawn_vel,
+        ));
+    reference.run(&mut after_bump);
+    assert_eq!(hash(&world), hash(&after_bump));
+    assert_eq!(world.query::<&Vel>().count(), 1);
+}
+
+#[test]
+fn the_panic_of_the_lowest_list_index_wins_under_any_executor() {
+    for executor in [
+        Arc::new(SequentialExecutor) as Arc<dyn Executor>,
+        Arc::new(PermutedExecutor::reversed()),
+        Arc::new(PermutedExecutor::new(5)),
+    ] {
+        let mut schedule = Schedule::new();
+        schedule
+            .add_parallel_system(parallel_system_fn("calm", Access::new(), |_, _| {}))
+            .add_parallel_system(parallel_system_fn("first", Access::new(), |_, _| {
+                panic!("first")
+            }))
+            .add_parallel_system(parallel_system_fn("second", Access::new(), |_, _| {
+                panic!("second")
+            }));
+        let mut world = World::new();
+        world.set_executor(executor);
+        let payload = catch_unwind(AssertUnwindSafe(|| schedule.run(&mut world)))
+            .expect_err("the stage panics");
+        assert_eq!(payload_text(payload.as_ref()), "first");
+    }
+}
+
+#[test]
+fn a_panicking_exclusive_system_propagates_unchanged() {
+    let mut schedule = Schedule::new();
+    schedule.add_system(system_fn("explode", |_| panic!("exclusive {}", 7)));
+    let mut world = World::new();
+    let payload =
+        catch_unwind(AssertUnwindSafe(|| schedule.run(&mut world))).expect_err("the system panics");
+    assert_eq!(payload_text(payload.as_ref()), "exclusive 7");
+}
+
+#[test]
+fn parallel_stages_see_the_world_before_the_stage() {
+    // Both systems read the counter before either buffer is applied.
+    #[derive(Clone)]
+    struct Counter {
+        value: u32,
+    }
+    impl_stable_hash!(Counter { value });
+
+    let mut world = World::new();
+    world.insert_resource(Counter { value: 1 });
+    world.set_executor(Arc::new(PermutedExecutor::reversed()));
+    let mut schedule = Schedule::new();
+    for name in ["left", "right"] {
+        schedule.add_parallel_system(parallel_system_fn(
+            name,
+            Access::new()
+                .read_resource::<Counter>()
+                .write_resource::<Counter>(),
+            move |world, commands| {
+                let value = world
+                    .resource::<Counter>()
+                    .map_or(0, |counter| counter.value);
+                let step = if name == "left" { 10 } else { 100 };
+                commands.insert_resource(Counter {
+                    value: value + step,
+                });
+            },
+        ));
+    }
+    // A later reader of a resource written in the stage starts a new stage.
+    assert_eq!(schedule.stages().len(), 2);
+    schedule.run(&mut world);
+    assert_eq!(world.resource::<Counter>().map(|c| c.value), Some(111));
 }

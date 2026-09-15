@@ -134,6 +134,11 @@ impl CommandBuffer {
         self.commands.is_empty()
     }
 
+    /// Discards all recorded commands without applying them.
+    pub(crate) fn clear(&mut self) {
+        self.commands.clear();
+    }
+
     /// Applies all recorded commands in order and leaves the buffer empty for reuse.
     pub fn apply(&mut self, world: &mut World) {
         for command in self.commands.drain(..) {
