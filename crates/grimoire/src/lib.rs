@@ -81,8 +81,11 @@
 //! assert_eq!(report.final_tick, 120);
 //! ```
 
+pub mod adapters;
 mod app;
 mod error;
+#[cfg(feature = "fixtures")]
+pub mod fixtures;
 mod input;
 mod main_loop;
 mod plugin;
@@ -98,10 +101,12 @@ pub use input::{
 pub use main_loop::LoopReport;
 pub use plugin::{FrameStats, GamePlugin};
 
+pub use grimoire_collide as collide;
 pub use grimoire_core as core;
 pub use grimoire_ecs as ecs;
 pub use grimoire_platform as platform;
 pub use grimoire_render as render;
+pub use grimoire_sigil as sigil;
 pub use grimoire_sim as sim;
 
 /// Everything a game typically needs, for `use grimoire::prelude::*;`.

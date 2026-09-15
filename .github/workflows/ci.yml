@@ -123,6 +123,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Feature `fixtures` (contract §9.2) is non-default, so the workspace clippy run above never
+      # sees `grimoire::fixtures` (the player proxy, §9.5); a dedicated, all-features run is the
+      # only way to lint it (Umsetzung WP1.3).
+      - name: Clippy (grimoire, feature fixtures)
+        run: cargo clippy -p grimoire --all-targets --all-features --locked -- -D warnings
       # rust-cache restores target/; drop probes from older runs so the artifact is this run's.
       - name: Remove stale float probes
         run: rm -rf target/float-probe
@@ -132,6 +137,11 @@ jobs:
         env:
           GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
         run: cargo test --workspace --locked --no-fail-fast
+      # `cargo test --workspace` silently skips tests behind the non-default `fixtures` feature
+      # (`tests/player_proxy.rs`, `required-features = ["fixtures"]`); contract §9.2 requires this
+      # dedicated step so the player proxy (§9.5) is actually exercised in CI (Umsetzung WP1.3).
+      - name: Test (grimoire, feature fixtures)
+        run: cargo test -p grimoire --features fixtures --locked --no-fail-fast
       # Local test runs force the CPU adapter; prove that path (WARP on Windows, lavapipe on Linux).
       # macOS has no CPU adapter. --workspace keeps the feature resolution of the Test step, so the
       # wgpu build is reused instead of compiled again.
