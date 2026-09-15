@@ -13,14 +13,21 @@
 //! Colour convention: all colours ([`RenderFrame::clear_color`], [`SpriteInstance::color`]) are
 //! linear RGBA. [`WgpuRenderer`] renders into sRGB targets, so the GPU encodes on write and
 //! alpha blending happens in linear space; offscreen read-back returns sRGB-encoded bytes.
+//!
+//! Mesh geometry ([`MeshData`], [`crate::procedural`]) and its GPU upload
+//! ([`WgpuRenderer::register_mesh`]) are plan 0002 WP2.3; see the `mesh` and `mesh_pass` modules.
 
 use std::time::Duration;
 
+mod mesh;
+mod mesh_pass;
+pub mod procedural;
 mod sprite_pass;
 mod stage;
 mod stage3d;
 mod wgpu_renderer;
 
+pub use mesh::{MeshData, MeshError, MeshVertex};
 pub use stage::{
     BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, palette_space,
 };
@@ -256,6 +263,18 @@ pub trait Renderer {
 }
 
 /// Renderer that draws nothing — for headless runs and tests.
+///
+/// A frozen P0 contract type (contract §6, "vorhandene Verträge (nicht ändern)"): unlike the P1
+/// render types this crate adds from WP2.2 onwards, it is a plain public struct without
+/// `#[non_exhaustive]`, so a new field would break every external construction by struct literal.
+/// It therefore does **not** grow a mesh registry of its own for WP2.3 — headless mesh-registration
+/// tests use [`crate::WgpuRenderer::register_mesh`] (skipped without a GPU adapter, like every
+/// other offscreen test) or construct a [`crate::procedural`] mesh and validate it directly via
+/// [`MeshData::validate`], which needs no renderer at all. Consequently it never reports
+/// [`StageStats::meshes_rejected_unregistered`] (contract §6, PO decision V-20, 2026-09-16): the
+/// structural mesh/material/light validation is shared code every renderer applies identically,
+/// but the registry check on top of it only runs in a renderer that owns a registry, and this one
+/// does not.
 #[derive(Debug, Clone, Default)]
 pub struct NullRenderer {
     /// Number of `render` calls so far.
@@ -296,11 +315,18 @@ impl Renderer for NullRenderer {
     /// a GPU. `frames_rendered`, `last_sprite_count` (the length of `frame.base.sprites`) and
     /// `last_size` keep being updated by the inner [`Renderer::render`] call.
     ///
+    /// Shares the structural mesh/material/light validation with [`WgpuRenderer::render_stage`]
+    /// (both go through the same crate-internal extraction step), but passes no mesh-registry
+    /// check: this renderer has no registry of its own (see the struct doc comment), so every
+    /// structurally valid mesh instance counts as drawn and
+    /// [`StageStats::meshes_rejected_unregistered`] stays `0` (contract §6, PO decision V-20,
+    /// 2026-09-16).
+    ///
     /// # Errors
     /// Same as [`Renderer::render`], applied to `frame.base`.
     fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
         let base = self.render(&frame.base)?;
-        Ok(stage::stage_stats_from_base(base, frame))
+        Ok(stage::stage_stats_from_base(base, frame, None))
     }
 }
 
@@ -411,6 +437,7 @@ mod tests {
         );
         assert_eq!(stats.meshes_rejected_layer, 0);
         assert_eq!(stats.meshes_rejected_invalid, 0);
+        assert_eq!(stats.meshes_rejected_unregistered, 0);
         assert_eq!(stats.materials_rejected_invalid, 0);
         assert_eq!(stats.point_lights_drawn, 0);
         assert_eq!(stats.point_lights_rejected_invalid, 0);
@@ -468,6 +495,10 @@ mod tests {
         assert_eq!(
             stats.meshes_rejected_invalid, 1,
             "out-of-range material index"
+        );
+        assert_eq!(
+            stats.meshes_rejected_unregistered, 0,
+            "NullRenderer has no mesh registry (contract §6): it never rejects for this reason"
         );
         assert_eq!(stats.materials_rejected_invalid, 0);
         assert_eq!(stats.point_lights_drawn, 1);

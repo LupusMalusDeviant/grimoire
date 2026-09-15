@@ -374,6 +374,8 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-15 | §11.1, §11.2 | #3 | A (PO-Entscheid V-20) | — | nein |
 | 2026-09-15 | §8.4, §11.5 | #3 | A (PO-Entscheid V-20) | — | nein (WP5 noch nicht umgesetzt) |
 | 2026-09-15 | §6 (Kamera-, Mesh-, Material- und Licht-Kanäle) | #6 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
+| 2026-09-16 | §6 (Zähler `meshes_rejected_unregistered`) | #9 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
+| 2026-09-16 | §6 (Registrierung bleibt renderer-spezifisch) | #9 | K | — | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -768,7 +770,8 @@ pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-00
 //   pub key_light: Option<DirectionalLight>,  pub ambient: AmbientLight,
 //   pub bullet_light_cap: BulletLightCap,
 // StageStats (§6 oben) wächst additiv um Zähler: meshes_drawn, meshes_rejected_layer,
-//   meshes_rejected_invalid, materials_rejected_invalid, point_lights_drawn,
+//   meshes_rejected_invalid, meshes_rejected_unregistered (WP2.3, PO-Entscheid V-20
+//   2026-09-16, siehe unten), materials_rejected_invalid, point_lights_drawn,
 //   point_lights_rejected_invalid, bullet_point_lights_drawn, key_light_rejected_invalid (bool),
 //   ambient_rejected_invalid (bool), bullet_light_cap_invalid (bool).
 ```
@@ -823,6 +826,20 @@ pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-00
   `NullRenderer`, zeichnet Meshes und Lichter aber noch nicht — der Tiefenpuffer-Mesh-Pass ist WP2.3, die
   PBR-Shading, die Lichter tatsächlich konsumiert, WP2.5/WP3.4. Bis dahin bleibt der GPU-Gerätezugriff auf das aus
   P0 bekannte Maß beschränkt.
+- **Zähler für unregistrierte Meshes (Ergänzung P1, WP2.3, PO-Entscheid V-20 2026-09-16):** `StageStats`
+  bekommt `meshes_rejected_unregistered`. Eine `MeshInstance` mit gültigem `material` und endlichem
+  `transform`, deren `mesh`-Handle beim Renderer nie registriert wurde, zählt ab WP2.3 nicht mehr in
+  `meshes_drawn`, sondern in diesem neuen Zähler — `meshes_drawn` bedeutet damit „strukturell gültig und beim
+  Renderer registriert“, nicht mehr nur „strukturell gültig“ (Korrektur der bei WP2.2 eingefrorenen Lesart, vor
+  der es noch keine Registrierung gab). Die strukturelle Prüfung (`layer`, `transform`, `material`) bleibt
+  geteilter Code für alle Renderer; nur die Registrierungsprüfung selbst läuft ausschließlich in Renderern mit
+  eigener Registry. `WgpuRenderer` befüllt den Zähler aus seiner Mesh-Registry (WP2.3). `NullRenderer` hat keine
+  eigene Registry (s. o., eingefrorener P0-Vertragstyp) und wendet deshalb nur die geteilte strukturelle Prüfung
+  an; sein `meshes_rejected_unregistered` bleibt immer `0`.
+- **Registrierung bleibt renderer-spezifisch (Klarstellung, WP2.3, 2026-09-16):** `WgpuRenderer::register_mesh`
+  registriert ein Mesh nur bei diesem einen Renderer; die Registrierung ist bewusst kein Teil des objektsicheren
+  `Renderer`-Traits und wandert in P1 nicht dorthin. Braucht Editor- oder Tooling-Code (P2, WP10) eine
+  Registrierung über `dyn Renderer`, kommt das über einen eigenen Vertrags-PR.
 - **wgpu-Sichtbarkeit:** Kein Typ in diesem Abschnitt referenziert `wgpu`- oder `grimoire_gpu`-Typen
   (Engine-ADR-0002); alle Felder sind einfache Zahlen, Arrays, Handles oder andere Vertragstypen.
 - **Was WP2.3/WP2.4/WP3 umsetzen:** Mesh-Geometrie und ihr GPU-Upload samt Tiefenpuffer, prozedurale Testmeshes
