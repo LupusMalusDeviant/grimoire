@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use grimoire_core::{StableHash, StableHasher};
 
@@ -10,6 +11,7 @@ use crate::bundle::Bundle;
 use crate::component::{Component, ComponentId, ComponentRegistry};
 use crate::entity::{Entities, Entity, EntityLocation};
 use crate::error::EcsError;
+use crate::executor::{Executor, SequentialExecutor};
 use crate::query::{Query, QueryIter, QueryIterMut, ReadOnlyQuery};
 use crate::resource::{Resource, Resources};
 
@@ -21,12 +23,17 @@ const EMPTY_ARCHETYPE: usize = 0;
 /// All state changes are deterministic functions of the call sequence: component ids follow
 /// registration order, archetypes are created lazily in first-use order, rows are dense and
 /// despawns swap-remove.
+///
+/// The world also carries the [`Executor`] of parallel stages and data-parallel queries. The
+/// executor is not simulation state: it is neither hashed nor part of a snapshot.
 pub struct World {
     entities: Entities,
     components: ComponentRegistry,
     archetypes: Vec<Archetype>,
     archetype_index: BTreeMap<Box<[ComponentId]>, usize>,
     resources: Resources,
+    /// `None` means [`SequentialExecutor`]; see [`World::executor`].
+    executor: Option<Arc<dyn Executor>>,
 }
 
 impl Default for World {
@@ -55,6 +62,7 @@ impl World {
             archetypes: Vec::new(),
             archetype_index: BTreeMap::new(),
             resources: Resources::default(),
+            executor: None,
         };
         let empty = world.archetype_for(&[]);
         debug_assert_eq!(empty, EMPTY_ARCHETYPE);
@@ -255,9 +263,27 @@ impl World {
     /// Replaces the complete state with `snapshot`.
     ///
     /// Afterwards [`World::stable_hash`] equals the hash at snapshot time and identical
-    /// operations produce identical entity ids.
+    /// operations produce identical entity ids. The current executor is kept.
     pub fn restore(&mut self, snapshot: &WorldSnapshot) {
+        let executor = self.executor.take();
         *self = snapshot.world.duplicate();
+        self.executor = executor;
+    }
+
+    /// Sets the executor of parallel stages and data-parallel queries.
+    ///
+    /// The default is [`SequentialExecutor`]. The executor is not simulation state: it does not
+    /// enter [`World::stable_hash`] or snapshots, and [`World::restore`] keeps the current one.
+    /// Stages, blocks and every hash are independent of it (engine ADR-0006).
+    pub fn set_executor(&mut self, executor: Arc<dyn Executor>) {
+        self.executor = Some(executor);
+    }
+
+    /// The executor of parallel stages and data-parallel queries (default
+    /// [`SequentialExecutor`]).
+    #[must_use]
+    pub fn executor(&self) -> &dyn Executor {
+        executor_of(&self.executor)
     }
 
     fn duplicate(&self) -> Self {
@@ -267,6 +293,7 @@ impl World {
             archetypes: self.archetypes.clone(),
             archetype_index: self.archetype_index.clone(),
             resources: self.resources.clone(),
+            executor: None,
         }
     }
 
@@ -336,6 +363,14 @@ impl World {
                 row: new_row,
             },
         );
+    }
+}
+
+/// The installed executor or the static [`SequentialExecutor`]; never allocates.
+pub(crate) fn executor_of(executor: &Option<Arc<dyn Executor>>) -> &dyn Executor {
+    match executor {
+        Some(executor) => executor.as_ref(),
+        None => &SequentialExecutor,
     }
 }
 
