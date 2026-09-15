@@ -174,6 +174,13 @@ impl WgpuRenderer {
             Target::Window(_) => Err(RenderError::NotOffscreen),
         }
     }
+
+    /// Single greppable line identifying the selected adapter for CI logs; see
+    /// [`grimoire_gpu::GpuContext::adapter_report_line`] (WP2.1).
+    #[must_use]
+    pub fn adapter_report_line(&self) -> String {
+        self.context.adapter_report_line()
+    }
 }
 
 impl Renderer for WgpuRenderer {

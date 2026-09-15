@@ -3,9 +3,17 @@
 //! Without any GPU adapter (not even a software one) they skip and pass, and print a GitHub
 //! Actions warning that stays visible in the log. With `GRIMOIRE_REQUIRE_GPU_ADAPTER=1` a missing
 //! adapter fails them instead; CI sets it wherever WARP or lavapipe guarantee an adapter.
+//!
+//! CI-render-honesty (WP2.1, groundwork for OF-18.2): whichever adapter a run actually obtained is
+//! printed once per test binary as a greppable `grimoire-gpu-adapter: ...` line (name, backend,
+//! device type, driver info), and every skip for lack of an adapter bumps a running
+//! `grimoire-gpu-tests-skipped: <n>` total. Both lines bypass libtest's capture of passing-test
+//! output (see the comment on the direct `stdout()` write below) so CI can grep them out of the
+//! job log and fold them into the job summary (`.github/scripts/report-gpu-adapter.sh`).
 
 use std::io::Write;
 use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use grimoire_render::{
@@ -27,7 +35,12 @@ fn adapter_required(value: Option<&str>) -> bool {
     )
 }
 
-/// Fails the calling test if an adapter is required, otherwise announces the skip once.
+/// Total offscreen/GPU tests in this process that skipped for lack of an adapter (WP2.1). CI reads
+/// the highest `grimoire-gpu-tests-skipped: <n>` line out of the log, so the running total (rather
+/// than a single deduplicated announcement) survives no matter which test happens to run last.
+static SKIPPED_GPU_TESTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Fails the calling test if an adapter is required, otherwise announces the skip and counts it.
 fn skip_without_adapter(required: bool) {
     assert!(
         !required,
@@ -42,6 +55,19 @@ fn skip_without_adapter(required: bool) {
 ::warning title=GPU tests skipped::no GPU adapter found; grimoire_render offscreen              tests passed without rendering"
         );
     });
+    let total = SKIPPED_GPU_TESTS.fetch_add(1, Ordering::SeqCst) + 1;
+    let _ = writeln!(std::io::stdout(), "grimoire-gpu-tests-skipped: {total}");
+}
+
+/// Prints [`WgpuRenderer::adapter_report_line`] once per test binary (WP2.1), the first time a
+/// test actually obtains an adapter.
+fn report_adapter_once(renderer: &WgpuRenderer) {
+    static REPORTED: Once = Once::new();
+    REPORTED.call_once(|| {
+        // Same rationale as the skip warning above: a direct stdout write reaches the CI log even
+        // though these tests pass.
+        let _ = writeln!(std::io::stdout(), "\n{}", renderer.adapter_report_line());
+    });
 }
 
 fn offscreen_renderer(
@@ -55,7 +81,10 @@ fn offscreen_renderer(
         allow_software_fallback: true,
     };
     match WgpuRenderer::new_offscreen(width, height, config) {
-        Ok(renderer) => Some(renderer),
+        Ok(renderer) => {
+            report_adapter_once(&renderer);
+            Some(renderer)
+        }
         Err(RenderError::NoAdapter) => {
             let required = std::env::var(ENV_REQUIRE_GPU_ADAPTER).ok();
             skip_without_adapter(adapter_required(required.as_deref()));
