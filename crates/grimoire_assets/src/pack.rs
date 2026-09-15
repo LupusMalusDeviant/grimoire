@@ -23,6 +23,7 @@
 //! to slice, index or allocate.
 
 use std::borrow::Cow;
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -447,22 +448,18 @@ impl PackReader {
     /// [`AssetError::Io`] for any other I/O error, or [`AssetError::Pack`] if the bytes do not
     /// parse as a valid pack.
     pub fn open(fs: &dyn FileSystem, path: &Path) -> Result<Self, AssetError> {
-        // `grimoire_platform::FileSystem` in this worktree does not yet expose the size-bounded
-        // `read_limited` from contract §5 (P1 addition): only `read`, `write_atomic` and `exists`
-        // are implemented so far. Once it lands, this becomes `fs.read_limited(path,
-        // MAX_PACK_LEN)`, which additionally avoids ever fully loading an oversized file; until
-        // then this falls back to the same "read, then check length" behaviour the contract
-        // documents for a `FileSystem` implementation that does not override the bounded read.
-        let bytes = fs.read(path).map_err(|error| AssetError::Io {
-            path: path.display().to_string(),
-            kind: error.kind(),
-        })?;
-        if bytes.len() as u64 > MAX_PACK_LEN {
-            return Err(AssetError::TooLarge {
-                path: path.display().to_string(),
-                max: MAX_PACK_LEN,
-            });
-        }
+        let bytes = fs
+            .read_limited(path, MAX_PACK_LEN)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::FileTooLarge => AssetError::TooLarge {
+                    path: path.display().to_string(),
+                    max: MAX_PACK_LEN,
+                },
+                kind => AssetError::Io {
+                    path: path.display().to_string(),
+                    kind,
+                },
+            })?;
         Ok(Self::from_bytes(Arc::from(bytes))?)
     }
 
