@@ -23,14 +23,17 @@ Der Spike WP1.4 hat beide Kandidaten gemessen. Bericht:
 - **Fehlermeldungen:** sigil 1 erreicht in den zehn Korpusfällen 119 von 120 Punkten, RON mit `ron` 0.12.2
   und eigener Zusatzschicht 102. RON verliert nur noch bei den Syntaxfehlern e02, e04 und e09, und dort an
   `ron` selbst. Fehlendes Pflichtfeld und falsche Einheit lagen in der ersten Fassung ebenfalls zurück; das
-  lag an der dünnen RON-Zusatzschicht und ist mit wenigen Zeilen behoben.
+  lag an der dünnen RON-Zusatzschicht und ist mit wenigen Zeilen behoben. Eine blinde Zweitbewertung durch
+  Codex bestätigt die Handbewertung: 37 von 40 Werten gleich, keine Abweichung über einen Punkt, 120 zu 104.
 - **Rundreise:** Einen Wert an einem Knotenpfad ohne Kommentarverlust setzen gelingt in beiden Syntaxen,
   aber nur mit einem selbst geschriebenen verlustfreien Baum. Über das `ron`-Crate gehen alle Kommentare
   verloren.
 - **Länge:** sigil 1 braucht 56 % der Tokens von RON. Das ist nur ein Richtwert, weil jeder Scanner anders
   zählt; die Differenz stammt zu 40 % aus Trennkommas und zu 31 % aus Einheiten-Hüllen.
 - **Aufwand:** 2 241 Zeilen eigener Parser gegen 713 Zeilen eigene Zusatzschicht für RON.
-- **Generierbarkeit** durch Agenten ist nicht gemessen, weil Codex nicht verfügbar war.
+- **Generierbarkeit:** Codex als fremder Autor und Claude schreiben drei neue Muster im ersten Versuch in
+  beiden Syntaxen ohne Diagnose und modellgleich. Ein Unterschied ist nicht messbar. Die Aufgaben waren aber
+  vollständig beziffert, und Grammatik samt Beispielpaar lag im Kontext; die Messung trennt also kaum.
 
 Plan 0002 WP1.4 verlangt außerdem einen Versions-Header `sigil 1`, eine Migrationsregel und die Schließung
 von OF-4.2 (f32 oder Festkomma) per Verweis auf ADR-0004.
@@ -77,7 +80,7 @@ Spike nicht umgesetzt. **Gemessen** im Spike.
 
 **Positiv:**
 - Kein eigener Parser für das Modell: serde derive liefert Schema-Pass und Typprüfung.
-- RON ist im Rust-Umfeld verbreitet und öffentlich dokumentiert. Dass Agenten es gut treffen, liegt nahe, ist aber nicht gemessen.
+- RON ist im Rust-Umfeld verbreitet und öffentlich dokumentiert. In der Nachmessung schrieb Codex es im ersten Versuch fehlerfrei, sigil 1 aber ebenso; einen Vorsprung aus Trainingsdaten zeigt die Messung nicht.
 - Kleinerer eigener Code: 713 Zeilen im Spike für Hinweise, Pfade, Positionen und `set`.
 - Schema-Befunde lassen sich mit wenigen Zeilen Zusatzschicht auf das Niveau von sigil 1 heben: Das fehlende Pflichtfeld (e03) verlegt sie über den Scanner vom Strukturende auf den Emitter, bei der falschen Einheit (e07) nennt sie Feld und Wert.
 - `ron` 0.12.2 prüft Newtype-Namen, eine falsche Einheit (`Ticks` statt `Deg`) wird also erkannt.
@@ -101,7 +104,7 @@ Fehlern wieder auf und senkt in einen Wertebaum mit Spans ab. Darüber läuft ei
 **Gemessen** im Spike.
 
 **Positiv:**
-- Beste gemessene Diagnosen: 119/120 Punkte, alle zehn Korpusfälle mit exakter Position, exaktem Knotenpfad und genau einer Diagnose je Datei. Das gilt nur für diese zehn Fälle (siehe Negativ).
+- Beste gemessene Diagnosen: 119/120 Punkte (blinde Zweitbewertung durch Codex: 120/120), alle zehn Korpusfälle mit exakter Position, exaktem Knotenpfad und genau einer Diagnose je Datei. Das gilt nur für diese zehn Fälle (siehe Negativ).
 - Nach einem Syntaxfehler setzt der Parser wieder auf und meldet danach noch Schemafehler.
 - Ein Parser für alles: Kompilieren, `fmt`, `set` und `migrate` arbeiten auf demselben verlustfreien Baum.
 - Kompakter und flacher: 56 % der Tokens (Richtwert, siehe Kontext) und 87 % der Zeilen von RON. Modifikatoren sind eigenständige Blöcke ohne Kommas über mehrere Ebenen.
@@ -112,7 +115,7 @@ Fehlern wieder auf und senkt in einen Wertebaum mit Spans ab. Darüber läuft ei
 **Negativ:**
 - Eigener Parser mit rund 2 241 Zeilen im Spike, etwa 3,1-mal so viel eigener Code wie die RON-Schicht (713 Zeilen). Er muss gewartet, dokumentiert und gegen beliebige Eingaben gehärtet werden (Fuzzing).
 - Syntaxspezifische Fehlerbilder außerhalb des Korpus sind gemessen schwächer. `count: 24` (RON-Gewohnheit) ergibt drei Diagnosen, zwei Felder auf einer Zeile ergeben zwei, jeweils mit einem falschen Folgebefund „fehlendes Pflichtfeld“. `0.25 u` und `30s` ergeben je zwei Diagnosen, `30s` ohne Hinweis (Sonden, `results.md` 2.7). Der Fehlerkorpus enthält nur Mutationen, die in beiden Syntaxen gleich aussehen.
-- Die Syntax ist neu: Agenten und Modder kennen sie nicht aus anderen Projekten. Ob Agenten sie gut treffen, ist nicht gemessen und das größte offene Risiko.
+- Die Syntax ist neu: Agenten und Modder kennen sie nicht aus anderen Projekten. In der Nachmessung schrieb Codex sie mit Grammatik und Beispielpaar im Kontext im ersten Versuch fehlerfrei; ohne diese Hilfen und bei offener formulierten Aufgaben ist das nicht gemessen und bleibt ein Risiko.
 - Keine Editor-Unterstützung von Haus aus: Syntaxhervorhebung, Formatierer und später LSP sind Eigenbau.
 - Die 30/30-Werte sind befangen, denn Grammatik, Soll-Meldungen und Parser stammen vom selben Autor. Sie zeigen, was erreichbar ist, nicht was ohne Aufwand entsteht.
 - Lehnt der PO P-2 ab (R20), braucht auch die C#-Seite einen Parser für eine Grammatik ohne fremde Implementierung.
@@ -166,15 +169,18 @@ Risiko zweier Parser für eine Sprache. KDL (Option 3) ist die ernsthafteste Alt
 verlustfreies Editieren mitbringt. Es ist aber nicht gemessen, und Einheiten sowie Schema bleiben
 Eigenbau. TOML (Option 4) passt schlecht zur tiefen Verschachtelung der Patterns.
 
-Die Befangenheit des Spikes und die fehlende Generierbarkeitsmessung wiegen schwer. Der Autor schlägt
-deshalb **Bedingungen vor der Abnahme** vor:
+Die Befangenheit des Spikes wiegt schwer. Der Autor hat deshalb **Bedingungen vor der Abnahme**
+vorgeschlagen. Zwei davon sind seit der Nachmessung vom 2026-09-15 erfüllt; keine der beiden Messungen
+widerspricht dem Vorschlag, der deshalb unverändert bleibt:
 
-1. **Generierbarkeit nachholen.** Codex schreibt die Muster G1 bis G3 in beiden Syntaxen (Anleitung im
-   Spike-Bericht, Abschnitt 4.3). Schneidet sigil 1 im ersten Versuch deutlich schlechter ab als RON und
-   gleicht eine Rückmeldungsrunde mit den `check`-Diagnosen das nicht aus, sollte der PO Option 1 oder 3
-   neu gewichten.
-2. **Zweitbewertung** der Handbewertungen für die Fälle e02, e03, e04, e07 und e09 durch ein zweites Modell
-   oder den PO.
+1. **Generierbarkeit nachholen — erfüllt.** Codex hat die Muster G1 bis G3 in beiden Syntaxen im ersten
+   Versuch ohne Diagnose geschrieben (Spike-Bericht, Abschnitt 4.3). sigil 1 schneidet nicht schlechter ab
+   als RON; die vorgeschlagene Schwelle für eine Neugewichtung von Option 1 oder 3 („deutlich schlechter im
+   ersten Versuch“) ist nicht erreicht. Weil die Messung an der Decke liegt, bleibt dem PO die Frage, ob er
+   vor der Abnahme eine trennschärfere Messung verlangt.
+2. **Zweitbewertung — erfüllt** durch Codex, blind gegenüber Claudes Werten: 37 von 40 Werten gleich, drei
+   Abweichungen von je einem Punkt (Fix-Hinweis bei e03 in beiden Syntaxen und bei e04 in RON), keine von 2
+   oder mehr. Eine Bewertung durch den PO ersetzt das nicht.
 3. **Syntaxspezifische Fehlerfälle** in den Fehlerkorpus aufnehmen und bewerten: für sigil 1 `:` statt `=`,
    mehrere Felder auf einer Zeile, Leerzeichen vor der Einheit und eine Wallclock-Einheit; für RON ein
    fehlender Newtype und ein fehlender Strukturname; für beide Kaskadentiefe über 3, ein Kaskadenzyklus und
@@ -247,14 +253,14 @@ Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2
 
 - Eigener Parser von geschätzt gut 2 000 Zeilen in `grimoire_sigilc`, dazu Pflege, Fuzzing und Formatdokumentation. Die Spike-Zahlen sind unoptimierter Prototyp-Code.
 - Keine Editor-Unterstützung von Haus aus: Syntaxhervorhebung, Formatierer und später LSP sind Eigenbau.
-- Agenten kennen die Syntax nicht aus anderen Projekten. Die Generierbarkeit hängt an Formatdoku, Beispielen und Diagnoseschleife und ist bis zur Nachmessung ein Risiko.
+- Agenten kennen die Syntax nicht aus anderen Projekten. Die Generierbarkeit hängt an Formatdoku, Beispielen und Diagnoseschleife; die Nachmessung zeigt mit Grammatik und Beispielpaar im Kontext keinen Nachteil, schwierigere Bedingungen sind nicht gemessen.
 - Die gemessene Diagnosequalität ist befangen und muss sich an fremden Fehlerbildern erst bewähren. Das Wiederaufsetzen ist nur für die Korpus-Fehlerarten ausgelegt; syntaxspezifische Sonden zeigen schon Folgefehler.
 - Mehrere Schemafehler je Lauf meldet der Spike nicht; das bräuchte einen eigenen, nicht abbrechenden Schema-Pass statt serde derive.
 - Lehnt der PO P-2 ab (R20), braucht die C#-Seite einen eigenen Parser für diese Grammatik.
 
 ### Folge-Entscheidungen
 
-- **Vor der Abnahme:** Generierbarkeitsmessung mit Codex nachholen, Handbewertungen zweitbewerten, syntaxspezifische Fehlerfälle aufnehmen (Bedingungen im Vorschlag).
+- **Vor der Abnahme:** syntaxspezifische Fehlerfälle aufnehmen (Bedingung 3). Generierbarkeitsmessung und Zweitbewertung sind nachgeholt; ob vorher eine trennschärfere Generierbarkeitsmessung nötig ist, entscheidet der PO.
 - **P-2 / Projekt-ADR-0010** (Compiler-Hoheit in Rust): Bei Ablehnung gewinnt die Verfügbarkeit fremder Parser-Implementierungen an Gewicht (Option 3 oder 4).
 - **Länge des Übergangsfensters** beim Lesen alter Syntaxversionen (Migrationsregel, Punkt 3).
 - **Mehrfachbefunde im Schema-Pass:** ob `sigilc` alle Schemafehler einer Datei meldet, und wie (eigener Pass statt serde derive).

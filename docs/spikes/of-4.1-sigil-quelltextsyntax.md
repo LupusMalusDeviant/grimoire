@@ -5,11 +5,11 @@
 - **Status:** Spike-Bericht, **keine Entscheidung**. Der Vorschlag steht in
   [ADR-0007 „Sigil-Quelltextsyntax v1“](../adr/0007-sigil-quelltextsyntax-v1.md) (Nummer vorläufig bis zum
   Merge). Die Entscheidung trifft der PO in Sammelsitzung B (Plan 0002, P-10).
-- **Stand:** 2026-09-15 (unbeaufsichtigter Lauf)
+- **Stand:** 2026-09-15 (unbeaufsichtigter Lauf; Generierbarkeit mit Codex und Zweitbewertung am selben Tag nachgeholt)
 - **Autor:** Claude (unbeaufsichtigter Lauf) im Auftrag von Lupus Malus Deviant (PO)
 - **Vorläufig:** Alle Bewertungen und die Empfehlung sind vorläufig. Die Bestätigung durch den PO steht aus.
-- **Messdaten:** [`spikes/sigil-syntax/results.md`](../../spikes/sigil-syntax/results.md), Stand Commit
-  `8558c7d` (nach dem Review vom 2026-09-15; erste Fassung `c3239ad`). Reproduzierbar mit
+- **Messdaten:** [`spikes/sigil-syntax/results.md`](../../spikes/sigil-syntax/results.md), Stand nach der
+  Nachmessung mit Codex vom 2026-09-15 (davor `8558c7d` nach dem Review, erste Fassung `c3239ad`). Reproduzierbar mit
   `cargo test` in `spikes/sigil-syntax/proto`.
 
 ## Kurzfassung
@@ -20,6 +20,8 @@
   Die Lücke entsteht ganz bei den Syntaxfehlern e02, e04 und e09, und dort an `ron` selbst. Fehlendes
   Pflichtfeld (e03) und falsche Einheit (e07) lagen in der ersten Fassung ebenfalls zurück (96 von 120).
   Das lag an der dünnen RON-Zusatzschicht, nicht an `ron`, und ist mit wenigen Zeilen behoben.
+- **Zweitbewertung:** Codex hat Ursache und Fix-Hinweis blind nachbewertet. 37 von 40 Werten sind gleich,
+  die drei Abweichungen betragen je einen Punkt. Mit Codex' Werten steht es 120 zu 104.
 - **Außerhalb des Korpus:** Syntaxspezifische Sonden zeigen bei sigil 1 bis zu drei Diagnosen je Fehler,
   darunter falsche Folgebefunde. „Genau eine Diagnose“ gilt nur für die zehn Korpusfälle.
 - **Rundreise:** Einen Wert an einem Knotenpfad setzen, ohne Kommentare zu verlieren, gelingt in
@@ -29,11 +31,12 @@
   Die Token-Differenz stammt zu 40 % aus Trennkommas und zu 31 % aus Einheiten-Hüllen (Richtwert).
 - **Aufwand:** Die sigil-Seite umfasst im Spike 2 241 Codezeilen. Die RON-Seite braucht für dieselben
   Pfade, Positionen und `set`-Operationen ebenfalls 713 Zeilen eigenen Code.
-- **Generierbarkeit ist nicht gemessen.** Codex war zweimal nicht verfügbar. Die sechs
-  Dateien von Claude sagen über fremde Autoren nichts aus.
-- **Empfehlung (vorläufig):** eigene Grammatik „sigil 1“, unter drei Bedingungen vor der Abnahme. Die
-  Codex-Messung zur Generierbarkeit wird nachgeholt, die Handbewertungen bekommen eine unabhängige
-  Zweitbewertung, und syntaxspezifische Fehlerfälle kommen in den Korpus (Abschnitt 7).
+- **Generierbarkeit:** Codex hat die drei Aufgaben im ersten Versuch in beiden Syntaxen ohne Diagnose
+  geschrieben, modellgleich zueinander und zu Claudes Fassung. Ein Nachteil von sigil 1 zeigt sich nicht.
+  Die Messung liegt aber an der Decke (12 von 12 Dateien fehlerfrei) und trennt die Syntaxen kaum.
+- **Empfehlung (vorläufig, unverändert):** eigene Grammatik „sigil 1“. Von den drei Bedingungen vor der
+  Abnahme sind Generierbarkeit und Zweitbewertung erfüllt, und keine der beiden Messungen widerspricht der
+  Empfehlung. Offen bleiben die syntaxspezifischen Fehlerfälle (Abschnitt 7).
 
 ## 1 Frage
 
@@ -68,7 +71,8 @@ Das Ergebnis soll ein Engine-ADR „Sigil-Quelltextsyntax v1“ sein. Es enthäl
 - **Bewertung 0–3 je Fehlerfall.** Position und Knotenpfad werden automatisch gegen
   `corpus/errors/expected.json` bewertet. Ursache und Fix-Hinweis hat Claude von Hand bewertet; die Werte
   stehen als Konstante `RATINGS` in `src/measure.rs` und sind vorläufig. Die Skala ist in `results.md`
-  unter „Methodik“ beschrieben.
+  unter „Methodik“ beschrieben. Codex hat beide Spalten blind zweitbewertet (`RATINGS_CODEX`,
+  `results.md` 2.8).
 - **Reproduktion.** `cargo test` wiederholt alle Messungen und prüft die generierten Tabellen in
   `results.md`. `cargo run -- report --write` erzeugt die Tabellen neu. Die CLI heißt `sigil-syntax-proto`
   und kennt `report`, `check` und `set`.
@@ -120,7 +124,8 @@ Für jeden Fall zählt die erste Diagnose, verglichen mit `expected.json`. Die T
 | **Summe (höchstens 120)** | **102** | **119** | |
 
 In der ersten Fassung stand RON bei 96 (Position 27, Ursache 22, Hinweis 19, Pfad 28). Den Unterschied
-machen e03 und e07; siehe „Ursachen trennen“ unten.
+machen e03 und e07; siehe „Ursachen trennen“ unten. Mit den Werten der Zweitbewertung durch Codex hat RON
+beim Fix-Hinweis 22 statt 20 und sigil 1 30 statt 29 Punkte, zusammen 104 zu 120.
 
 - **sigil 1:** Alle zehn Korpusfälle treffen Soll-Position und Soll-Knotenpfad, und jede dieser Dateien
   liefert genau eine Diagnose. Außerhalb des Korpus gilt das nicht (Sonden unten). Der eine fehlende Punkt
@@ -143,6 +148,13 @@ machen e03 und e07; siehe „Ursachen trennen“ unten.
   Schicht das fehlende Feld auf den Emitter und nennt bei der falschen Einheit Feld und Wert, zusammen gut
   80 Zeilen in `ron_front.rs` (einschließlich des Rohaufrufs für `results.md` 2.2). Das bringt 6 Punkte.
 
+- **Zweitbewertung (`results.md` 2.8):** Codex bekam Skala, eingebaute Änderung und vollständige Diagnose
+  jeder Fehlerdatei, aber keine Werte von Claude, und lief read-only in einem leeren Verzeichnis. 37 von 40
+  Werten stimmen überein, alle 40 liegen höchstens einen Punkt auseinander (Cohens Kappa ungewichtet 0,76,
+  quadratisch gewichtet 0,95). Keine Abweichung beträgt 2 oder mehr. Codex gibt dem Fix-Hinweis bei e03 in
+  beiden Syntaxen 3 statt 2 und dem RON-Hinweis bei e04 1 statt 0. Die Ursache 1 für die RON-Syntaxfehler
+  e02, e04 und e09 bestätigt Codex; der Abstand liegt weiter ganz bei diesen drei Fällen (16 statt 17
+  Punkte). Beide Bewerter sind Sprachmodelle, eine Bewertung durch den PO steht aus.
 - **e05, e06, e08, e10:** Diese Befunde kommen aus dem gemeinsamen Validator und erreichen in beiden
   Syntaxen 3/3. Die RON-Positionen dafür liefert der eigene Scanner, nicht `ron`.
 - **Phasen:** `ron` trennt Syntax und Schema nicht sauber. e04 und e09 (Soll: Syntax) landen im
@@ -211,23 +223,36 @@ Spiral-Emitter von Muster 04 heißt `bloom`.
 
 ### 4.3 Generierbarkeit durch Agenten
 
-**Die Messung ist unvollständig und nicht aussagekräftig.**
+**Nachgeholt am 2026-09-15. Kein Unterschied messbar, aber mit geringer Trennschärfe.**
 
 - **Aufgaben:** drei Musterbeschreibungen in Prosa unter `generability/briefs/`: G1 Pendelfächer,
-  G2 Minenfeld und G3 Zwillingsspiralen `spiral_left`/`spiral_right` mit Tempokurve.
-- **Codex:** Drei parallele Läufe und eine Wiederholung brachen sofort ab, weil Codex nicht
-  verfügbar war. Nach den Regeln für unbeaufsichtigte Läufe ging die Arbeit ohne Codex
-  weiter. `generability/codex/` ist leer, 6 von 12 Dateien fehlen.
-- **Claude:** Alle sechs Dateien (`generability/claude/*.ron` und `*.sigil`) entstanden allein aus den
-  Aufgabentexten. Alle parsen und validieren ohne Befund, und RON- und sigil-Fassung eines Musters ergeben
-  jeweils dasselbe Modell.
-- **Deutung:** Das belegt nur, dass Grammatik, Schema und Prototyp in sich stimmig sind. Claude hat
-  Grammatik, Schema, Aufgabentexte und Prüfer selbst geschrieben. Wie gut ein fremder Autor die Syntax
-  trifft, ist damit nicht gemessen.
-- **Nachholen:** Sobald Codex verfügbar ist, die Prompts aus `spikes/sigil-syntax/generability/prompts/`
-  (unverändert aus dem unbeaufsichtigten Lauf übernommen, Aufruf im README dort) erneut an Codex geben. Die beiden Antworten je Muster als `generability/codex/<brief>.ron` und `.sigil`
-  ablegen, dann `cargo run -- report --write` ausführen. Der Code zählt die Diagnosen schon nach Phase und
-  Art und prüft RON ≡ sigil 1 je Autor.
+  G2 Minenfeld und G3 Zwillingsspiralen `spiral_left`/`spiral_right` mit Tempokurve. Jede nennt alle Werte.
+- **Codex:** Im unbeaufsichtigten Lauf brachen drei parallele Läufe und eine Wiederholung ab, weil Codex nicht
+  verfügbar war. Später lief Codex (gpt-6-astra, Reasoning medium, read-only) je Muster genau einmal. Im Kontext standen
+  nur Grammatik, Schema, das Beispielpaar 04 und der Aufgabentext; der Prompt verbietet ausdrücklich,
+  Claudes Dateien, `results.md`, den Prototyp oder `docs/` zu öffnen. Laut Protokoll las Codex nur die
+  erlaubten Dateien. Antworten unverändert unter `generability/codex/raw/`, die Codeblöcke daraus ohne
+  Änderung als `generability/codex/<muster>.ron` und `.sigil`.
+- **Claude:** die sechs Dateien aus dem unbeaufsichtigten Lauf, allein aus den Aufgabentexten geschrieben.
+
+| Autor | Dateien | davon mit Diagnose | Diagnosen nach Art | RON ≡ sigil 1 je Muster | Modell gleich dem anderen Autor |
+|---|---:|---:|---|:-:|:-:|
+| Codex | 6 (3 RON, 3 sigil 1) | 0 | – | 3 von 3 | 6 von 6 |
+| Claude | 6 (3 RON, 3 sigil 1) | 0 | – | 3 von 3 | 6 von 6 |
+
+(Zusammenfassung von `results.md` Abschnitt 4; dort je Datei.)
+
+- **Deutung:** Keiner der beiden Autoren macht in einer der beiden Syntaxen einen Fehler, und alle vier
+  Fassungen je Muster ergeben dasselbe Modell. Codex' Dateien unterscheiden sich von Claudes nur in
+  Formatierung und Kommentaren. Die Sorge, ein fremdes Modell treffe die neue Syntax im ersten Versuch
+  deutlich schlechter als RON, bestätigt sich damit nicht.
+- **Grenzen:** Die Messung liegt an der Decke. Die Aufgaben sind vollständig beziffert, Grammatik und ein
+  vollständiges Beispielpaar lagen im Kontext, und es sind nur drei Muster und ein fremdes Modell. Ob Agenten
+  sigil 1 aus einer knapperen Formatdoku, ohne Beispielpaar oder bei offen formulierten Aufgaben ebenso gut
+  treffen, ist nicht gemessen. Einen kleineren Nachteil einer Syntax schließt das Ergebnis nicht aus.
+- **Wiederholen:** Prompts und Aufruf in `spikes/sigil-syntax/generability/prompts/README.md`, danach
+  `cargo run -- report --write`. Der Test `every_generability_file_is_present_and_clean` erwartet alle
+  zwölf Dateien ohne Diagnose.
 
 ### 4.4 Editier-Ergonomie
 
@@ -300,10 +325,10 @@ Vorläufige Einschätzung von Claude; die Bestätigung durch den PO steht aus.
 
 | Kriterium | RON | sigil 1 | Beleg | Einschätzung |
 |---|---|---|---|---|
-| Fehlermeldungen | 102/120; Syntaxfehler oft irreführend (an `ron` selbst); nur erster Fehler; Hinweise und Positionen nur mit eigener Schicht | 119/120 im Korpus; Wiederaufsetzen nach Syntaxfehlern; bei syntaxspezifischen Sonden Folgefehler | 4.1 | **Vorteil sigil 1 bei Syntaxfehlern, gemessen**, aber auf Soll-Texte hin geschrieben (Befangenheit, Abschnitt 6) |
+| Fehlermeldungen | 102/120 (Zweitbewertung 104); Syntaxfehler oft irreführend (an `ron` selbst); nur erster Fehler; Hinweise und Positionen nur mit eigener Schicht | 119/120 im Korpus (Zweitbewertung 120); Wiederaufsetzen nach Syntaxfehlern; bei syntaxspezifischen Sonden Folgefehler | 4.1 | **Vorteil sigil 1 bei Syntaxfehlern, gemessen**, aber auf Soll-Texte hin geschrieben (Befangenheit, Abschnitt 6) |
 | Rundreise und `set` ohne Kommentarverlust | erfüllt mit eigenem Scanner (zweiter Parser); über `ron` nicht erfüllt | erfüllt mit demselben Parser | 4.2 | **Gleichstand im Ergebnis**; bei RON bleibt das Risiko zweier Parser |
 | Editier-Ergonomie | tiefere Verschachtelung, Einheiten als Hülle, Kommas über Ebenen | 56 % der Tokens, flache Blöcke, Einheiten als Suffix | 4.4 | **Vorteil sigil 1, gemessen** an Länge und Einrückung; nicht an echten Moddern |
-| Generierbarkeit durch Agenten | Syntax ist öffentlich bekannt und vermutlich in Trainingsdaten vertreten (nicht geprüft) | neue Syntax, nur über Doku, Beispiele und Diagnosen erlernbar | 4.3 | **Nicht gemessen.** Das Risiko liegt eher bei sigil 1 und ist der wichtigste offene Punkt |
+| Generierbarkeit durch Agenten | G1–G3 im ersten Versuch fehlerfrei (Codex und Claude); vermutlich in Trainingsdaten vertreten (nicht geprüft) | G1–G3 im ersten Versuch fehlerfrei (Codex und Claude), mit Grammatik und Beispielpaar im Kontext | 4.3 | **Gleichstand, gemessen mit geringer Trennschärfe.** Das Risiko für sigil 1 ist nicht bestätigt, bei schwierigeren Bedingungen aber nicht ausgeräumt |
 | Aufwand und Wartung | 713 Zeilen eigener Code plus Abhängigkeit von `ron`-Verhalten je Version | 2 241 Zeilen eigener Parser, dafür keine Fremdabhängigkeit im Parser | 4.5 | **Vorteil RON**, bei den geforderten Fähigkeiten etwa Faktor 3,1 statt „null gegen alles“ |
 
 Zwei Befunde gelten unabhängig von der Wahl. Erstens liefern Schema- und Validierungsbefunde nur dann
@@ -313,14 +338,16 @@ eigenen, nicht abbrechenden Schema-Pass.
 
 ## 6 Grenzen des Spikes
 
-- **Codex fiel in allen Stufen aus.** Beim Korpus-Entwurf lief er in den Timeout, bei Parser-Review und
-  Generierbarkeit war er nicht verfügbar. Es gibt also weder eine Zweitmodell-Prüfung des
-  Parser-Codes noch die sechs Codex-Dateien. Die Generierbarkeit ist deshalb nicht aussagekräftig gemessen.
+- **Codex fiel im unbeaufsichtigten Lauf zunächst aus.** Beim Korpus-Entwurf lief er in den Timeout, bei Parser-Review und
+  Generierbarkeit war er nicht verfügbar. Generierbarkeit und Zweitbewertung sind danach nachgeholt
+  (4.1, 4.3); eine Zweitmodell-Prüfung des Parser-Codes gibt es weiterhin nicht. Die Generierbarkeitsmessung
+  liegt an der Decke und trennt die Syntaxen kaum.
 - **Befangenheit.** Claude hat Korpus, `expected.json`, Grammatik und beide Prototyp-Parser geschrieben.
   Die Meldungen von sigil 1 sind auf die Soll-Texte hin formuliert, die von `ron` nicht. Die 30/30 für
   sigil 1 zeigen, was eine eigene Grammatik **erreichen kann**, nicht, was sie ohne Aufwand liefert.
 - **Handbewertungen.** Die Spalten Ursache und Fix-Hinweis sind Claudes subjektive, vorläufige Bewertung
-  (`RATINGS` in `measure.rs`). Position und Knotenpfad sind automatisch bewertet.
+  (`RATINGS` in `measure.rs`). Position und Knotenpfad sind automatisch bewertet. Codex hat beide Spalten
+  blind zweitbewertet (`RATINGS_CODEX`); beide Bewerter sind Sprachmodelle, und die Skala stammt von Claude.
 - **Parität von RON nur mit eigenem Scanner.** Pfade, Positionen und `set` erreicht RON nur über
   `ron_cst.rs`. Ohne den Scanner gibt `ron` nur Rohmeldung und Position (`results.md` 2.2).
 - **Nur der erste Schemafehler.** Beide Varianten melden je Lauf nur den ersten Schemafehler, weil serde
@@ -353,7 +380,8 @@ eigenen, nicht abbrechenden Schema-Pass.
 ## 7 Empfehlung
 
 **Vorläufig, die Bestätigung durch den PO steht aus.** Der Autor empfiehlt die eigene Grammatik „sigil 1“
-mit verlustfreiem Syntaxbaum als Quelltextsyntax v1. Begründung und Gegenargumente stehen im
+mit verlustfreiem Syntaxbaum als Quelltextsyntax v1. Die Nachmessung vom 2026-09-15 ändert die Empfehlung
+nicht: Weder die Generierbarkeit noch die Zweitbewertung widersprechen ihr. Begründung und Gegenargumente stehen im
 [ADR-Vorschlag](../adr/0007-sigil-quelltextsyntax-v1.md); dort sind auch KDL und TOML aus der Literatur
 bewertet.
 
@@ -362,16 +390,18 @@ bewertet.
   Knotenpfaden erfordert in beiden Syntaxen eigenen Code, daher schrumpft der Aufwandsvorteil von RON auf
   etwa den Faktor 3,1. Bei RON bliebe zudem ein zweiter Parser neben `ron` zu pflegen.
 - **Dagegen:** gut 2 200 Zeilen eigener Parser, der gewartet, dokumentiert und gegen beliebige Eingaben
-  gehärtet werden muss. Keine Editor-Unterstützung von Haus aus. Und das nicht gemessene Risiko, dass
-  Agenten eine unbekannte Syntax schlechter treffen.
+  gehärtet werden muss. Keine Editor-Unterstützung von Haus aus. Und das Risiko, dass Agenten eine
+  unbekannte Syntax schlechter treffen: in der Nachmessung nicht bestätigt, bei den dort sehr eindeutigen
+  Aufgaben aber auch nicht ausgeschlossen.
 
 **Bedingungen vor der Abnahme in Sammelsitzung B (Vorschlag):**
 
-1. **Generierbarkeit nachholen.** Codex schreibt G1 bis G3 in beiden Syntaxen. Schneidet sigil 1 im ersten
-   Versuch deutlich schlechter ab als RON und gleicht eine Rückmeldungsrunde mit den `check`-Diagnosen das
-   nicht aus, sollte der PO RON oder KDL neu gewichten.
-2. **Zweitbewertung** der Handbewertungen für e02, e03, e04, e07 und e09 durch ein zweites Modell oder den
-   PO.
+1. **Generierbarkeit nachholen — erfüllt (2026-09-15).** Codex hat G1 bis G3 in beiden Syntaxen im ersten
+   Versuch ohne Diagnose geschrieben. sigil 1 schneidet nicht schlechter ab als RON; die Schwelle
+   „deutlich schlechter“ für eine Neugewichtung von RON oder KDL ist nicht erreicht. Weil die Messung kaum
+   trennt, bleibt die Frage nach einer schärferen Messung an den PO (Abschnitt 8).
+2. **Zweitbewertung — erfüllt (2026-09-15)** durch Codex, blind gegenüber Claudes Werten: 37 von 40 Werten
+   gleich, keine Abweichung von 2 oder mehr (4.1). Eine Bewertung durch den PO ersetzt das nicht.
 3. **Syntaxspezifische Fehlerfälle** in den Fehlerkorpus aufnehmen und bewerten: für sigil 1 `:` statt `=`,
    mehrere Felder auf einer Zeile, Leerzeichen vor der Einheit und eine Wallclock-Einheit; für RON ein
    fehlender Newtype und ein fehlender Strukturname; für beide Kaskadentiefe über 3, ein Zyklus und `beats`.
@@ -387,4 +417,6 @@ bewertet.
    Einheitenprüfung aushebelt.
 4. Soll ein Lauf alle Schemafehler einer Datei melden? Das kostet in beiden Varianten einen eigenen
    Schema-Pass statt serde derive.
-5. Soll die Codex-Messung zur Generierbarkeit vor der Entscheidung nachgeholt werden (Empfehlung: ja)?
+5. Genügt die nachgeholte Generierbarkeitsmessung (12 von 12 Dateien fehlerfrei, geringe Trennschärfe),
+   oder soll vor der Entscheidung eine schärfere Messung laufen, etwa mit offen formulierten Aufgaben, nur
+   mit Formatdoku ohne Beispielpaar oder mit weiteren Modellen?

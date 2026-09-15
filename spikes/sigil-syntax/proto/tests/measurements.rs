@@ -105,6 +105,36 @@ fn lossless_edits_change_exactly_one_line_and_keep_comments() {
 }
 
 #[test]
+fn second_rating_table_matches_the_stored_codex_reply() {
+    let reply = measure::read("second-rating/codex.out.md");
+    let parsed = measure::parse_rating_reply(&reply);
+    let expected: Vec<(String, u8, u8, u8, u8)> = measure::RATINGS_CODEX
+        .iter()
+        .map(|(id, a, b, c, d)| (id.to_string(), *a, *b, *c, *d))
+        .collect();
+    assert_eq!(parsed, expected);
+    assert_eq!(parsed.len(), measure::RATINGS.len());
+}
+
+#[test]
+fn every_generability_file_is_present_and_clean() {
+    for r in measure::generability_results() {
+        let out = r
+            .outcome
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}/{} {}: missing", r.author, r.brief, r.syntax.name()));
+        assert!(
+            out.diags.is_empty(),
+            "{}/{} {}: {:#?}",
+            r.author,
+            r.brief,
+            r.syntax.name(),
+            out.diags
+        );
+    }
+}
+
+#[test]
 fn results_md_is_up_to_date() {
     let path = measure::results_path();
     let text = std::fs::read_to_string(&path)

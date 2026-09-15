@@ -40,6 +40,48 @@ pub const RATINGS: &[(&str, u8, u8, u8, u8)] = &[
     ("e10", 3, 3, 3, 3),
 ];
 
+/// Independent second rating by Codex (gpt-6-astra, 2026-09-15), same shape as `RATINGS`.
+/// The rater did not see `RATINGS`: `second-rating/prompt.md` (built by `make_prompt.py`) holds
+/// only the rubric, the injected change and the checker output of every error file. The reply is
+/// kept unchanged in `second-rating/codex.out.md`; a test checks that this table matches it.
+pub const RATINGS_CODEX: &[(&str, u8, u8, u8, u8)] = &[
+    ("e01", 3, 3, 3, 3),
+    ("e02", 1, 0, 3, 3),
+    ("e03", 3, 3, 3, 3),
+    ("e04", 1, 1, 3, 3),
+    ("e05", 3, 3, 3, 3),
+    ("e06", 3, 3, 3, 3),
+    ("e07", 3, 3, 3, 3),
+    ("e08", 3, 3, 3, 3),
+    ("e09", 1, 0, 3, 3),
+    ("e10", 3, 3, 3, 3),
+];
+
+/// Reads the rating table of a rater reply (`| case | syntax | cause | fix hint | reason |`)
+/// back into the shape of `RATINGS`; rows that are not a case are skipped.
+pub fn parse_rating_reply(text: &str) -> Vec<(String, u8, u8, u8, u8)> {
+    let mut by_case: BTreeMap<String, [Option<u8>; 4]> = BTreeMap::new();
+    for line in text.lines() {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 5 || !cells[1].starts_with('e') {
+            continue;
+        }
+        let (Ok(cause), Ok(hint)) = (cells[3].parse::<u8>(), cells[4].parse::<u8>()) else {
+            continue;
+        };
+        let slot = by_case.entry(cells[1].to_string()).or_default();
+        match cells[2] {
+            "RON" => (slot[0], slot[1]) = (Some(cause), Some(hint)),
+            "sigil 1" => (slot[2], slot[3]) = (Some(cause), Some(hint)),
+            _ => {}
+        }
+    }
+    by_case
+        .into_iter()
+        .filter_map(|(id, s)| Some((id, s[0]?, s[1]?, s[2]?, s[3]?)))
+        .collect()
+}
+
 /// `spikes/sigil-syntax`.
 pub fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -643,22 +685,30 @@ pub fn generability_block(results: &[GenResult]) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "| Autor | Muster | Syntax | Datei | Diagnosen | Arten (Phase/Art × Anzahl) | RON ≡ sigil 1 |"
+        "| Autor | Muster | Syntax | Datei | Diagnosen | Arten (Phase/Art × Anzahl) | RON ≡ sigil 1 | ≡ anderer Autor |"
     );
-    let _ = writeln!(o, "|---|---|---|:-:|---:|---|:-:|");
+    let _ = writeln!(o, "|---|---|---|:-:|---:|---|:-:|:-:|");
+    let same_model = |a: Option<&GenResult>, b: Option<&GenResult>| match (
+        a.and_then(|x| x.outcome.as_ref()),
+        b.and_then(|x| x.outcome.as_ref()),
+    ) {
+        (Some(a), Some(b)) => yes(a.resolved.is_some() && a.resolved == b.resolved),
+        _ => "–",
+    };
     for r in results {
         let pair = results
             .iter()
             .find(|x| x.author == r.author && x.brief == r.brief && x.syntax != r.syntax);
-        let equal = match (&r.outcome, pair.and_then(|p| p.outcome.as_ref())) {
-            (Some(a), Some(b)) => yes(a.resolved.is_some() && a.resolved == b.resolved),
-            _ => "–",
-        };
+        let equal = same_model(Some(r), pair);
+        let other_author = results
+            .iter()
+            .find(|x| x.author != r.author && x.brief == r.brief && x.syntax == r.syntax);
+        let cross = same_model(Some(r), other_author);
         match &r.outcome {
             None => {
                 let _ = writeln!(
                     o,
-                    "| {} | `{}` | {} | fehlt | – | – | – |",
+                    "| {} | `{}` | {} | fehlt | – | – | – | – |",
                     r.author,
                     r.brief,
                     r.syntax.name()
@@ -682,13 +732,14 @@ pub fn generability_block(results: &[GenResult]) -> String {
                 };
                 let _ = writeln!(
                     o,
-                    "| {} | `{}` | {} | ja | {} | {} | {} |",
+                    "| {} | `{}` | {} | ja | {} | {} | {} | {} |",
                     r.author,
                     r.brief,
                     r.syntax.name(),
                     out.diags.len(),
                     kinds,
-                    equal
+                    equal,
+                    cross
                 );
             }
         }
@@ -1171,6 +1222,131 @@ pub fn effort_block() -> String {
 }
 
 // ------------------------------------------------------------------------------------------
+// Second rating
+// ------------------------------------------------------------------------------------------
+
+/// Cohen's kappa over paired 0–3 scores; `weighted` uses quadratic weights.
+pub fn kappa(pairs: &[(u8, u8)], weighted: bool) -> f64 {
+    let n = pairs.len() as f64;
+    let w = |i: usize, j: usize| {
+        if weighted {
+            1.0 - (i as f64 - j as f64).powi(2) / 9.0
+        } else if i == j {
+            1.0
+        } else {
+            0.0
+        }
+    };
+    let (mut pa, mut pb, mut po) = ([0f64; 4], [0f64; 4], 0.0);
+    for &(a, b) in pairs {
+        pa[usize::from(a)] += 1.0 / n;
+        pb[usize::from(b)] += 1.0 / n;
+        po += w(usize::from(a), usize::from(b)) / n;
+    }
+    let mut pe = 0.0;
+    for (i, pai) in pa.iter().enumerate() {
+        for (j, pbj) in pb.iter().enumerate() {
+            pe += w(i, j) * pai * pbj;
+        }
+    }
+    (po - pe) / (1.0 - pe)
+}
+
+fn de_decimal(x: f64) -> String {
+    format!("{x:.2}").replace('.', ",")
+}
+
+pub fn second_rating_block(results: &[ErrorResult]) -> String {
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "| Fall | Syntax | Ursache Claude | Ursache Codex | Fix-Hinweis Claude | Fix-Hinweis Codex | größter Abstand |"
+    );
+    let _ = writeln!(o, "|---|---|:-:|:-:|:-:|:-:|:-:|");
+    let mut pairs: Vec<(u8, u8)> = Vec::new();
+    let mut big: Vec<String> = Vec::new();
+    // Index: 0 cause RON, 1 hint RON, 2 cause sigil 1, 3 hint sigil 1; then [Claude, Codex].
+    let mut sums = [[0u32; 2]; 4];
+    for (a, b) in RATINGS.iter().zip(RATINGS_CODEX) {
+        assert_eq!(
+            a.0, b.0,
+            "RATINGS and RATINGS_CODEX must list the same cases"
+        );
+        let va = [a.1, a.2, a.3, a.4];
+        let vb = [b.1, b.2, b.3, b.4];
+        for i in 0..4 {
+            sums[i][0] += u32::from(va[i]);
+            sums[i][1] += u32::from(vb[i]);
+            pairs.push((va[i], vb[i]));
+        }
+        for (syn, c, h) in [("RON", 0, 1), ("sigil 1", 2, 3)] {
+            let gap = va[c].abs_diff(vb[c]).max(va[h].abs_diff(vb[h]));
+            if gap >= 2 {
+                big.push(format!("{} {syn}", a.0));
+            }
+            let _ = writeln!(
+                o,
+                "| {} | {syn} | {} | {} | {} | {} | {gap} |",
+                a.0, va[c], vb[c], va[h], vb[h]
+            );
+        }
+    }
+    let _ = writeln!(
+        o,
+        "| **Summe RON (max. 30)** | | **{}** | **{}** | **{}** | **{}** | |",
+        sums[0][0], sums[0][1], sums[1][0], sums[1][1]
+    );
+    let _ = writeln!(
+        o,
+        "| **Summe sigil 1 (max. 30)** | | **{}** | **{}** | **{}** | **{}** | |",
+        sums[2][0], sums[2][1], sums[3][0], sums[3][1]
+    );
+    let exact = pairs.iter().filter(|(a, b)| a == b).count();
+    let within_one = pairs.iter().filter(|(a, b)| a.abs_diff(*b) <= 1).count();
+    let auto = |s: Syntax| -> u32 {
+        results
+            .iter()
+            .filter(|r| r.syntax == s)
+            .map(|r| u32::from(r.pos_score()) + u32::from(r.path_score()))
+            .sum()
+    };
+    let (auto_r, auto_s) = (auto(Syntax::Ron), auto(Syntax::Sigil));
+    let _ = writeln!(o);
+    let _ = writeln!(
+        o,
+        "- Übereinstimmung: {exact} von {} Werten gleich ({} %), {within_one} von {} höchstens 1 Punkt auseinander.",
+        pairs.len(),
+        (exact as f64 / pairs.len() as f64 * 100.0).round() as i64,
+        pairs.len()
+    );
+    let _ = writeln!(
+        o,
+        "- Cohens Kappa über alle {} Wertepaare: ungewichtet {}, quadratisch gewichtet {}.",
+        pairs.len(),
+        de_decimal(kappa(&pairs, false)),
+        de_decimal(kappa(&pairs, true))
+    );
+    let _ = writeln!(
+        o,
+        "- Fälle mit einem Abstand von 2 oder mehr: {}.",
+        if big.is_empty() {
+            "keine".to_string()
+        } else {
+            big.join(", ")
+        }
+    );
+    let _ = writeln!(
+        o,
+        "- Gesamtpunkte mit Position und Knotenpfad (max. 120): RON {} (Claude) bzw. {} (Codex), sigil 1 {} (Claude) bzw. {} (Codex).",
+        auto_r + sums[0][0] + sums[1][0],
+        auto_r + sums[0][1] + sums[1][1],
+        auto_s + sums[2][0] + sums[3][0],
+        auto_s + sums[2][1] + sums[3][1]
+    );
+    o
+}
+
+// ------------------------------------------------------------------------------------------
 // results.md
 // ------------------------------------------------------------------------------------------
 
@@ -1182,6 +1358,7 @@ pub fn blocks() -> Vec<(&'static str, String)> {
         ("fehler", errors_block(&errors)),
         ("fehler-roh", raw_block(&errors)),
         ("qualitaet", quality_block(&errors)),
+        ("zweitbewertung", second_rating_block(&errors)),
         ("mehrfach", multi_block()),
         ("modder", modder_block(&errors)),
         ("roundtrip", roundtrip_block()),

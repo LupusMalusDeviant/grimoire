@@ -2,7 +2,7 @@
 
 - **Bezug:** Plan 0002 WP1.4 (Spiel-Repo), PRD-0004 OF-4.1, Projekt-ADR-0006 und ADR-0007, Korpus unter `corpus/`
 - **Status:** Messbericht, **keine Entscheidung**. Die Syntaxwahl trifft das Engine-ADR „Sigil-Quelltextsyntax v1“; die Abnahme liegt beim PO (Sammelsitzung B, P-10).
-- **Stand:** 2026-09-15 (unbeaufsichtigter Lauf, Claude)
+- **Stand:** 2026-09-15 (unbeaufsichtigter Lauf, Claude; Codex-Generierbarkeit und Zweitbewertung am selben Tag nachgetragen)
 - **Vorläufig:** Alle Bewertungen und Deutungen in diesem Bericht sind vorläufig; die Bestätigung durch den PO steht aus.
 
 Alle Tabellen zwischen den Markierungen `BEGIN GENERATED` und `END GENERATED` erzeugt der Prototyp. Sie
@@ -22,7 +22,9 @@ lassen sich jederzeit neu erzeugen und werden von `cargo test` gegen den Code ge
    liegt ganz bei den Syntaxfehlern, und dort an `ron` selbst: `3.5` statt Ganzzahl meldet `ron` als
    „Expected comma“, eine fehlende Klammer als unbekanntes Feld `Bullet`, ein doppeltes Komma als fehlende
    Struktur `Key`. Fehlendes Pflichtfeld (e03) und falsche Einheit (e07) behebt die Zusatzschicht mit
-   wenigen Zeilen; in der ersten Fassung fehlten diese Zeilen, und RON lag 6 Punkte tiefer (96/120).
+   wenigen Zeilen; in der ersten Fassung fehlten diese Zeilen, und RON lag 6 Punkte tiefer (96/120). Eine
+   blinde Zweitbewertung durch Codex weicht in 3 von 40 Handwerten um je einen Punkt ab und keinmal um
+   zwei; mit ihren Werten steht es 120 (sigil 1) zu 104 (RON) statt 119 zu 102 (Abschnitt 2.8).
 3. **Einheiten:** Entgegen der Befürchtung im Korpus-README prüft `ron` 0.12.2 Newtype-Namen
    (`Ticks(12)` statt `Deg` wird erkannt). **Aber** `ron::Value` verliert die Namen: Über `ron::Value`
    gelesen wird `Ticks(240)` stillschweigend zu `Deg(240.0)`. Overrides müssen deshalb als `RawValue`
@@ -39,10 +41,12 @@ lassen sich jederzeit neu erzeugen und werden von `cargo test` gegen den Code ge
    verlustfreies Editieren ebenfalls rund 710 Zeilen eigenen Code; der Vorteil „kein eigener Parser“
    gilt für RON also nur, solange niemand Knotenpfade, Positionen für Validierungsbefunde oder
    `sigilc set` braucht (Abschnitt 5.4).
-7. **Generierbarkeit ist nicht belastbar gemessen.** Codex war zweimal nicht verfügbar; es
-   liegen nur die sechs Dateien von Claude vor (alle fehlerfrei, RON und sigil 1 jeweils modellgleich).
-   Da Claude auch Grammatik, Schema und Aufgabentexte geschrieben hat, sagt das über fremde Autoren
-   nichts aus (Abschnitt 4).
+7. **Generierbarkeit: kein Unterschied messbar, bei geringer Trennschärfe.** Codex (gpt-6-astra, read-only,
+   ohne Zugriff auf Claudes Dateien) hat G1 bis G3 im ersten Versuch in beiden Syntaxen ohne Diagnose
+   geschrieben. RON- und sigil-Fassung ergeben jeweils dasselbe Modell, und zwar dasselbe wie bei Claude.
+   12 von 12 Dateien sind fehlerfrei, bei drei vollständig bezifferten Aufgaben mit Grammatik, Schema und
+   einem Beispielpaar im Kontext. Ein Nachteil von sigil 1 zeigt sich nicht; einen kleineren schließt die
+   Messung aber nicht aus (Abschnitt 4).
 
 ## Aufbau und Reproduktion
 
@@ -70,6 +74,8 @@ cargo run -- set ../corpus/sigil/04-mirrored-spiral.sigil emitters.bloom.speed 0
 | `src/check.rs` | gemeinsame Pipeline, Komposition (Import, Overrides) und Validierung |
 | `src/measure.rs` | alle Messungen und die Tabellen dieses Berichts |
 | `tests/measurements.rs` | Tests, die die Messungen reproduzieren |
+| `../second-rating/` | Prompt-Generator, Prompt und unveränderte Antwort der Zweitbewertung (Abschnitt 2.8) |
+| `../generability/` | Aufgabentexte, Prompts, Dateien beider Autoren, unveränderte Codex-Antworten unter `codex/raw/` (Abschnitt 4) |
 
 ## Methodik
 
@@ -97,7 +103,8 @@ cargo run -- set ../corpus/sigil/04-mirrored-spiral.sigil emitters.bloom.speed 0
   (automatisch). *Ursache* und *Fix-Hinweis:* 0 keine oder falsch, 1 irreführend oder generisch,
   2 benennt das Problem ohne Kontext, 3 benennt das Problem mit Kontext (Feld, Art, Gegenstelle, konkreter
   Ersatz). Diese beiden Spalten hat Claude von Hand bewertet; die Werte stehen in
-  `src/measure.rs` (`RATINGS`) und sind vorläufig.
+  `src/measure.rs` (`RATINGS`) und sind vorläufig. Codex hat sie blind ein zweites Mal bewertet
+  (`RATINGS_CODEX`, Abschnitt 2.8).
 
 ## 1 Korpus: zwei Parser, ein Modell
 
@@ -183,7 +190,8 @@ Das liefert `ron` 0.12.2 ohne jede Zusatzschicht. Knotenpfade und Fix-Hinweise g
 | **Summe (max. 30)** | **29** | **30** | **24** | **30** | **20** | **29** | **29** | **30** |
 <!-- END GENERATED: qualitaet -->
 
-Begründung der von Hand bewerteten Spalten, wo RON schlechter liegt oder lag. Nur e02, e04 und e09 liegen
+Die Tabelle zeigt Claudes Werte; die Zweitbewertung durch Codex steht in Abschnitt 2.8. Begründung der von
+Hand bewerteten Spalten, wo RON schlechter liegt oder lag. Nur e02, e04 und e09 liegen
 noch unter sigil 1. Alle drei sind Syntaxfehler, bei denen `ron` Fehlerklasse oder Ursache verfehlt; der
 Fehlercode enthält nicht, was eine Zusatzschicht für eine bessere Meldung bräuchte.
 
@@ -414,6 +422,61 @@ Zyklus) sowie `beats`. Jede Sonde ändert eine Kopie eines Korpus-Musters im Spe
 - **FR-08:** Zyklus (p09) und Tiefe 4 (p10) meldet der gemeinsame Validator in beiden Syntaxen mit genau
   einer Diagnose. Vorher lief dieser Code in keinem Test und keinem Fehlerfall.
 
+### 2.8 Zweitbewertung von Ursache und Fix-Hinweis
+
+<!-- BEGIN GENERATED: zweitbewertung -->
+| Fall | Syntax | Ursache Claude | Ursache Codex | Fix-Hinweis Claude | Fix-Hinweis Codex | größter Abstand |
+|---|---|:-:|:-:|:-:|:-:|:-:|
+| e01 | RON | 3 | 3 | 3 | 3 | 0 |
+| e01 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e02 | RON | 1 | 1 | 0 | 0 | 0 |
+| e02 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e03 | RON | 3 | 3 | 2 | 3 | 1 |
+| e03 | sigil 1 | 3 | 3 | 2 | 3 | 1 |
+| e04 | RON | 1 | 1 | 0 | 1 | 1 |
+| e04 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e05 | RON | 3 | 3 | 3 | 3 | 0 |
+| e05 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e06 | RON | 3 | 3 | 3 | 3 | 0 |
+| e06 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e07 | RON | 3 | 3 | 3 | 3 | 0 |
+| e07 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e08 | RON | 3 | 3 | 3 | 3 | 0 |
+| e08 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e09 | RON | 1 | 1 | 0 | 0 | 0 |
+| e09 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| e10 | RON | 3 | 3 | 3 | 3 | 0 |
+| e10 | sigil 1 | 3 | 3 | 3 | 3 | 0 |
+| **Summe RON (max. 30)** | | **24** | **24** | **20** | **22** | |
+| **Summe sigil 1 (max. 30)** | | **30** | **30** | **29** | **30** | |
+
+- Übereinstimmung: 37 von 40 Werten gleich (93 %), 40 von 40 höchstens 1 Punkt auseinander.
+- Cohens Kappa über alle 40 Wertepaare: ungewichtet 0,76, quadratisch gewichtet 0,95.
+- Fälle mit einem Abstand von 2 oder mehr: keine.
+- Gesamtpunkte mit Position und Knotenpfad (max. 120): RON 102 (Claude) bzw. 104 (Codex), sigil 1 119 (Claude) bzw. 120 (Codex).
+<!-- END GENERATED: zweitbewertung -->
+
+**Vorgehen.** `second-rating/make_prompt.py` baut aus `expected.json`, den Fehlerdateien und der Ausgabe von
+`cargo run -- check` einen Prompt mit der Skala aus der Methodik, der eingebauten Änderung und der
+vollständigen Diagnose je Datei (`second-rating/prompt.md`). Claudes Werte, `results.md` und der Code waren
+nicht Teil des Prompts. Codex (gpt-6-astra, Reasoning medium) lief read-only in einem leeren Verzeichnis
+außerhalb des Repos und hat laut Protokoll keinen Befehl ausgeführt. Die Antwort liegt unverändert in
+`second-rating/codex.out.md`; der Test `second_rating_table_matches_the_stored_codex_reply` prüft, dass
+`RATINGS_CODEX` ihr entspricht. Die Syntaxnamen konnten nicht verborgen werden.
+
+**Deutung.**
+
+- Alle drei Abweichungen betreffen den Fix-Hinweis und liegen je einen Punkt höher als bei Claude. Bei e03
+  gibt Codex in beiden Syntaxen 3; Claude hatte 2 gegeben, weil der Hinweis keinen Beispielwert nennt. Den
+  RON-Hinweis bei e04 (Liste der erlaubten Felder statt fehlender Klammer) wertet Codex als irreführend (1),
+  Claude als falsch (0).
+- Die Einstufung der drei RON-Syntaxfehler e02, e04 und e09 mit Ursache 1 bestätigt Codex unabhängig. Mit
+  Codex' Werten schrumpft der Abstand von 17 auf 16 Punkte und liegt weiter ganz bei diesen drei Fällen.
+- Das ungewichtete Kappa liegt unter der Rohübereinstimmung, weil fast alle Werte 3 sind; bei so schiefer
+  Verteilung reagiert Kappa stark auf einzelne Abweichungen. Das quadratisch gewichtete Kappa berücksichtigt,
+  dass keine Abweichung größer als ein Punkt ist.
+- Beide Bewerter sind Sprachmodelle, und die Skala stammt von Claude. Eine Bewertung durch den PO steht aus.
+
 ## 3 Text→Parameter-Rundreise
 
 Ein Wert wird über seinen Knotenpfad gesetzt und der Text zurückgeschrieben (Vorbild `sigilc set`).
@@ -452,37 +515,59 @@ G3 Zwillingsspiralen (zwei Spiral-Emitter `spiral_left`/`spiral_right` mit Tempo
 Ereignis, Behaviour, gezielter dritter Emitter). Laut Plan sollte Codex (read-only) jedes Muster in beiden
 Syntaxen schreiben und Claude unabhängig davon als zweiter Autor.
 
-**Was geschah.** Alle vier Codex-Aufrufe (drei parallel, eine Wiederholung) brachen sofort ab, weil
-Codex nicht verfügbar war. Nach den Regeln für unbeaufsichtigte Läufe ging die Arbeit ohne Codex
-weiter. Claude hat seine sechs Dateien aus den Aufgabentexten geschrieben; eine Codex-Fassung, die er hätte
-sehen können, gab es nicht.
+**Was geschah.** Im unbeaufsichtigten Lauf brachen alle vier Codex-Aufrufe (drei parallel, eine Wiederholung) sofort
+ab, weil Codex nicht verfügbar war; Claude schrieb seine sechs Dateien damals allein aus den
+Aufgabentexten. Später lief Codex am 2026-09-15 je Muster genau einmal (gpt-6-astra,
+Reasoning medium, read-only, Arbeitsverzeichnis Wurzel des Engine-Repos) mit den Prompts aus
+`generability/prompts/`. Gegenüber der ersten Fassung sind dort nur die Pfade auf die Repo-Wurzel
+umgestellt und ein ausdrückliches Verbot ergänzt, `generability/claude/`, `results.md`, `proto/` oder
+`docs/` zu öffnen oder einen Prüfer laufen zu lassen. Laut Protokoll hat Codex nur die fünf erlaubten
+Dateien gelesen. Die Antworten liegen unverändert unter `generability/codex/raw/`, die beiden Codeblöcke
+jeder Antwort ohne Änderung als `generability/codex/<muster>.ron` und `.sigil`. Es gab keinen zweiten
+Versuch und keine Rückmeldungsrunde mit Diagnosen.
 
 <!-- BEGIN GENERATED: generierbarkeit -->
-| Autor | Muster | Syntax | Datei | Diagnosen | Arten (Phase/Art × Anzahl) | RON ≡ sigil 1 |
-|---|---|---|:-:|---:|---|:-:|
-| claude | `g1-pendulum-fan` | RON | ja | 0 | – | ja |
-| claude | `g1-pendulum-fan` | sigil 1 | ja | 0 | – | ja |
-| claude | `g2-mine-field` | RON | ja | 0 | – | ja |
-| claude | `g2-mine-field` | sigil 1 | ja | 0 | – | ja |
-| claude | `g3-twin-spirals` | RON | ja | 0 | – | ja |
-| claude | `g3-twin-spirals` | sigil 1 | ja | 0 | – | ja |
-| codex | `g1-pendulum-fan` | RON | fehlt | – | – | – |
-| codex | `g1-pendulum-fan` | sigil 1 | fehlt | – | – | – |
-| codex | `g2-mine-field` | RON | fehlt | – | – | – |
-| codex | `g2-mine-field` | sigil 1 | fehlt | – | – | – |
-| codex | `g3-twin-spirals` | RON | fehlt | – | – | – |
-| codex | `g3-twin-spirals` | sigil 1 | fehlt | – | – | – |
+| Autor | Muster | Syntax | Datei | Diagnosen | Arten (Phase/Art × Anzahl) | RON ≡ sigil 1 | ≡ anderer Autor |
+|---|---|---|:-:|---:|---|:-:|:-:|
+| claude | `g1-pendulum-fan` | RON | ja | 0 | – | ja | ja |
+| claude | `g1-pendulum-fan` | sigil 1 | ja | 0 | – | ja | ja |
+| claude | `g2-mine-field` | RON | ja | 0 | – | ja | ja |
+| claude | `g2-mine-field` | sigil 1 | ja | 0 | – | ja | ja |
+| claude | `g3-twin-spirals` | RON | ja | 0 | – | ja | ja |
+| claude | `g3-twin-spirals` | sigil 1 | ja | 0 | – | ja | ja |
+| codex | `g1-pendulum-fan` | RON | ja | 0 | – | ja | ja |
+| codex | `g1-pendulum-fan` | sigil 1 | ja | 0 | – | ja | ja |
+| codex | `g2-mine-field` | RON | ja | 0 | – | ja | ja |
+| codex | `g2-mine-field` | sigil 1 | ja | 0 | – | ja | ja |
+| codex | `g3-twin-spirals` | RON | ja | 0 | – | ja | ja |
+| codex | `g3-twin-spirals` | sigil 1 | ja | 0 | – | ja | ja |
 <!-- END GENERATED: generierbarkeit -->
 
-**Deutung.** Null Fehler bei Claude beweisen nur, dass Grammatik, Schema und Prototyp in sich stimmig sind.
-Claude hat Grammatik, Schema, Aufgabentexte und Prüfer selbst geschrieben; das ist keine Messung der
-Generierbarkeit durch einen fremden Autor. Aussagekräftig wird die Tabelle erst mit den Codex-Dateien.
+„≡ anderer Autor“ vergleicht das aufgelöste Modell mit dem des anderen Autors in derselben Syntax.
 
-**Nachholen.** Sobald Codex verfügbar ist, die Prompts aus `generability/prompts/` (unverändert aus dem
-unbeaufsichtigten Lauf übernommen, Aufruf im README dort) erneut an Codex geben, die Antworten
-als `generability/codex/g1-pendulum-fan.ron`, `….sigil` usw. ablegen und `cargo run -- report --write`
-ausführen. Die Messung zählt dann Diagnosen nach Phase und Art und prüft, ob RON- und sigil-Fassung
-desselben Autors dasselbe Modell ergeben.
+**Deutung.**
+
+- **Kein Unterschied zwischen den Syntaxen messbar.** Beide Autoren schreiben RON und sigil 1 im ersten
+  Versuch ohne Diagnose, und alle vier Fassungen je Muster ergeben dasselbe aufgelöste Modell. Die Sorge,
+  dass ein fremdes Modell die neue Syntax im ersten Versuch deutlich schlechter trifft als RON, bestätigt
+  sich hier nicht.
+- **Geringe Trennschärfe.** Die Messung liegt an der Decke. Die Aufgabentexte nennen jeden Wert; Grammatik,
+  Schema mit Abbildungstabelle und ein vollständiges Beispielpaar lagen im Kontext; es sind nur drei Muster
+  und ein fremdes Modell. Ob Agenten sigil 1 auch aus einer knapperen Formatdoku, ohne Beispielpaar oder bei
+  offener formulierten Aufgaben treffen, ist nicht gemessen. Einen kleineren Nachteil einer der beiden
+  Syntaxen schließt die Messung nicht aus.
+- **Übereinstimmung der Autoren.** Codex' Dateien unterscheiden sich von Claudes nur in Formatierung und
+  Kommentaren: Die sigil-1-Fassungen weichen nur in Claudes Kopfkommentar ab, die RON-Fassungen zusätzlich
+  darin, dass Claude kurze Strukturen wie `Ring(count: 8, start: Deg(0.0))` in eine Zeile schreibt und Codex
+  über mehrere. Das spricht dafür, dass Aufgabentexte und Schema eindeutig sind; eine besondere Leistung
+  einer Syntax belegt es nicht.
+- Aufgabentexte, Grammatik, Schema und Prüfer stammen weiter von Claude. Codex' Dateien sind aber von einem
+  fremden Autor ohne Kenntnis von Claudes Fassung geschrieben.
+
+**Wiederholen.** Prompts und Aufruf stehen in `generability/prompts/README.md`; nach dem Ablegen neuer
+Antworten `cargo run -- report --write` ausführen. Der Test `every_generability_file_is_present_and_clean`
+erwartet alle zwölf Dateien ohne Diagnose. Eine trennschärfere Messung braucht neue Aufgaben (etwa ohne
+Beispielpaar oder mit offener Beschreibung) statt einer Änderung an G1 bis G3.
 
 ## 5 Ergonomie
 
@@ -603,9 +688,11 @@ Diagnosedarstellung) ist unabhängig von der Syntaxwahl.
 - **Befangenheit.** Claude hat Korpus, Soll-Diagnosen, Grammatik und beide Prototyp-Parser geschrieben.
   Die Meldungen von sigil 1 sind auf die Soll-Texte hin formuliert, die von `ron` nicht. Die 30/30 für
   sigil 1 zeigen, was eine eigene Grammatik **erreichen kann**, nicht, was sie ohne Aufwand liefert.
-- **Keine Zweitmodell-Prüfung.** Codex fiel in dieser Stufe ganz aus (nicht verfügbar), ebenso die
-  unabhängige Zweitfassung der Generierbarkeitsmuster.
-- **Handbewertungen** der Spalten Ursache und Fix-Hinweis sind subjektiv und vorläufig.
+- **Zweitmodell nur für Generierbarkeit und Handbewertung.** Codex hat G1 bis G3 geschrieben und Ursache und
+  Fix-Hinweis zweitbewertet (Abschnitte 2.8 und 4). Eine Zweitmodell-Prüfung des Parser-Codes gibt es
+  weiterhin nicht. Die Generierbarkeitsmessung liegt an der Decke und trennt die Syntaxen nicht.
+- **Handbewertungen** der Spalten Ursache und Fix-Hinweis sind subjektiv und vorläufig. Auch die
+  Zweitbewertung stammt von einem Sprachmodell; eine Bewertung durch den PO steht aus.
 - **Nur `ron` 0.12.2.** Andere Versionen verhalten sich anders, etwa bei der Prüfung von Newtype-Namen.
 - **Wiederaufsetzen** des sigil-Parsers ist für die Fehlerarten des Korpus ausgelegt. Syntaxspezifische
   Fehlerbilder sind nur als Sonden gemessen und zeigen Folgefehler (Abschnitt 2.7); andere (etwa nicht
@@ -631,4 +718,6 @@ Offene Fragen an den PO, die die Messung schärft:
    Einheitenprüfung aus (Abschnitt 2.4).
 4. **Mehrfachbefunde:** Soll ein Lauf alle Schemafehler einer Datei melden? Das ist in beiden Varianten
    Zusatzaufwand (eigener Schema-Pass statt serde derive).
-5. **Generierbarkeit:** Die Codex-Messung sollte vor der Entscheidung nachgeholt werden (Abschnitt 4).
+5. **Generierbarkeit:** Die Codex-Messung ist nachgeholt; beide Syntaxen sind im ersten Versuch fehlerfrei,
+   die Messung trennt aber kaum (Abschnitt 4). Genügt das, oder soll vor der Entscheidung eine schärfere
+   Messung laufen (offen formulierte Aufgaben, nur Formatdoku ohne Beispielpaar, weitere Modelle)?
