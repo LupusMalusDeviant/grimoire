@@ -1,4 +1,4 @@
-# Look comparison in Blender Eevee (toon | stylized | realistic)
+# Look comparison in Blender Eevee (toon | stylized | realistic | realistic_tex)
 
 Procedural bullet-hell arena rendered with the three candidate looks, so they can be
 compared with a mature real-time renderer (shadow maps, temporal AA). All paths are
@@ -18,6 +18,40 @@ Requirements: Blender 5.2 (Eevee) and Python 3 with numpy (Blender's bundled Pyt
 | `render.py` | class mask, calibration, final, 1x crop and draft renders (one image per call) |
 | `bullets2d.py` | shared bullet and player-marker layer, drawn once per variant |
 | `compose.py` | final frames, composites, `metrics.json`, `metrics.md` |
+| `textures.py` | "realistic_tex" look: material -> texture-id map, world-scaled box/cube UV generation (called from `build_scene.py`), textured Principled BSDF node trees (called from `looks.py`) |
+| `compose_textures.py` | composites/metrics comparing `realistic` against `realistic_tex`, on top of `compose.py`'s own output (no bpy, run it the same way) |
+
+## realistic_tex (procedural PBR textures)
+
+Same Principled BSDF setup as "realistic" (same `rough_min`, same gain handling), but
+base colour / normal / roughness / metallic come from a texture snapshot for every
+mapped material (see `textures.MATERIAL_TEXTURE_MAP`); unmapped materials
+(`textures.UNMAPPED_MATERIALS`) stay flat "realistic". AO (the ORM red channel) is
+never sampled: Eevee's Principled BSDF has no socket that folds a supplied AO map
+into indirect light only, and faking it via Shader-to-RGB would defeat the point of
+a GGX comparison, so it is left out entirely and never baked into the base colour.
+
+UVs are generated once at build time (`build_scene.py --tex-snapshot`), not per
+render: world-scaled box/cube projection (per-face dominant axis, one UV unit per
+`tile_size_m`) everywhere, except the floor objects (`floor_tiles`, `floor_kerb`,
+`floor_grout`), which always get a fixed planar-XY projection so their per-tile
+tilt and the kerb's stepped profile never flip the dominant axis into a seam.
+
+```sh
+# 0. Snapshot the texture pack once (it may still change under your feet) and copy
+#    only S/tex_snapshot/generated onward. Never point scripts at the live folder.
+# 1. Scene, camera JSON, floor mask AND uv_tex layers (no GPU needed)
+blender --python SRC/build_scene.py -- --out-dir WORK --tex-snapshot S/tex_snapshot/generated
+# 2. Finals + 1x crop, same as any other look, plus --tex-dir
+blender WORK/scene_calm.blend --python SRC/render.py -- --mode final --look realistic_tex \
+    --work WORK --out OUT --tex-dir S/tex_snapshot/generated
+blender WORK/scene_busy_dim.blend --python SRC/render.py -- --mode final --look realistic_tex \
+    --work WORK --out OUT --tex-dir S/tex_snapshot/generated
+blender WORK/scene_busy_dim.blend --python SRC/render.py -- --mode crop --look realistic_tex \
+    --work WORK --out OUT --tex-dir S/tex_snapshot/generated
+# 3. Composites + metrics against "realistic" (extends compose.py's own output)
+python SRC/compose_textures.py --work WORK --out OUT
+```
 
 ## Run
 

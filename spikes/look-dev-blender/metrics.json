@@ -23,6 +23,22 @@
     "share_ge_4_5": 0.36666666666666664
    }
   },
+  "realistic_tex": {
+   "busy_dim": {
+    "median": 3.2519531221945512,
+    "min": 1.002904390183317,
+    "n": 1983,
+    "p5": 1.172377333897075,
+    "share_ge_4_5": 0.33182047402924864
+   },
+   "calm": {
+    "median": 3.5394341513058225,
+    "min": 1.004711041056535,
+    "n": 180,
+    "p5": 1.233555239681418,
+    "share_ge_4_5": 0.36666666666666664
+   }
+  },
   "stylized": {
    "busy": {
     "median": 1.9655933740136535,
@@ -81,11 +97,13 @@
  "calibration": {
   "achieved_display_median": {
    "realistic": 0.1806083552044979,
+   "realistic_tex": 0.1844057849224443,
    "stylized": 0.1817426572399656,
    "toon": 0.1817426572399656
   },
   "gains": {
    "realistic": 1.0,
+   "realistic_tex": 1.0,
    "stylized": 0.8673383533797006,
    "toon": 1.4562976645214871
   },
@@ -179,6 +197,7 @@
   "light_scale": 8.166790639311202,
   "stops": {
    "realistic": 0.0,
+   "realistic_tex": 0.0,
    "stylized": -0.2053331885020659,
    "toon": 0.5423052698482368
   },
@@ -248,6 +267,40 @@
      "Imp 5": 4.087083730351472,
      "Imp 6": 3.642339059173035,
      "Spieler": 1.8256543427416598
+    },
+    "weakest": "Imp 2"
+   }
+  },
+  "realistic_tex": {
+   "busy_dim": {
+    "median": 2.1551616806789595,
+    "min": 1.4876282140233592,
+    "per_figure": {
+     "Brute 1": 2.1551616806789595,
+     "Brute 2": 1.7589649153483784,
+     "Imp 1": 1.4876282140233592,
+     "Imp 2": 1.6224905250198776,
+     "Imp 3": 3.3695199057002,
+     "Imp 4": 3.221000562992908,
+     "Imp 5": 3.6363158116085534,
+     "Imp 6": 4.679142799813533,
+     "Spieler": 1.7299258071621328
+    },
+    "weakest": "Imp 1"
+   },
+   "calm": {
+    "median": 2.0049355244799387,
+    "min": 1.5474309845811725,
+    "per_figure": {
+     "Brute 1": 2.1547441037591364,
+     "Brute 2": 2.0049355244799387,
+     "Imp 1": 1.6805360127834175,
+     "Imp 2": 1.5474309845811725,
+     "Imp 3": 2.9883280437949593,
+     "Imp 4": 1.728964633923587,
+     "Imp 5": 3.913862770398274,
+     "Imp 6": 3.771725629468943,
+     "Spieler": 1.7848087049118375
     },
     "weakest": "Imp 2"
    }
@@ -769,6 +822,33 @@
     ]
    }
   }
+ },
+ "texture_mapping": {
+  "ao_handling": "ORM red (material AO) is not sampled: Eevee's Principled BSDF has no socket that folds a supplied AO map into indirect light only, and faking it via Shader-to-RGB would defeat the GGX comparison. Left out entirely, never multiplied into base colour.",
+  "crop_caveat": "composite_textures_crops.png: the 'realistic' crop is the pre-existing busy-scene 1x crop; the 'realistic_tex' crop was rendered from the busy_dim scene per this task's instructions. Composition is identical, cluster-light intensity differs by the busy_dim 25% factor.",
+  "material_to_texture": {
+   "altar": "altar_basalt",
+   "bronze": "bronze",
+   "brute_flesh": "brute_flesh",
+   "cloak": "cloak_fabric",
+   "floor_stone": "floor_tiles",
+   "grout": "grout",
+   "imp_skin": "imp_skin",
+   "mask": "bone_mask",
+   "moss": "ruin_wall_moss",
+   "pillar": "pillar_stone",
+   "plates": "shoulder_plates",
+   "plinth": "pillar_stone",
+   "rubble": "pillar_stone",
+   "ruin_wall": "ruin_wall_moss",
+   "staff_wood": "staff_wood",
+   "wax": "candle_wax"
+  },
+  "unmapped_materials": [
+   "hood_inside",
+   "horn"
+  ],
+  "uv_approach": "World-scaled box/cube projection (per-face dominant axis; 1 UV unit = the material's tile_size_m), fixed planar-XY for the floor objects (floor_tiles, floor_kerb, floor_grout) to avoid seams."
  },
  "tuning_log": [
   {

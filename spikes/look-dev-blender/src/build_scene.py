@@ -23,13 +23,21 @@ from mathutils import Vector  # noqa: E402
 import common as C  # noqa: E402
 import meshgen as MG  # noqa: E402
 import scene_data as SD  # noqa: E402
+import textures as TX  # noqa: E402
 
 
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--tex-snapshot", help="realistic_tex: path to the texture snapshot's generated/ dir "
+                                            "(tile sizes only; without it every UV uses a 1x1 m fallback tile)")
     return ap.parse_args(argv)
+
+
+def apply_uvs(scene, tile_sizes):
+    n = TX.apply_uvs_to_scene(scene, tile_sizes)
+    print("UV generation: %d mesh objects got a %r layer" % (n, TX.UV_NAME))
 
 
 # -------------------------------------------------------------- materials ---
@@ -341,6 +349,7 @@ def main():
     args = parse_args()
     out_dir = os.path.abspath(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
+    tile_sizes = TX.load_tile_sizes(args.tex_snapshot) if args.tex_snapshot else {}
     sc = SD.build()
     C.write_png(os.path.join(out_dir, "floor_mask.png"), SD.floor_mask(sc))
 
@@ -358,6 +367,7 @@ def main():
     build_floor(colls["floor"], sc)
     build_props(colls["props"], colls["emissive"], sc)
     build_figures(colls["figures"], colls["emissive"], sc)
+    apply_uvs(scene, tile_sizes)
     build_world(scene)
     build_sun(colls["lights"])
     build_lights(colls["lights"], sc["lights_calm"])
@@ -376,6 +386,7 @@ def main():
     C.save_json(os.path.join(out_dir, "scene.json"), info)
 
     calm_bolts = build_bolts(colls["bolts"], sc["bolts"][:12], "bolts_calm")
+    apply_uvs(scene, tile_sizes)
     scene["variant"] = "calm"
     scene["decal_strength"] = C.DECAL["calm"]
     apply_light_units(scene, C.UNIT_DEFAULTS)
@@ -383,6 +394,7 @@ def main():
 
     bpy.data.objects.remove(calm_bolts)
     build_bolts(colls["bolts"], sc["bolts"], "bolts_busy")
+    apply_uvs(scene, tile_sizes)
     build_lights(colls["lights_busy"], sc["lights_busy"][len(sc["lights_calm"]):])
     scene["variant"] = "busy"
     scene["decal_strength"] = C.DECAL["busy"]

@@ -463,3 +463,30 @@ Die Einzelwerte streuen stark (asynchrone Shader-Kompilierung von Eevee reicht �
 - **Paletten-Risiko bestätigt:** Die Cluster-Lichter färben den Boden unter Bullet-Wolken in den Bullet-Farbton. Der dunkle Bullet-Rand hält die Silhouetten lesbar, aber der WCAG-Körperkontrast sinkt. Toon deckelt die Pools, die beiden weichen Looks nicht. Weniger Intensität oder Sättigung der Cluster-Lichter würde allen Looks helfen; das ist eine Frage des Licht-Designs, nicht des Looks.
 - **Unterschiede zum Engine-Spike:** Blender rendert echte Shadow Maps für Mond, Fackeln und Stab-Orb sowie 32 temporale Samples mit Pixelfilter. Das hebt vor allem die beiden weichen Looks gegenüber dem Engine-Spike.
 - **Renderzeiten:** Sie sind kein Kostenvergleich der Looks, nur ein Hinweis auf die Größenordnung in einem ausgereiften Renderer.
+
+## realistic_tex: PBR-Texturen gegen den flachen "realistic"-Look
+
+Gleicher Licht-Gain wie realistic (1,0), keine Neukalibrierung. Materialtabelle, UV-Ansatz und AO-Behandlung stehen unter `texture_mapping` in metrics.json.
+
+| Look | Variante | Boden-Median (Anzeige) |
+|---|---|---|
+| realistic | calm | 0,181 |
+| realistic | busy_dim | 0,263 |
+| realistic_tex | calm | 0,184 |
+| realistic_tex | busy_dim | 0,262 |
+
+| Look | Variante | n | Min | 5. Perzentil | Median | Anteil >= 4,5:1 |
+|---|---|---|---|---|---|---|
+| realistic | calm | 180 | 1,02 | 1,20 | 3,51 | 36,7 % |
+| realistic | busy_dim | 1983 | 1,01 | 1,17 | 3,24 | 33,0 % |
+| realistic_tex | calm | 180 | 1,00 | 1,23 | 3,54 | 36,7 % |
+| realistic_tex | busy_dim | 1983 | 1,00 | 1,17 | 3,25 | 33,2 % |
+
+| Look | Variante | Figur-Median | Figur-Min | schwaechste Figur |
+|---|---|---|---|---|
+| realistic | calm | 2,02 | 1,56 | Imp 2 |
+| realistic | busy_dim | 2,15 | 1,51 | Imp 1 |
+| realistic_tex | calm | 2,00 | 1,55 | Imp 2 |
+| realistic_tex | busy_dim | 2,16 | 1,49 | Imp 1 |
+
+`composite_textures.png`: Spalten realistic | realistic_tex, Zeilen calm oben / busy_dim unten. `composite_textures_crops.png`: native 1x-Crops, gleiches Rechteck wie `composite_crops.png`; die realistic-Seite stammt aus der busy-Szene (bestehende Datei), die realistic_tex-Seite aus der busy_dim-Szene (fuer diese Aufgabe neu gerendert) -- gleicher Bildausschnitt, Cluster-Lichter unterscheiden sich um den busy_dim-Faktor.

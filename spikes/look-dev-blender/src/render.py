@@ -42,13 +42,14 @@ def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", required=True, choices=["classmask", "calib", "final", "crop", "draft"])
-    ap.add_argument("--look", choices=["toon", "stylized", "realistic"])
+    ap.add_argument("--look", choices=["toon", "stylized", "realistic", "realistic_tex"])
     ap.add_argument("--work", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--samples", type=int)
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--timed", type=int, default=3)
     ap.add_argument("--params")
+    ap.add_argument("--tex-dir", help="realistic_tex only: snapshot's generated/ directory")
     ap.add_argument("--retarget-light-scale", action="store_true")
     ap.add_argument("--timing-tag", help="final mode: only time the renders, write timing_<look>_<variant>_<tag>.json")
     return ap.parse_args(argv)
@@ -180,7 +181,8 @@ def apply_scene_look(scene, args, cal, gain):
     build_scene.apply_light_units(scene, units)
     params_path = args.params or os.path.join(args.work, "look_params_override.json")
     params = C.load_params_override(params_path)
-    return looks.apply_look(scene, args.look, params, cal["light_scale"], gain, scene["floor_mask"])
+    return looks.apply_look(scene, args.look, params, cal["light_scale"], gain, scene["floor_mask"],
+                            tex_dir=args.tex_dir)
 
 
 # ----------------------------------------------------------------- modes ---

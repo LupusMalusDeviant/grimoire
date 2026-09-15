@@ -16,6 +16,7 @@ import math
 import bpy
 
 import common as C
+import textures as TX
 
 HULL_SETTINGS = dict(offset=1.0, flip=True)   # verified by the solidify topology probe
 
@@ -217,7 +218,50 @@ def build_realistic(mat, key, ctx):
     nb.output(emission_shader(nb, color))
 
 
-BUILDERS = {"toon": build_toon, "stylized": build_stylized, "realistic": build_realistic}
+def build_realistic_tex(mat, key, ctx):
+    """Same Principled BSDF setup as "realistic" (same rough_min floor, same
+    gain handling), but base colour / normal / roughness / metallic come from
+    the texture snapshot for mapped materials. Unmapped materials (see
+    textures.UNMAPPED_MATERIALS) fall back to build_realistic verbatim."""
+    p, gain = ctx["params"]["realistic"], ctx["gain"]
+    tex_id = TX.MATERIAL_TEXTURE_MAP.get(key)
+    if tex_id is None:
+        build_realistic(mat, key, ctx)
+        return
+    images = TX.get_images(tex_id, ctx["tex_dir"])
+    nb = NodeBuilder(mat.node_tree)
+    uv_socket = nb.new("ShaderNodeUVMap", uv_map=TX.UV_NAME).outputs["UV"]
+    if key in C.FLOOR_MATERIALS:
+        albedo, emission = TX.floor_inputs_textured(nb, key, images, ctx["mask_image"],
+                                                     ctx["decal_strength"], uv_socket)
+    else:
+        base_tex = nb.new("ShaderNodeTexImage", inputs={"Vector": uv_socket}, image=images["basecolor"])
+        albedo, emission = base_tex.outputs["Color"], None
+    orm_tex = nb.new("ShaderNodeTexImage", inputs={"Vector": uv_socket}, image=images["orm"])
+    orm = nb.new("ShaderNodeSeparateColor", inputs={"Color": orm_tex.outputs["Color"]})
+    roughness = nb.math("MAXIMUM", orm.outputs["Green"], p["rough_min"])
+    normal_tex = nb.new("ShaderNodeTexImage", inputs={"Vector": uv_socket}, image=images["normal"])
+    normal_map = nb.new("ShaderNodeNormalMap", uv_map=TX.UV_NAME, inputs={"Color": normal_tex.outputs["Color"]})
+    bsdf = nb.new("ShaderNodeBsdfPrincipled", inputs={
+        "Base Color": albedo if isinstance(albedo, bpy.types.NodeSocket) else albedo + (1.0,),
+        "Metallic": orm.outputs["Blue"], "Roughness": roughness, "Normal": normal_map.outputs["Normal"]})
+    if abs(gain - 1.0) < 1e-6:
+        if emission is not None:
+            nb.set(bsdf.inputs["Emission Color"], emission)
+            bsdf.inputs["Emission Strength"].default_value = 1.0
+        nb.output(bsdf.outputs[0])
+        return
+    # Gain != 1 (only during calibration checks): light-derived part via Shader to RGB.
+    s2r = nb.new("ShaderNodeShaderToRGB")
+    nb.nt.links.new(bsdf.outputs[0], s2r.inputs[0])
+    color = nb.vmath("SCALE", s2r.outputs["Color"], scale=gain)
+    if emission is not None:
+        color = nb.vmath("ADD", color, emission)
+    nb.output(emission_shader(nb, color))
+
+
+BUILDERS = {"toon": build_toon, "stylized": build_stylized, "realistic": build_realistic,
+            "realistic_tex": build_realistic_tex}
 
 
 # ---------------------------------------------------------------- outline ---
@@ -255,11 +299,11 @@ def add_outlines(scene, params):
 
 
 # ------------------------------------------------------------------ entry ---
-def apply_look(scene, look, params, light_scale, gain, mask_path):
+def apply_look(scene, look, params, light_scale, gain, mask_path, tex_dir=None):
     mask_image = bpy.data.images.load(bpy.path.abspath(mask_path), check_existing=True)
     mask_image.colorspace_settings.name = 'Non-Color'
     ctx = dict(params=params, light_scale=light_scale, gain=gain, mask_image=mask_image,
-               decal_strength=float(scene["decal_strength"]))
+               decal_strength=float(scene["decal_strength"]), tex_dir=tex_dir)
     for key in C.MATERIALS:
         BUILDERS[look](bpy.data.materials[key], key, ctx)
     outlines = add_outlines(scene, params["toon"]) if look == "toon" else 0
