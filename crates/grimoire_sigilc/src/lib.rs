@@ -67,10 +67,16 @@ pub fn derive_unit_id(canonical_content_path: &str) -> Result<UnitId, DeriveUnit
     let mut hasher = StableHasher::new();
     hasher.write_str(UNIT_ID_DOMAIN);
     hasher.write_str(canonical_content_path);
-    let id = hasher.finish();
+    reject_zero(hasher.finish(), canonical_content_path)
+}
+
+/// The `id == 0` check of [`derive_unit_id`], factored out so a test can exercise
+/// [`DeriveUnitIdError::ZeroUnitId`] directly: no known path hashes to `0` (finding one is a
+/// roughly 1-in-2^64 search), so the error arm would otherwise have no real test coverage.
+fn reject_zero(id: u64, path: &str) -> Result<UnitId, DeriveUnitIdError> {
     if id == 0 {
         return Err(DeriveUnitIdError::ZeroUnitId {
-            path: canonical_content_path.to_owned(),
+            path: path.to_owned(),
         });
     }
     Ok(UnitId(id))
@@ -97,6 +103,20 @@ mod tests {
         for path in ["units/basic.sigil", "bosses/act1/finale.sigil", "a.sigil"] {
             assert_ne!(derive_unit_id(path).unwrap(), UnitId::INVALID);
         }
+    }
+
+    #[test]
+    fn a_zero_hash_is_reported_as_an_error_not_the_invalid_id() {
+        // No known path hashes to exactly 0 (the check above), so this exercises the
+        // `DeriveUnitIdError::ZeroUnitId` arm directly against the underlying hash value instead
+        // of searching for a colliding path.
+        assert_eq!(
+            reject_zero(0, "units/basic.sigil"),
+            Err(DeriveUnitIdError::ZeroUnitId {
+                path: "units/basic.sigil".to_owned(),
+            })
+        );
+        assert_eq!(reject_zero(1, "units/basic.sigil"), Ok(UnitId(1)));
     }
 
     #[test]
