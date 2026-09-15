@@ -1,7 +1,7 @@
 //! The [`Simulation`] driver, its snapshots and [`replay`].
 
 use grimoire_core::StableHasher;
-use grimoire_ecs::{Schedule, World, WorldSnapshot};
+use grimoire_ecs::{NoopObserver, Resource, Schedule, SystemObserver, World, WorldSnapshot};
 
 use crate::input::{InputLog, TickInput};
 use crate::time::{SimSeed, Tick};
@@ -71,7 +71,7 @@ impl Simulation {
         &mut self.schedule
     }
 
-    /// Simulates one tick.
+    /// Simulates one tick. Exactly [`Simulation::step_observed`] with a [`NoopObserver`].
     ///
     /// Order: write the `Tick`, `SimSeed` and `input` resources → run the schedule → increment
     /// the tick and write `Tick` again. `Tick` and `SimSeed` are owned by the simulation, so any
@@ -84,10 +84,29 @@ impl Simulation {
     /// and the `TickInput` resource is already replaced: continue only after
     /// [`Simulation::restore`].
     pub fn step(&mut self, input: TickInput) {
+        self.step_observed(input, &mut NoopObserver);
+    }
+
+    /// Simulates one tick, reporting the schedule's progress to `observer` (contract §8.4).
+    ///
+    /// Order: write the `Tick`, `SimSeed` and `input` resources →
+    /// [`Schedule::run_observed`] → increment the tick and write `Tick` again; the same order
+    /// [`Simulation::step`] uses, which is exactly this method with a [`NoopObserver`].
+    ///
+    /// `observer` is not simulation state: it is neither hashed nor part of a snapshot or replay,
+    /// and it never changes [`Simulation::state_hash`] (contract §8.4, tested like the executor
+    /// gate).
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic of a system (see `Schedule::run_observed`). The tick is then not
+    /// incremented and the `TickInput` resource is already replaced: continue only after
+    /// [`Simulation::restore`].
+    pub fn step_observed(&mut self, input: TickInput, observer: &mut dyn SystemObserver) {
         self.world.insert_resource(Tick(self.tick));
         self.world.insert_resource(SimSeed(self.seed));
         self.world.insert_resource(input);
-        self.schedule.run(&mut self.world);
+        self.schedule.run_observed(&mut self.world, observer);
         self.tick = self.tick.wrapping_add(1);
         self.world.insert_resource(Tick(self.tick));
     }
@@ -135,6 +154,29 @@ impl Simulation {
         self.tick = snapshot.tick;
         self.seed = snapshot.seed;
     }
+
+    /// Restores `snapshot` only if `check` accepts it (contract §8.2).
+    ///
+    /// Calls `check` exactly once, before anything changes. If it returns `Err`, this simulation
+    /// (world, tick, seed and executor) is left completely unchanged and the error is returned.
+    /// If it returns `Ok`, this behaves exactly like [`Simulation::restore`].
+    ///
+    /// A crate that swaps content or holds configuration outside the world can use this to reject
+    /// a snapshot from a foreign epoch without `grimoire_sim` knowing anything about it: `check`
+    /// reads `snapshot.resource::<C>()` and compares it with what it has loaded.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `check` returns for `Err`.
+    pub fn restore_checked<E>(
+        &mut self,
+        snapshot: &SimSnapshot,
+        check: impl FnOnce(&SimSnapshot) -> Result<(), E>,
+    ) -> Result<(), E> {
+        check(snapshot)?;
+        self.restore(snapshot);
+        Ok(())
+    }
 }
 
 /// Complete state of a [`Simulation`] at one tick; see [`Simulation::snapshot`].
@@ -156,6 +198,15 @@ impl SimSnapshot {
     #[must_use]
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// Resource `R` as it was at the time of the snapshot, even after the live world has since
+    /// changed or removed it (contract §8.2).
+    ///
+    /// Read-only: never allocates, never changes a hash and needs no access declaration.
+    #[must_use]
+    pub fn resource<R: Resource>(&self) -> Option<&R> {
+        self.world.resource::<R>()
     }
 }
 

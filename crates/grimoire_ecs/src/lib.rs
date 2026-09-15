@@ -39,26 +39,32 @@
 
 mod access;
 mod archetype;
+mod blocks;
 mod bundle;
 mod command;
 mod component;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 #[cfg(debug_assertions)]
 mod debug_access;
 mod entity;
 mod error;
 mod executor;
+mod observer;
 mod query;
 mod resource;
 mod schedule;
 mod world;
 
 pub use access::Access;
+pub use blocks::{run_blocks, slice_block_ranges};
 pub use bundle::Bundle;
 pub use command::CommandBuffer;
 pub use component::Component;
 pub use entity::Entity;
 pub use error::EcsError;
 pub use executor::{Executor, PermutedExecutor, SequentialExecutor};
+pub use observer::{NoopObserver, StageInfo, SystemInfo, SystemObserver};
 pub use query::{
     QUERY_BLOCK_SIZE, Query, QueryBlock, QueryIter, QueryIterMut, ReadOnlyQuery, With, Without,
 };

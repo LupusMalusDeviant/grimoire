@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use crate::access::{Access, Declared};
 use crate::command::CommandBuffer;
+use crate::observer::{NoopObserver, StageInfo, SystemInfo, SystemObserver};
 use crate::world::World;
 
 /// A unit of simulation logic that runs exclusively with `&mut World`.
@@ -460,7 +461,8 @@ impl Schedule {
         })
     }
 
-    /// Runs every stage once, in order.
+    /// Runs every stage once, in order. Exactly [`Schedule::run_observed`] with a
+    /// [`NoopObserver`].
     ///
     /// # Panics
     ///
@@ -471,22 +473,74 @@ impl Schedule {
     /// are not transactional. The schedule itself stays usable: every parallel stage starts from
     /// empty buffers, so after restoring the world a run applies nothing of a failed run.
     pub fn run(&mut self, world: &mut World) {
-        for stage in 0..self.stages.len() {
+        self.run_observed(world, &mut NoopObserver);
+    }
+
+    /// Runs every stage once, in order, reporting progress to `observer` (contract §7.2).
+    ///
+    /// `observer` is called only on the calling thread, never from a worker or from inside a task
+    /// or block; it only reads `world`, so it cannot change state, the stage plan or any hash.
+    /// [`Schedule::run`] is exactly this method with a [`NoopObserver`].
+    ///
+    /// # Panics
+    ///
+    /// See [`Schedule::run`]. If a task of a parallel stage panics, that stage delivers neither
+    /// [`SystemObserver::tasks_finished`] nor [`SystemObserver::system_finished`] nor
+    /// [`SystemObserver::stage_finished`]. If applying a command buffer panics, systems whose
+    /// buffer already applied still receive [`SystemObserver::system_finished`]; the panicking
+    /// system, every later one and the stage do not. In an exclusive stage, a
+    /// [`SystemObserver::system_started`] without a matching `system_finished`/`stage_finished`
+    /// marks a panic there.
+    pub fn run_observed(&mut self, world: &mut World, observer: &mut dyn SystemObserver) {
+        for stage_index in 0..self.stages.len() {
             let (start, end, exclusive) = {
-                let range = &self.stages[stage];
+                let range = &self.stages[stage_index];
                 (range.start, range.end, range.exclusive)
             };
+            let stage_info = StageInfo {
+                index: stage_index,
+                exclusive,
+                first_system: start,
+                len: end - start,
+            };
+            observer.stage_started(stage_info);
             if exclusive {
                 if let Entry::Exclusive(system) = &mut self.entries[start] {
+                    let name = system.name();
+                    observer.system_started(SystemInfo {
+                        index: start,
+                        stage: stage_index,
+                        name,
+                        parallel: false,
+                    });
                     // Exclusive systems are never checked, also when this schedule runs inside a
                     // parallel system (on a scratch world): hide that system's context.
                     #[cfg(debug_assertions)]
                     let _guard = crate::debug_access::enter(None);
                     system.run(world);
+                    #[cfg(debug_assertions)]
+                    drop(_guard);
+                    let name = system.name();
+                    observer.system_finished(
+                        SystemInfo {
+                            index: start,
+                            stage: stage_index,
+                            name,
+                            parallel: false,
+                        },
+                        world,
+                    );
                 }
+                observer.stage_finished(stage_info, world);
                 continue;
             }
-            run_parallel_stage(&mut self.entries[start..end], world);
+            run_parallel_stage_observed(
+                &mut self.entries[start..end],
+                world,
+                stage_index,
+                stage_info,
+                observer,
+            );
         }
     }
 
@@ -509,8 +563,15 @@ impl Schedule {
     }
 }
 
-/// Runs the parallel systems `entries` of one stage and applies their buffers in list order.
-fn run_parallel_stage(entries: &mut [Entry], world: &mut World) {
+/// Runs the parallel systems `entries` of one stage, reports progress to `observer` and applies
+/// their buffers in list order (contract §7.2).
+fn run_parallel_stage_observed(
+    entries: &mut [Entry],
+    world: &mut World,
+    stage_index: usize,
+    stage_info: StageInfo,
+    observer: &mut dyn SystemObserver,
+) {
     {
         let shared: &World = world;
         let mut tasks: Vec<_> = entries
@@ -540,6 +601,7 @@ fn run_parallel_stage(entries: &mut [Entry], world: &mut World) {
         }
     }
     if let Some(payload) = first_panic {
+        // A panicking task means this stage never reaches `tasks_finished`.
         for entry in entries.iter_mut() {
             if let Entry::Parallel(entry) = entry {
                 entry.commands.clear();
@@ -547,11 +609,26 @@ fn run_parallel_stage(entries: &mut [Entry], world: &mut World) {
         }
         resume_unwind(payload);
     }
-    for entry in entries.iter_mut() {
+    observer.tasks_finished(stage_info);
+    for (offset, entry) in entries.iter_mut().enumerate() {
         if let Entry::Parallel(entry) = entry {
+            // Not caught: a panic here is not transactional (contract §7) and, propagating
+            // immediately, skips `system_finished` for this and every later system and
+            // `stage_finished` for the stage, exactly as specified.
             entry.commands.apply(world);
+            let name = entry.system.name();
+            observer.system_finished(
+                SystemInfo {
+                    index: stage_info.first_system + offset,
+                    stage: stage_index,
+                    name,
+                    parallel: true,
+                },
+                world,
+            );
         }
     }
+    observer.stage_finished(stage_info, world);
 }
 
 /// Runs one parallel system and stores its panic instead of unwinding through the executor.

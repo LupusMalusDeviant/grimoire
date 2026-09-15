@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -24,6 +24,33 @@ pub trait FileSystem: Send + Sync {
 
     /// Whether a file exists at `path`.
     fn exists(&self, path: &Path) -> bool;
+
+    /// Reads a whole file, rejecting it if it is longer than `max_len` bytes (contract §5).
+    ///
+    /// The provided default implementation calls [`FileSystem::read`] and checks the length
+    /// afterwards, so it does not protect memory against an oversized file: it exists only so
+    /// that adding this method to the trait is additive (§2a). [`StdFileSystem`] and
+    /// [`MemoryFileSystem`] both override it with a bound that is enforced before the whole file
+    /// is copied into memory.
+    ///
+    /// # Errors
+    /// Returns an error of kind [`io::ErrorKind::FileTooLarge`] if the file is longer than
+    /// `max_len` bytes, or the underlying I/O error (e.g. `NotFound`) otherwise.
+    fn read_limited(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+        let bytes = self.read(path)?;
+        if bytes.len() as u64 > max_len {
+            return Err(file_too_large(path, max_len));
+        }
+        Ok(bytes)
+    }
+}
+
+/// Builds the `FileTooLarge` error returned by every `read_limited` implementation.
+fn file_too_large(path: &Path, max_len: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::FileTooLarge,
+        format!("file exceeds max_len {max_len} bytes: {}", path.display()),
+    )
 }
 
 /// File system of the operating system.
@@ -125,6 +152,22 @@ impl FileSystem for StdFileSystem {
     fn exists(&self, path: &Path) -> bool {
         path.is_file()
     }
+
+    fn read_limited(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+        let file = File::open(path)?;
+        // Read at most `max_len + 1` bytes (saturating, so `max_len == u64::MAX` never
+        // overflows and simply reads the whole file). A file that is exactly `max_len` bytes
+        // long reads in full; one byte more trips the check below without ever buffering more
+        // than `max_len + 1` bytes, including a file that grows between the existence check and
+        // this read.
+        let limit = max_len.saturating_add(1);
+        let mut bytes = Vec::new();
+        file.take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > max_len {
+            return Err(file_too_large(path, max_len));
+        }
+        Ok(bytes)
+    }
 }
 
 /// In-memory file system for tests.
@@ -196,6 +239,28 @@ impl FileSystem for MemoryFileSystem {
 
     fn exists(&self, path: &Path) -> bool {
         self.lock().contains_key(path)
+    }
+
+    fn read_limited(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>> {
+        let files = self.lock();
+        if let Some(bytes) = files.get(path) {
+            // Checked against the stored length before cloning, so an oversized entry is never
+            // copied.
+            if bytes.len() as u64 > max_len {
+                return Err(file_too_large(path, max_len));
+            }
+            return Ok(bytes.clone());
+        }
+        if is_directory(&files, path) {
+            return Err(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                format!("is a directory: {}", path.display()),
+            ));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("file not found: {}", path.display()),
+        ))
     }
 }
 
@@ -382,6 +447,50 @@ mod tests {
         let error = fs.write_atomic(Path::new("a/b/c"), b"x").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
         assert!(!fs.exists(Path::new("a/b/c")));
+    }
+
+    fn check_read_limited(fs: &dyn FileSystem, root: &Path) {
+        let path = root.join("bounded.bin");
+        let bytes = vec![7u8; 32];
+        fs.write_atomic(&path, &bytes).unwrap();
+
+        // Exactly `max_len` succeeds.
+        assert_eq!(fs.read_limited(&path, 32).unwrap(), bytes);
+
+        // One byte more than `max_len` fails with `FileTooLarge`.
+        let error = fs.read_limited(&path, 31).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+
+        // `max_len = u64::MAX` reads the whole file without overflowing `saturating_add`.
+        assert_eq!(fs.read_limited(&path, u64::MAX).unwrap(), bytes);
+    }
+
+    #[test]
+    fn std_read_limited_enforces_max_len() {
+        let dir = TempDir::new("read_limited");
+        check_read_limited(&StdFileSystem, dir.path());
+    }
+
+    #[test]
+    fn memory_read_limited_enforces_max_len() {
+        check_read_limited(&MemoryFileSystem::new(), Path::new("mem"));
+    }
+
+    #[test]
+    fn std_read_limited_missing_file_is_not_found() {
+        let dir = TempDir::new("read_limited_missing");
+        let error = StdFileSystem
+            .read_limited(&dir.path().join("missing.bin"), 16)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn memory_read_limited_missing_file_is_not_found() {
+        let error = MemoryFileSystem::new()
+            .read_limited(Path::new("mem/missing.bin"), 16)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

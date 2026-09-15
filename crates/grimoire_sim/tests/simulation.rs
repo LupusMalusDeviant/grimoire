@@ -1,10 +1,14 @@
 //! `Simulation` semantics: initial resources, step order, state hash, snapshots and `replay`.
 
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use grimoire_core::impl_stable_hash;
-use grimoire_ecs::{Access, parallel_system_fn, system_fn};
+use grimoire_ecs::{
+    Access, NoopObserver, StageInfo, SystemInfo, SystemObserver, World, parallel_system_fn,
+    system_fn,
+};
 use grimoire_sim::{InputFrame, InputLog, SimSeed, Simulation, Tick, TickInput, replay};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -310,4 +314,137 @@ fn restore_after_a_panicking_step_continues_like_a_fresh_simulation() {
     fresh.step(TickInput::default());
     assert_eq!(sim.world().entity_count(), fresh.world().entity_count());
     assert_eq!(sim.state_hash(), fresh.state_hash());
+}
+
+// --- contract §8.2: SimSnapshot::resource and Simulation::restore_checked -----------------
+
+#[test]
+fn snapshot_resource_reads_the_value_at_snapshot_time_even_after_the_world_changes() {
+    let mut sim = traced(9);
+    sim.step(input(1));
+    let snapshot = sim.snapshot();
+    let at_snapshot = snapshot.resource::<Trace>().cloned();
+    assert!(at_snapshot.is_some());
+
+    sim.step(input(2));
+    sim.step(input(3));
+    assert_ne!(sim.world().resource::<Trace>().cloned(), at_snapshot);
+    assert_eq!(snapshot.resource::<Trace>().cloned(), at_snapshot);
+
+    // A resource never inserted (Counter is only ever spawned as a component) reads as `None`.
+    assert_eq!(snapshot.resource::<Counter>(), None);
+}
+
+#[test]
+fn restore_checked_calls_check_exactly_once_before_changing_anything() {
+    let mut sim = traced(9);
+    sim.step(input(1));
+    let snapshot = sim.snapshot();
+    let calls = Cell::new(0);
+    let seen_tick = Cell::new(u64::MAX);
+    let result = sim.restore_checked(&snapshot, |snap| {
+        calls.set(calls.get() + 1);
+        seen_tick.set(snap.tick());
+        Ok::<(), ()>(())
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(calls.get(), 1);
+    assert_eq!(seen_tick.get(), snapshot.tick());
+}
+
+#[test]
+fn restore_checked_with_err_leaves_world_tick_seed_and_hash_unchanged() {
+    let mut sim = traced(9);
+    for buttons in 0..5 {
+        sim.step(input(buttons));
+    }
+    let snapshot = sim.snapshot();
+    for buttons in 5..8 {
+        sim.step(input(buttons));
+    }
+    let hash_before = sim.state_hash();
+    let tick_before = sim.tick();
+    let seed_before = sim.seed();
+
+    let result = sim.restore_checked(&snapshot, |_| Err("foreign content epoch"));
+    assert_eq!(result, Err("foreign content epoch"));
+    assert_eq!(sim.state_hash(), hash_before);
+    assert_eq!(sim.tick(), tick_before);
+    assert_eq!(sim.seed(), seed_before);
+}
+
+#[test]
+fn restore_checked_with_ok_behaves_exactly_like_restore() {
+    let mut via_restore = traced(9);
+    let mut via_checked = traced(9);
+    for buttons in 0..5 {
+        via_restore.step(input(buttons));
+        via_checked.step(input(buttons));
+    }
+    let snapshot = via_restore.snapshot();
+    for buttons in 5..8 {
+        via_restore.step(input(buttons));
+        via_checked.step(input(buttons));
+    }
+
+    via_restore.restore(&snapshot);
+    let result = via_checked.restore_checked(&snapshot, |_| Ok::<(), ()>(()));
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(via_restore.tick(), via_checked.tick());
+    assert_eq!(via_restore.seed(), via_checked.seed());
+    assert_eq!(via_restore.state_hash(), via_checked.state_hash());
+}
+
+// --- contract §8.4: Simulation::step_observed ---------------------------------------------
+
+/// Observer that only counts calls, to prove observation itself changes nothing simulated.
+#[derive(Default)]
+struct CountingObserver {
+    stages_started: u32,
+    systems_finished: u32,
+    stages_finished: u32,
+}
+
+impl SystemObserver for CountingObserver {
+    fn stage_started(&mut self, _stage: StageInfo) {
+        self.stages_started += 1;
+    }
+
+    fn system_finished(&mut self, _system: SystemInfo<'_>, _world: &World) {
+        self.systems_finished += 1;
+    }
+
+    fn stage_finished(&mut self, _stage: StageInfo, _world: &World) {
+        self.stages_finished += 1;
+    }
+}
+
+#[test]
+fn step_observed_with_noop_observer_is_bit_identical_to_step() {
+    let mut via_step = traced(21);
+    let mut via_observed = traced(21);
+    for buttons in 0..6 {
+        via_step.step(input(buttons));
+        via_observed.step_observed(input(buttons), &mut NoopObserver);
+    }
+    assert_eq!(via_step.tick(), via_observed.tick());
+    assert_eq!(via_step.state_hash(), via_observed.state_hash());
+}
+
+#[test]
+fn step_observed_with_a_counting_observer_does_not_change_state_hash() {
+    let mut plain = traced(22);
+    let mut observed = traced(22);
+    let mut observer = CountingObserver::default();
+    for buttons in 0..6 {
+        plain.step(input(buttons));
+        observed.step_observed(input(buttons), &mut observer);
+    }
+    assert_eq!(plain.state_hash(), observed.state_hash());
+    assert_eq!(plain.tick(), observed.tick());
+    // The observer actually saw the run, so the assertion above is not vacuous.
+    assert!(observer.stages_started > 0);
+    assert_eq!(observer.stages_started, observer.stages_finished);
+    assert!(observer.systems_finished > 0);
 }

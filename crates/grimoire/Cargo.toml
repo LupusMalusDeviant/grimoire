@@ -9,18 +9,38 @@ repository.workspace = true
 license-file.workspace = true
 publish.workspace = true
 
-# P1+ crates (collide, audio, ui, assets, sigil, debug) join once they have an API (contract §1).
+# P1+ crates (audio, ui, assets, debug) join once they have an API (contract §1).
+# grimoire_collide and grimoire_sigil are normal dependencies as of WP1.3 (contract §9.1): the
+# player proxy (feature `fixtures`, §9.5) needs their types (Aabb, LayerMask, GrazeRing,
+# AimTarget) even though only the always-present `adapters::sigil_collide` module and the
+# opt-in `fixtures` module use them today — the `fixtures` feature itself adds no dependency
+# (contract §9.2 feature table).
 [dependencies]
+grimoire_collide.workspace = true
 grimoire_core.workspace = true
 grimoire_ecs.workspace = true
 grimoire_platform.workspace = true
 grimoire_render.workspace = true
+grimoire_sigil.workspace = true
 grimoire_sim.workspace = true
 log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
+
+# Runs only with the `fixtures` feature enabled (contract §9.2: "Tests hinter `fixtures` tragen
+# `required-features = [\"fixtures\"]`"); otherwise `cargo test --workspace` would silently skip it.
+[[test]]
+name = "player_proxy"
+required-features = ["fixtures"]
+
+# `fixtures` (contract §9.2): the minimal, spawn-once player proxy (§9.5), used by tests,
+# benches, examples and prototypes. Additive only: with no `PlayerProxyPlugin` registered,
+# neither the system list, the stage plan nor any state hash of a game changes (contract §2
+# rule 14).
+[features]
+fixtures = []
 
 [lints]
 workspace = true

@@ -7,7 +7,10 @@ use grimoire_gpu::{ContextOptions, GpuContext, GpuError, OffscreenTarget, Window
 use grimoire_platform::PlatformWindow;
 
 use crate::sprite_pass::SpritePass;
-use crate::{RenderError, RenderFrame, RenderStats, Renderer, RendererConfig};
+use crate::stage;
+use crate::{
+    RenderError, RenderFrame, RenderStats, Renderer, RendererConfig, StageFrame, StageStats,
+};
 
 enum Target {
     Window(WindowSurface),
@@ -283,5 +286,26 @@ impl Renderer for WgpuRenderer {
 
     fn backend_name(&self) -> &str {
         self.context.backend_name()
+    }
+
+    fn supports_stage(&self) -> bool {
+        true
+    }
+
+    /// Applies the full stage semantics of contract §6 for extraction and counting, but — unlike
+    /// the name might suggest — does **not yet draw bullet, marker or debug pixels**: it only
+    /// forwards `frame.base` to the existing sprite pipeline via [`Renderer::render`], exactly as
+    /// [`crate::NullRenderer`]'s `render_stage` does. Bullets are validated (palette space, finiteness,
+    /// `radius > 0`) and counted into [`StageStats`] — including the debug-only
+    /// `debug_assert!` on a foreign palette space — but never rasterised: a real GPU bullet pass
+    /// is WP3.5's job, built on the OF-3.3 ADR. `marker_sprites` and `debug_sprites` are likewise
+    /// only counted into `base.sprites_drawn`, not drawn, because no pipeline for them exists
+    /// yet. This method therefore never touches the GPU device beyond what `render` already does.
+    ///
+    /// # Errors
+    /// Same as [`Renderer::render`], applied to `frame.base`.
+    fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
+        let base = self.render(&frame.base)?;
+        Ok(stage::stage_stats_from_base(base, frame))
     }
 }

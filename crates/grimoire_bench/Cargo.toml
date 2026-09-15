@@ -1,0 +1,19 @@
+[package]
+name = "grimoire_bench"
+description = "Benchmarks and JSON-schema types for bench results and golden masters (contract §15); outside the determinism set, no clippy.toml by design."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+# May depend on any runtime crate and on grimoire_exec (contract §1); nothing depends on it. Kept
+# empty for now: WP1.3 adds only a JSON-encoding helper that needs no grimoire_* or third-party
+# crate. Real benches (WP6) will add grimoire_exec plus serde/serde_json (already declared in the
+# workspace [workspace.dependencies] for that later role).
+[dependencies]
+
+[lints]
+workspace = true
