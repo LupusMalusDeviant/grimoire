@@ -13,6 +13,11 @@ use crate::time::{SimSeed, Tick};
 /// Systems must keep all state that influences the simulation inside the world (components and
 /// resources). State captured in system closures is not part of [`Simulation::state_hash`] or
 /// [`Simulation::snapshot`] and breaks restore and replay.
+///
+/// The schedule runs stage by stage through the world's [`Executor`](grimoire_ecs::Executor)
+/// (engine ADR-0006). `new` keeps the world's sequential default; choose a thread pool with
+/// `world_mut().set_executor(..)`. [`Simulation::restore`] keeps the executor, and
+/// [`Simulation::state_hash`], snapshots and [`replay`] do not depend on it.
 #[derive(Debug)]
 pub struct Simulation {
     world: World,
@@ -70,7 +75,14 @@ impl Simulation {
     ///
     /// Order: write the `Tick`, `SimSeed` and `input` resources → run the schedule → increment
     /// the tick and write `Tick` again. `Tick` and `SimSeed` are owned by the simulation, so any
-    /// change a system makes to them is overwritten.
+    /// change a system makes to them is overwritten. The schedule runs its stages through the
+    /// world's executor; the resulting state does not depend on it.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic of a system (see `Schedule::run`). The tick is then not incremented
+    /// and the `TickInput` resource is already replaced: continue only after
+    /// [`Simulation::restore`].
     pub fn step(&mut self, input: TickInput) {
         self.world.insert_resource(Tick(self.tick));
         self.world.insert_resource(SimSeed(self.seed));

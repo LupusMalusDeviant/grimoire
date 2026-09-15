@@ -205,7 +205,7 @@ Eine Aufteilung der Welt per `unsafe` (Option 2) ist nur über ein Folge-ADR mit
 
 ### Review
 
-**Reality-Check geplant für:** nach der Umsetzung (erster Alpha-Tag von P1), spätestens 2026-11-09
+**Reality-Check geplant für:** nach der Umsetzung (erstes P1-Release `v0.1.1`), spätestens 2026-11-09
 
 ## Weitere Informationen
 

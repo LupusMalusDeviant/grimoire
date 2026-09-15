@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use grimoire_core::{StableHash, StableHasher};
 
@@ -10,7 +11,10 @@ use crate::bundle::Bundle;
 use crate::component::{Component, ComponentId, ComponentRegistry};
 use crate::entity::{Entities, Entity, EntityLocation};
 use crate::error::EcsError;
-use crate::query::{Query, QueryIter, QueryIterMut, ReadOnlyQuery};
+use crate::executor::{Executor, SequentialExecutor};
+use crate::query::{
+    Query, QueryBlock, QueryIter, QueryIterMut, ReadOnlyQuery, push_blocks, run_blocks,
+};
 use crate::resource::{Resource, Resources};
 
 /// Archetype index of the component-less archetype, created by [`World::new`].
@@ -21,12 +25,17 @@ const EMPTY_ARCHETYPE: usize = 0;
 /// All state changes are deterministic functions of the call sequence: component ids follow
 /// registration order, archetypes are created lazily in first-use order, rows are dense and
 /// despawns swap-remove.
+///
+/// The world also carries the [`Executor`] of parallel stages and data-parallel queries. The
+/// executor is not simulation state: it is neither hashed nor part of a snapshot.
 pub struct World {
     entities: Entities,
     components: ComponentRegistry,
     archetypes: Vec<Archetype>,
     archetype_index: BTreeMap<Box<[ComponentId]>, usize>,
     resources: Resources,
+    /// `None` means [`SequentialExecutor`]; see [`World::executor`].
+    executor: Option<Arc<dyn Executor>>,
 }
 
 impl Default for World {
@@ -55,6 +64,7 @@ impl World {
             archetypes: Vec::new(),
             archetype_index: BTreeMap::new(),
             resources: Resources::default(),
+            executor: None,
         };
         let empty = world.archetype_for(&[]);
         debug_assert_eq!(empty, EMPTY_ARCHETYPE);
@@ -160,6 +170,8 @@ impl World {
     /// Component `C` of `entity`, if the entity is alive and has it.
     #[must_use]
     pub fn get<C: Component>(&self, entity: Entity) -> Option<&C> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_component_read::<C>("get");
         let location = self.entities.location(entity)?;
         let id = self.components.id::<C>()?;
         self.archetypes[location.archetype]
@@ -186,6 +198,8 @@ impl World {
     ///
     /// Visits archetypes in creation order and rows in dense order.
     pub fn query<Q: ReadOnlyQuery>(&self) -> QueryIter<'_, Q> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_query::<Q>("query");
         QueryIter::new(&self.components, &self.archetypes)
     }
 
@@ -199,6 +213,76 @@ impl World {
         QueryIterMut::new(&self.components, &mut self.archetypes)
     }
 
+    /// Read-only query in data-parallel blocks: runs `f` once per [`QueryBlock`] through
+    /// [`World::executor`] and returns the results in block order (result `i` belongs to block
+    /// `i`).
+    ///
+    /// Blocks are formed from matching, non-empty archetypes in creation order, each split from
+    /// row 0 into runs of [`QUERY_BLOCK_SIZE`](crate::QUERY_BLOCK_SIZE) rows; they never span
+    /// archetypes and never depend on the executor. Fold the returned `Vec` in order for
+    /// reductions (engine ADR-0004). A query with at most one block runs `f` inline without the
+    /// executor. Allocates per call depending on the block count, never per entity.
+    ///
+    /// # Panics
+    ///
+    /// Like [`World::query`] for aliasing queries. If `f` panics for some blocks, the remaining
+    /// blocks finish first; then the panic with the lowest block index is resumed.
+    pub fn par_blocks<Q: ReadOnlyQuery, T: Send>(
+        &self,
+        f: impl Fn(QueryBlock<'_, Q>) -> T + Sync,
+    ) -> Vec<T> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_query::<Q>("par_blocks");
+        Q::check_access();
+        let state = Q::init_state(&self.components);
+        let mut blocks = Vec::new();
+        for archetype in &self.archetypes {
+            if archetype.entities.is_empty() || !Q::matches(&state, &archetype.components) {
+                continue;
+            }
+            if let Some(fetch) = Q::fetch_shared(&state, archetype) {
+                push_blocks::<Q>(&mut blocks, fetch, archetype.len());
+            }
+        }
+        run_blocks(executor_of(&self.executor), blocks, &f)
+    }
+
+    /// Query with mutable access in data-parallel blocks, typically in an exclusive system:
+    /// `world.par_blocks_mut::<(&mut Pos, &Vel), _>(|block| ...)`.
+    ///
+    /// Same block rule, result order and allocation behaviour as [`World::par_blocks`]. Mutable
+    /// blocks are disjoint sub-slices of the columns.
+    ///
+    /// # Panics
+    ///
+    /// Like [`World::query_mut`] for aliasing queries. If `f` panics for some blocks, the
+    /// remaining blocks finish first (and may already have changed their rows); then the panic
+    /// with the lowest block index is resumed.
+    pub fn par_blocks_mut<Q: Query, T: Send>(
+        &mut self,
+        f: impl Fn(QueryBlock<'_, Q>) -> T + Sync,
+    ) -> Vec<T> {
+        let World {
+            components,
+            archetypes,
+            executor,
+            ..
+        } = self;
+        Q::check_access();
+        let state = Q::init_state(components);
+        let mut blocks = Vec::new();
+        for archetype in archetypes.iter_mut() {
+            if archetype.entities.is_empty() || !Q::matches(&state, &archetype.components) {
+                continue;
+            }
+            let rows = archetype.len();
+            if let Some(fetch) = Q::fetch_exclusive(&state, archetype) {
+                push_blocks::<Q>(&mut blocks, fetch, rows);
+            }
+        }
+        run_blocks(executor_of(executor), blocks, &f)
+    }
+
     /// Inserts or replaces resource `R`. Replacing keeps the registration position.
     pub fn insert_resource<R: Resource>(&mut self, resource: R) {
         self.resources.insert(resource);
@@ -207,6 +291,8 @@ impl World {
     /// Resource `R`, if present.
     #[must_use]
     pub fn resource<R: Resource>(&self) -> Option<&R> {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_resource_read::<R>();
         self.resources.get()
     }
 
@@ -235,6 +321,8 @@ impl World {
     ///
     /// Types are identified by registration number only.
     pub fn stable_hash(&self, hasher: &mut StableHasher) {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_whole_world("stable_hash");
         self.entities.stable_hash(hasher);
         hasher.write_usize(self.components.count());
         hasher.write_usize(self.archetypes.len());
@@ -247,6 +335,8 @@ impl World {
     /// Captures the complete state: allocator, registries, archetypes, columns and resources.
     #[must_use]
     pub fn snapshot(&self) -> WorldSnapshot {
+        #[cfg(debug_assertions)]
+        crate::debug_access::check_whole_world("snapshot");
         WorldSnapshot {
             world: self.duplicate(),
         }
@@ -255,9 +345,27 @@ impl World {
     /// Replaces the complete state with `snapshot`.
     ///
     /// Afterwards [`World::stable_hash`] equals the hash at snapshot time and identical
-    /// operations produce identical entity ids.
+    /// operations produce identical entity ids. The current executor is kept.
     pub fn restore(&mut self, snapshot: &WorldSnapshot) {
+        let executor = self.executor.take();
         *self = snapshot.world.duplicate();
+        self.executor = executor;
+    }
+
+    /// Sets the executor of parallel stages and data-parallel queries.
+    ///
+    /// The default is [`SequentialExecutor`]. The executor is not simulation state: it does not
+    /// enter [`World::stable_hash`] or snapshots, and [`World::restore`] keeps the current one.
+    /// Stages, blocks and every hash are independent of it (engine ADR-0006).
+    pub fn set_executor(&mut self, executor: Arc<dyn Executor>) {
+        self.executor = Some(executor);
+    }
+
+    /// The executor of parallel stages and data-parallel queries (default
+    /// [`SequentialExecutor`]).
+    #[must_use]
+    pub fn executor(&self) -> &dyn Executor {
+        executor_of(&self.executor)
     }
 
     fn duplicate(&self) -> Self {
@@ -267,6 +375,7 @@ impl World {
             archetypes: self.archetypes.clone(),
             archetype_index: self.archetype_index.clone(),
             resources: self.resources.clone(),
+            executor: None,
         }
     }
 
@@ -336,6 +445,14 @@ impl World {
                 row: new_row,
             },
         );
+    }
+}
+
+/// The installed executor or the static [`SequentialExecutor`]; never allocates.
+pub(crate) fn executor_of(executor: &Option<Arc<dyn Executor>>) -> &dyn Executor {
+    match executor {
+        Some(executor) => executor.as_ref(),
+        None => &SequentialExecutor,
     }
 }
 

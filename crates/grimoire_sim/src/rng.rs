@@ -181,9 +181,63 @@ pub const fn derive_rng(seed: u64, tick: u64, stream: u64) -> SimRng {
     SimRng::new(splitmix64(splitmix64(splitmix64(seed) ^ tick) ^ stream))
 }
 
+/// Generator of data-parallel block `block` of system stream `stream` at one `tick` of a run with
+/// `seed` (engine ADR-0006, building block 5).
+///
+/// The result is a pure function of its arguments:
+/// `derive_rng(seed, tick, splitmix64(splitmix64(stream) ^ block))`. Pass
+/// `QueryBlock::index() as u64` as `block` and draw in dense order inside the block; the random
+/// numbers then depend neither on the executor nor on the thread count. A generator shared and
+/// advanced by several blocks is forbidden. This derivation is new in algorithm version 1 and
+/// changes no existing output.
+#[must_use]
+pub const fn derive_block_rng(seed: u64, tick: u64, stream: u64, block: u64) -> SimRng {
+    derive_rng(seed, tick, splitmix64(splitmix64(stream) ^ block))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derive_block_rng_follows_its_formula() {
+        for (seed, tick, stream, block) in [(42, 7, 1, 0), (0, 0, 0, 0), (u64::MAX, 3, 1 << 63, 9)]
+        {
+            let expected = derive_rng(seed, tick, splitmix64(splitmix64(stream) ^ block));
+            assert_eq!(derive_block_rng(seed, tick, stream, block), expected);
+        }
+    }
+
+    #[test]
+    fn blocks_get_distinct_streams() {
+        let firsts: Vec<u32> = (0..8)
+            .map(|block| derive_block_rng(42, 7, 1, block).next_u32())
+            .collect();
+        for (index, value) in firsts.iter().enumerate() {
+            assert!(
+                !firsts[index + 1..].contains(value),
+                "block {index} repeats"
+            );
+        }
+        assert_ne!(
+            derive_block_rng(42, 7, 1, 0).next_u32(),
+            derive_rng(42, 7, 1).next_u32()
+        );
+    }
+
+    /// Frozen reference outputs; a change here changes every block-random golden hash.
+    #[test]
+    fn derive_block_rng_reference_vector() {
+        let mut block0 = derive_block_rng(42, 7, 1, 0);
+        let mut block1 = derive_block_rng(42, 7, 1, 1);
+        let first: [u32; 3] = [block0.next_u32(), block0.next_u32(), block0.next_u32()];
+        let second: [u32; 3] = [block1.next_u32(), block1.next_u32(), block1.next_u32()];
+        assert_eq!(first, BLOCK_0_REFERENCE);
+        assert_eq!(second, BLOCK_1_REFERENCE);
+    }
+
+    const BLOCK_0_REFERENCE: [u32; 3] = [106_382_512, 2_786_616_568, 3_140_799_074];
+    const BLOCK_1_REFERENCE: [u32; 3] = [2_461_771_236, 1_007_049_875, 1_861_320_709];
 
     /// First outputs of the PCG reference demo (`pcg32-demo`, initstate 42, initseq 54).
     #[test]

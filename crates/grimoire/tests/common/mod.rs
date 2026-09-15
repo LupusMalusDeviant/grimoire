@@ -79,3 +79,63 @@ pub fn bot_input(tick: u64) -> TickInput {
     input.slots[0].buttons = u32::from(tick % 30 < 10);
     input
 }
+
+/// Parallel form of [`Scenario`] (engine ADR-0006): the movers update in data-parallel blocks
+/// with block random streams inside an exclusive system, and the player is a parallel system that
+/// writes its resource deferred.
+pub struct ParallelScenario {
+    pub movers: u32,
+}
+
+impl GamePlugin for ParallelScenario {
+    fn name(&self) -> &str {
+        "parallel_scenario"
+    }
+
+    fn build(&mut self, sim: &mut Simulation) {
+        let mut rng = derive_rng(sim.seed(), 0, 1);
+        let world = sim.world_mut();
+        world.insert_resource(Player::default());
+        for _ in 0..self.movers {
+            let position = Vec2::new(rng.range_f32(-40.0, 40.0), rng.range_f32(-40.0, 40.0));
+            let velocity =
+                Vec2::from_angle(rng.range_f32(0.0, dmath::TAU)) * rng.range_f32(5.0, 30.0);
+            world.spawn((Mover { position, velocity },));
+        }
+
+        sim.schedule_mut()
+            .add_parallel_system(parallel_system_fn(
+                "player",
+                Access::new()
+                    .read_resource::<TickInput>()
+                    .read_resource::<Player>()
+                    .write_resource::<Player>(),
+                |world, commands| {
+                    let input = world.resource::<TickInput>().copied().unwrap_or_default();
+                    let slot = input.slots[0];
+                    if let Some(player) = world.resource::<Player>() {
+                        commands.insert_resource(Player {
+                            position: player.position
+                                + Vec2::new(slot.axis(0), slot.axis(1)) * (40.0 * DT),
+                            buttons: slot.buttons,
+                        });
+                    }
+                },
+            ))
+            .add_system(system_fn("movers", |world| {
+                let tick = world.resource::<Tick>().map_or(0, |tick| tick.0);
+                let seed = world.resource::<SimSeed>().map_or(0, |seed| seed.0);
+                world.par_blocks_mut::<&mut Mover, _>(|block| {
+                    let mut rng = derive_block_rng(seed, tick, 2, block.index() as u64);
+                    for mover in block {
+                        mover.position += mover.velocity * DT;
+                        if mover.position.length_squared() > 50.0 * 50.0 {
+                            mover.position = mover.position.normalize_or_zero() * 49.0;
+                            mover.velocity = Vec2::from_angle(rng.range_f32(0.0, dmath::TAU))
+                                * rng.range_f32(5.0, 30.0);
+                        }
+                    }
+                });
+            }));
+    }
+}

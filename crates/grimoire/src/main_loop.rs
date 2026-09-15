@@ -2,8 +2,10 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
+use grimoire_ecs::Executor;
 use grimoire_platform::{
     AppHandler, AppResult, KeyCode, PlatformContext, PlatformEvent, RawInputEvent,
 };
@@ -34,6 +36,8 @@ pub(crate) struct LoopSettings {
     pub max_frames: Option<u64>,
     pub exit_key: Option<KeyCode>,
     pub record_hashes: bool,
+    /// Set on the world right after `Simulation::new`; `None` keeps the sequential default.
+    pub executor: Option<Arc<dyn Executor>>,
 }
 
 /// Result of [`crate::AppBuilder::run_headless_frames`].
@@ -166,6 +170,9 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
         log::info!("renderer backend: {}", renderer.backend_name());
 
         let mut sim = Simulation::new(self.settings.seed);
+        if let Some(executor) = &self.settings.executor {
+            sim.world_mut().set_executor(Arc::clone(executor));
+        }
         for plugin in &mut self.plugins {
             log::debug!("building plugin {}", plugin.name());
             plugin.build(&mut sim);
@@ -400,6 +407,7 @@ mod tests {
             max_frames: None,
             exit_key: None,
             record_hashes: true,
+            executor: None,
         }
     }
 

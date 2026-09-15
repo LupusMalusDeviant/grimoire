@@ -1,0 +1,28 @@
+[package]
+name = "grimoire_exec"
+description = "Thread-pool executor for parallel stages and data-parallel queries, outside the determinism crates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+# Engine ADR-0006 building block 6: the only thread source of the simulation. No crate with the
+# determinism clippy.toml may depend on this crate or on rayon (checked in CI).
+[dependencies]
+grimoire_ecs.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+# The hash gate runs the engine's golden scenarios on real thread pools; they are included from
+# the other crates' test directories via #[path].
+[dev-dependencies]
+grimoire.workspace = true
+grimoire_core.workspace = true
+grimoire_sim.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

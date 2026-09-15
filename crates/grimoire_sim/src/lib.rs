@@ -4,9 +4,13 @@
 //!
 //! - [`FixedTimestep`]: exact integer accumulator turning frame times into whole ticks.
 //! - [`Tick`] and [`SimSeed`]: the only simulation time and the root of all randomness.
-//! - [`SimRng`] and [`derive_rng`]: documented PCG32 generator with order-independent streams.
+//! - [`SimRng`], [`derive_rng`] and [`derive_block_rng`]: documented PCG32 generator with
+//!   order-independent streams per system and per data-parallel block.
 //! - [`InputFrame`], [`TickInput`], [`InputLog`]: quantised per-tick input and its binary log.
 //! - [`Simulation`], [`SimSnapshot`], [`replay`]: stepping, state hashes, snapshots and replays.
+//!
+//! [`Simulation::step`] runs the schedule stage by stage through the world's executor
+//! (engine ADR-0006); every state hash is independent of the executor and its thread count.
 //!
 //! ```
 //! use grimoire_ecs::system_fn;
@@ -37,6 +41,6 @@ mod time;
 
 pub use error::SimError;
 pub use input::{InputFrame, InputLog, MAX_INPUT_SLOTS, TickInput};
-pub use rng::{SimRng, derive_rng};
+pub use rng::{SimRng, derive_block_rng, derive_rng};
 pub use simulation::{SimSnapshot, Simulation, replay};
 pub use time::{FixedTimestep, SimSeed, StepPlan, Tick};

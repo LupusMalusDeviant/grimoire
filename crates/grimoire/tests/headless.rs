@@ -2,9 +2,11 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Scenario, bot_input};
+use common::{ParallelScenario, Scenario, bot_input};
+use grimoire::ecs::PermutedExecutor;
 use grimoire::platform::{PlatformEvent, RawInputEvent};
 use grimoire::prelude::*;
 use grimoire::{AXIS_MAX, HeadlessReport, LoopReport};
@@ -185,4 +187,71 @@ fn frame_loop_runs_are_reproducible() {
             .expect("headless frame loop runs")
     };
     assert_eq!(run(), run());
+}
+
+/// Movers spread over several data-parallel blocks.
+const PARALLEL_MOVERS: u32 = 3_000;
+
+#[test]
+fn parallel_scenario_hashes_are_executor_independent() {
+    let run = |executor: Option<Arc<dyn Executor>>| {
+        let mut builder = App::new(WindowConfig::default())
+            .seed(21)
+            .hash_every(30)
+            .plugin(ParallelScenario {
+                movers: PARALLEL_MOVERS,
+            });
+        if let Some(executor) = executor {
+            builder = builder.executor(executor);
+        }
+        builder.run_headless(300, &mut bot_input)
+    };
+    let default = run(None);
+    assert_eq!(run(Some(Arc::new(PermutedExecutor::new(5)))), default);
+    assert_eq!(run(Some(Arc::new(PermutedExecutor::reversed()))), default);
+    assert_eq!(run(Some(Arc::new(SequentialExecutor))), default);
+    // The movers actually bounce and re-aim with block streams.
+    assert_ne!(default.hashes[0].1, default.final_hash);
+}
+
+#[test]
+fn frame_loop_matches_run_headless_with_an_executor() {
+    let frame_delta = Duration::from_nanos(16_666_667);
+    let looped = App::new(WindowConfig::default())
+        .seed(5)
+        .hash_every(30)
+        .executor(Arc::new(PermutedExecutor::new(9)))
+        .plugin(ParallelScenario {
+            movers: PARALLEL_MOVERS,
+        })
+        .run_headless_frames(300, frame_delta)
+        .expect("headless frame loop runs");
+    let pure = App::new(WindowConfig::default())
+        .seed(5)
+        .hash_every(30)
+        .plugin(ParallelScenario {
+            movers: PARALLEL_MOVERS,
+        })
+        .run_headless(300, &mut |_| TickInput::default());
+    assert_eq!(looped.final_tick, 300);
+    assert_eq!(looped.hashes, pure.hashes);
+    assert_eq!(looped.final_hash, pure.final_hash);
+}
+
+#[test]
+fn p0_scenario_is_executor_independent() {
+    let default = headless(7, 600, &mut bot_input);
+    let permuted = App::new(WindowConfig::default())
+        .seed(7)
+        .hash_every(60)
+        .executor(Arc::new(PermutedExecutor::new(2)))
+        .plugin(Scenario { movers: MOVERS })
+        .run_headless(600, &mut bot_input);
+    assert_eq!(permuted, default);
+}
+
+#[test]
+fn app_builder_debug_reports_the_executor_threads() {
+    let builder = App::new(WindowConfig::default());
+    assert!(format!("{builder:?}").contains("executor_threads: 1"));
 }
