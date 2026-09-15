@@ -237,12 +237,10 @@ pub struct SigilContent {
 impl SigilContent {
     /// Builds content directly from a library, with a fresh epoch (`swaps = 0`).
     ///
-    /// ADDITION/contract-change candidate (WP1.3): the contract's method list for `SigilContent`
-    /// names only `library()`/`epoch()` — a constructor is not listed because the full contract
-    /// expects `install()` (§11.6, out of scope here) to be the sole producer, wiring a library
-    /// into a running `Simulation`. WP1.3 needs `BulletPool::spawn` testable against a
-    /// `&SigilContent` without a `Simulation`, so this minimal, side-effect-free constructor is
-    /// added. `install()` can wrap or replace it later without changing this type's shape.
+    /// Additive contract addition (contract §11.2, PO decision V-20, 2026-09-15): a
+    /// side-effect-free constructor, independent of `install()` (§11.6, out of scope here), which
+    /// remains the only way to load content productively into a running `Simulation`. Added so
+    /// `BulletPool::spawn` is testable against a `&SigilContent` without a `Simulation`.
     #[must_use]
     pub fn new(library: SigilLibrary) -> Self {
         Self {

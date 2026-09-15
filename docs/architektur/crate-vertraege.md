@@ -356,7 +356,9 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 
 | Datum | Abschnitte | PR | Stufe | Betroffene Stränge | Goldens erneuert |
 |-------|------------|----|-------|--------------------|------------------|
-| — | — | — | — | — | — |
+| 2026-09-15 | §6, §11.1, §11.3, §13, §14 | #3 | K | — | nein |
+| 2026-09-15 | §11.1, §11.2 | #3 | A (PO-Entscheid V-20) | — | nein |
+| 2026-09-15 | §8.4, §11.5 | #3 | A (PO-Entscheid V-20) | — | nein (WP5 noch nicht umgesetzt) |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -650,6 +652,10 @@ pub enum RenderLayer { World, Vfx, PostFxResolve, Telegraphy, Bullets, PlayerMar
   `position`, `radius` oder `rotation` oder mit `radius <= 0` wird verworfen und in `bullets_rejected_invalid`
   gezählt, ohne Panic und ohne Debug-Abbruch. Umfang und Inhalt der Silhouettentabelle und der Paletten je Raum legt
   WP3.5 nach dem OF-3.3-ADR fest. `flags` wird in P1 ignoriert; Produzenten setzen 0.
+  *Klarstellung — Reihenfolge:* Die Palettenraum-Prüfung geht der Gültigkeitsprüfung voraus. Eine Instanz in einem
+  fremden Palettenraum wird sofort verworfen und in `bullets_rejected_palette_space` gezählt, ohne zusätzlich auf
+  ungültige Geometrie geprüft oder in `bullets_rejected_invalid` mitgezählt zu werden; beide Zähler schließen sich
+  je Instanz gegenseitig aus.
 - **Position:** Die Fassade interpoliert je Bullet `previous + (current − previous) · alpha` mit `StepPlan::alpha`
   (`grimoire::adapters::sigil_render`, §9.1, WP5.3). Der Renderer interpoliert nie und liest keinen
   Simulationszustand; kein Wert fließt in die Simulation zurück. Bei frisch gespawnten Bullets ist
@@ -1201,6 +1207,9 @@ pub mod stream {
   Wie der Executor ist sie nicht Teil des Snapshots. Einziger Fall in P1 ist die `BehaviorRegistry` (§11.5). Dass
   die geladene `SigilLibrary` sie als `Arc` referenziert (§11.2, damit die Fassade `replace_unit` ohne eigenen
   Registry-Griff aufrufen kann), ändert daran nichts: Die Referenz geht nicht in Hash oder Reihenfolge ein.
+  Weil Bedingung 3 Funktionszeiger ausdrücklich aus dem Fingerprint ausschließt, erkennt er eine geänderte
+  Behavior-Funktion bei gleichbleibender `version`/`BehaviorId`/Namen nicht von selbst — die Versionierungspflicht
+  in §11.5 schließt genau diese Lücke.
 - **`step_observed`:** `step(input)` ist genau `step_observed(input, &mut NoopObserver)`. Die Reihenfolge
   `Tick`/`SimSeed`/`TickInput` setzen → `Schedule::run_observed` (§7.2) → Tick erhöhen bleibt erhalten. Der
   Beobachter ist kein Simulationszustand: Er ist weder im Hash noch im Snapshot noch im Replay enthalten und ändert
@@ -1764,6 +1773,14 @@ pub enum UnitError;                              // #[non_exhaustive], thiserror
                                                  // NonFinite { offset }, CascadeTooDeep { depth }, NonCanonical { offset }
 ```
 
+*Klarstellung — Wiederverwendung bestehender Fehlervarianten:* `UnitError` bekommt keine eigene Variante für jeden
+Sonderfall, wenn ein bestehendes Feldschema exakt passt. In v1 wiederverwendet: ein `unit_id`-Feld von `0` (Kopf,
+siehe unten) meldet `IndexOutOfRange { what: "unit_id", index: 0, len: 0 }` (der Wertebereich ohne `0` ist die
+„Länge", der verletzte Index `0`); reservierte Bits in `BulletFlags` (§11.2) melden `Limit { what:
+"bullet_type.flags", value, max }`; ein fehlender oder doppelter Abschnitt derselben Art (§11.1 Nutzlast) melden
+beide `SectionLayout { kind }`. Das entsprechende Gegenstück in `grimoire_assets` (§12) ist die Kollision einer
+`AssetId` in `PackWriter::add`, die `PackError::Manifest(String)` statt einer eigenen Variante meldet.
+
 Kopf (Little-Endian, 40 Byte):
 
 | Offset | Feld | Typ | Regel |
@@ -1780,7 +1797,11 @@ Kopf (Little-Endian, 40 Byte):
 - **Nutzlast:** `section_count: u32`, dann je Abschnitt 24 Byte (`kind: u32`, `reserved: u32 = 0`, `offset: u64`
   relativ zum Nutzlastbeginn, `len: u64`). Die Abschnitte stehen aufsteigend nach `kind` und `offset`, überlappen
   nicht, liegen vollständig in der Nutzlast und beginnen (mit geprüfter Arithmetik) nicht vor dem Ende der
-  Abschnittstabelle selbst, also bei `offset >= 4 + section_count * 24`; sonst `SectionLayout`. Abschnittsarten in
+  Abschnittstabelle selbst, also bei `offset >= 4 + section_count * 24`; sonst `SectionLayout`. Die Abschnitte sind
+  außerdem lückenlos gepackt: Der erste beginnt exakt am Ende der Abschnittstabelle, jeder weitere exakt am Ende des
+  vorigen, und der letzte endet exakt am Ende der Nutzlast. Eine Lücke — vor dem ersten, zwischen zwei Abschnitten
+  oder nach dem letzten — ergibt `NonCanonical`, nicht `SectionLayout`; so bleibt `to_bytes` eine reine Funktion der
+  dekodierten Felder, ohne dass der Decoder rohe Lückenbytes vorhalten müsste, um sie zu reproduzieren. Abschnittsarten in
   v1: 1 `BulletTypes` (Pflicht), 2 `Programs`
   (Bausteine und Modifikatorstapel), 3 `Emitters` (Pflicht), 4 `Transforms`, 5 `Curves`, 6 `BehaviorRefs` und
   7 `Names` (nur Diagnose, gehasht, ohne Laufzeitwirkung). Eine unbekannte Art ergibt `UnknownSection`; neue Arten
@@ -1803,6 +1824,13 @@ Kopf (Little-Endian, 40 Byte):
 - **`UnitId`** vergibt `sigilc` aus dem kanonischen Content-Pfad der Quelle nach derselben Regel wie
   `AssetId::from_path` (§12, `StableHasher` v1); ergibt die Ableitung 0, meldet `sigilc` einen Fehler. Damit
   bezeichnen Pack-Eintrag, Swap-Nachricht (§13) und Laufzeit eine Unit mit derselben Zahl.
+  **`grimoire_sigilc::derive_unit_id`/`DeriveUnitIdError`** (additiv, PO-Entscheid V-20, 2026-09-15) sind die
+  benannte Funktion und der Fehlertyp für diese Ableitung: `derive_unit_id(canonical_content_path: &str) ->
+  Result<UnitId, DeriveUnitIdError>`, `enum DeriveUnitIdError { ZeroUnitId { path: String } }`
+  (`#[non_exhaustive]`, thiserror). `derive_unit_id` erwartet den kanonischen Content-Pfad bereits fertig gebildet
+  (Auflösung einer Quelldatei oder einer Wurzel-plus-Datei-Angabe ist Sache des Parsers/der CLI, WP4) und meldet
+  den obigen Fehlerfall als `DeriveUnitIdError::ZeroUnitId { path }` statt eines Panics (§2 Regel 9). Die übrige
+  API von `grimoire_sigilc` bleibt WP4 vorbehalten.
 - **Kanonischer Content-Pfad:** ein `AssetPath` nach §12, relativ zur
   Content-Wurzel des Aufrufers, mit der Endung `.sigil`. Er ist byte-gleich mit dem Pfad des Pack-Eintrags und mit
   `unit_path` in `SwapSigilUnit` und `SigilPreview` (§13).
@@ -1836,6 +1864,7 @@ pub struct SigilLibrary;                         // Debug, Send + Sync; unverän
                                                  // unit_index(UnitId) -> Option<u16>, epoch() -> ContentEpoch, registry_fingerprint() -> u64,
                                                  // registry() -> &Arc<BehaviorRegistry>
 pub struct SigilContent;                         // Resource: Clone (teilt Arc<SigilLibrary>), Debug, StableHash
+                                                 // new(library: SigilLibrary) -> Self (additiv, PO-Entscheid V-20, 2026-09-15),
                                                  // library() -> &SigilLibrary, epoch() -> ContentEpoch
 pub enum SigilError;                             // #[non_exhaustive], thiserror: Unit(#[from] UnitError), PoolFull, DuplicateUnit(UnitId),
                                                  // UnknownUnit(UnitId), TooManyUnits, BulletTypeOutOfRange { unit, bullet_type },
@@ -1853,6 +1882,10 @@ pub enum SigilError;                             // #[non_exhaustive], thiserror
 - `SigilContent` hält die Bibliothek als `Arc`: Snapshots teilen sie, statt sie zu kopieren. Ihr `StableHash` speist
   nur die Epoche (`swaps`, `manifest_hash`), nie Unit-Bytes oder Adressen; die Bytes identifiziert `content_hash`
   über den Manifest-Hash.
+- **`SigilContent::new`** (additiv, PO-Entscheid V-20, 2026-09-15): nebenwirkungsfreier Konstruktor mit frischer
+  Epoche (`swaps = 0`), unabhängig von `install()` (§11.6). Erlaubt Tests von `BulletPool::spawn` gegen ein
+  `&SigilContent` ohne laufende `Simulation`. `install()` bleibt der einzige Weg, Content produktiv in eine
+  `Simulation` zu laden; `new` ändert daran nichts.
 - `SigilLibrary` hält den `Arc<BehaviorRegistry>`, mit dem sie gebaut wurde.
   Er geht nicht in einen `StableHash` ein; nur `registry_fingerprint()` fließt in den Manifest-Hash (§11.8). So
   erreicht die Fassade die Registry für `replace_unit` über den geladenen Content, ohne eigenen Griff (§9.7, §8.2,
@@ -1907,6 +1940,10 @@ pub struct BulletEvent { pub id: BulletId, pub unit: UnitId, pub bullet_type: u1
   stillgelegt. Ist die Freiliste leer und `slot_count == capacity`, liefert `spawn` `Err(PoolFull)`. Die Laufzeit
   selbst verwirft solche Spawns deterministisch und zählt sie in `dropped_spawns`; sie panict dabei nie.
   Harness-Invariante „Pool-Grenzen“ (WP7.4).
+  *Klarstellung:* „Die Laufzeit selbst“ meint hier die noch nicht umgesetzten Tick-Phasen `sigil.update`/
+  `sigil.emit` (§11.6), die Sub-Spawns ohne eigenen `Result`-Kanal an einen Aufrufer auslösen. Ein direkter Aufruf
+  von `BulletPool::spawn`, der `Err(PoolFull)` liefert, zählt nicht in `dropped_spawns` und lässt den Pool-Hash
+  unverändert (Test WP5.1) — der Aufrufer hat dort ja bereits einen `Result`, den er auswerten kann.
 - **`BulletId`** ist ein stabiler Griff (Index und Generation) für Despawn-Ereignisse und Kollisionsergebnisse
   (`ColliderKey::pool`, §14). Nach der Wiederverwendung eines Slots ist ein alter Griff nicht mehr lebendig
   (`is_alive == false`, `despawn` liefert `false`).
@@ -1997,6 +2034,14 @@ pub struct BehaviorRegistry;                     // Debug, Send + Sync; version(
   (`u32`) und den Namen (`str`), nie über Funktionsadressen. Er geht in den Manifest-Hash (§11.8) und damit in
   `state_hash` und den Replay-v2-Header ein. Zwei Registries mit denselben Einträgen in anderer
   `register`-Reihenfolge ergeben denselben Fingerprint und dieselben Hashes (Test WP5.2).
+- **Behavior-Versionierung** (additiv, PO-Entscheid V-20, 2026-09-15; schließt die offene Frage aus PR #2): Der
+  `fingerprint` schließt bewusst die Funktionsidentität aus (§8.4) — eine geänderte Behavior-Funktion bei
+  unverändertem `version`/`BehaviorId`/Namen bliebe damit sonst unentdeckt. Jede semantische Änderung an einer
+  Behavior-Funktion MUSS deshalb die `version` der sie registrierenden `BehaviorRegistryBuilder` erhöhen. Ab WP5
+  erzwingt die CI das zusätzlich mit goldenen Referenz-Hashes je registriertem Behavior: Ein fester
+  `BehaviorInput`-Satz läuft durch jedes Behavior, und ein geänderter Ausgabe-Hash ohne begleitende
+  Versionserhöhung lässt die CI scheitern. In WP1.3 ist davon nichts umgesetzt (weder Golden-Hashes noch die
+  CI-Prüfung); die Regel gilt ab jetzt textlich, ihre maschinelle Durchsetzung folgt mit WP5.
 
 ### 11.6 Installation und Tick-Phasen
 
@@ -2430,6 +2475,11 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
   Allokation. `len < 8` oder `len > MAX_FRAME_LEN` ist ein nicht behebbarer Fehler: Die Verbindung wird geschlossen.
   Ein Nutzlastfehler bei gültiger Länge ist behebbar: Antwort `Error(Malformed)`, der Strom bleibt synchron. Das gilt
   nach dem Handshake; den ersten Frame einer Verbindung regelt „Handshake“.
+  *Klarstellung:* Ein noch unvollständiges Frame (weniger Bytes gepuffert, als `len` verlangt) ist kein Fehler:
+  `FrameDecoder::next_frame` liefert dafür `Ok(None)` und wartet auf mehr Bytes. Anders als die Batch-Decoder an
+  anderer Stelle im Engine (`SigilUnit`, Pack v1, Replay, die `UnexpectedEnd` melden) ist das Debug-Protokoll ein
+  fortlaufender Nachrichtenstrom ohne Gesamtlänge (§2 Regel 10); `ProtocolError` braucht deshalb keine eigene
+  „unvollständig“-Variante für diesen Fall.
 - **Kodierung der Nutzlast:**
   - Little-Endian, feste Breiten, `bool` = `u8` 0/1
   - `f32` bitgenau
@@ -2683,6 +2733,11 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
   sie in gegenüberliegende Randzellen legt und nie vergleicht. Eine Kapsel mit `a == b` ist ein Kreis. Ungültige Formen gelangen nie in Simulationszustand (§3). `rebuild*`
   bricht im Debug-Build mit ``invalid shape for collider {key:?}`` ab. Im Release-Build ist das Ergebnis
   deterministisch, fachlich aber unbestimmt, und es gibt keinen Panic.
+  *Klarstellung — `f32`-Genauigkeit an `MAX_COORD`:* Bei `|x|` nahe `1e9` beträgt ein `f32`-ULP schon rund 64
+  Einheiten. `SpatialGrid` und die exakte Überlappungsprüfung (`overlaps`) können deshalb an dieser Grenze in
+  seltenen Randfällen minimal auseinanderlaufen, ohne dass das ein Vertragsbruch ist: Die Grenze selbst ist
+  akzeptiert (PO-Entscheid V-18), diese Restungenauigkeit ist die dokumentierte, unvermeidbare Eigenschaft von
+  `f32` bei dieser Größenordnung, kein Fehler in `SpatialGrid` oder `overlaps`.
 - **`overlaps` (exakt, ohne Wurzel und ohne Trigonometrie):** Verglichen werden immer Abstandsquadrate mit
   `(r₁ + r₂)²` per `<=`.
   - Kreis/Kreis: `(c₁ − c₂).length_squared()`.

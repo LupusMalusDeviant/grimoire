@@ -224,9 +224,9 @@ impl SigilUnit {
         }
         let raw_id = header.read_u64()?;
         if raw_id == 0 {
-            // No dedicated "invalid id" variant exists; `IndexOutOfRange` is the closest fit
-            // (the id space excludes 0, so 0 is "out of range" of the one-element-wide set of
-            // forbidden values). Documented in the WP1.3 report as a judgment call.
+            // Contract §11.1 (clarified on review of PR #3): reuses `IndexOutOfRange` rather than
+            // a dedicated "invalid id" variant (the id space excludes 0, so 0 is "out of range" of
+            // the one-element-wide set of forbidden values).
             return Err(UnitError::IndexOutOfRange {
                 what: "unit_id",
                 index: 0,
@@ -536,15 +536,12 @@ fn decode_section_table(payload: &[u8]) -> Result<Vec<SectionEntry>, UnitError> 
         }
     }
 
-    // PROVISIONAL (WP1.3, pending docs/formats/sigil.md from WP4.1): the contract requires
-    // sections to be ascending, non-overlapping and in-bounds, but says nothing about gaps
-    // between them. To keep `to_bytes` a pure function of the decoded fields (rather than having
-    // to retain raw gap bytes just to reproduce them), this decoder additionally requires the
-    // payload to be tightly packed: the first section starts exactly at the end of the section
+    // Contract §11.1 (clarified on review of PR #3): sections are ascending, non-overlapping,
+    // in-bounds, AND tightly packed — the first section starts exactly at the end of the section
     // table, each next section starts exactly where the previous one ends, and the last section
-    // ends exactly at the end of the payload. A gap is rejected as `NonCanonical`. This is a
-    // contract-change candidate: a future format document could instead mandate byte-for-byte
-    // gap preservation, which would need `SigilUnit` to retain the whole raw payload.
+    // ends exactly at the end of the payload. A gap is rejected as `NonCanonical`, keeping
+    // `to_bytes` a pure function of the decoded fields without the decoder having to retain raw
+    // gap bytes just to reproduce them. `docs/formats/sigil.md` (WP4.1) restates this in detail.
     let mut expected = table_end;
     for section in &sections {
         if section.offset != expected {
