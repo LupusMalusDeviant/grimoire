@@ -6,7 +6,9 @@
 //! Layer rule: `wgpu` types never appear in this crate's public API.
 //!
 //! Coordinate convention: world space is a 2D plane with X right and Y up, measured in arbitrary
-//! world units. [`Camera2D`] maps world space to the screen.
+//! world units. [`Camera2D`] maps world space to the screen. [`Camera25D`] and the mesh/light
+//! channels of [`StageFrame`] (WP2.2, contract §6) add a third, "up" axis (Z) on top of that same
+//! ground plane, with Y now "away from the viewer" instead of "up" on screen.
 //!
 //! Colour convention: all colours ([`RenderFrame::clear_color`], [`SpriteInstance::color`]) are
 //! linear RGBA. [`WgpuRenderer`] renders into sRGB targets, so the GPU encodes on write and
@@ -16,10 +18,15 @@ use std::time::Duration;
 
 mod sprite_pass;
 mod stage;
+mod stage3d;
 mod wgpu_renderer;
 
 pub use stage::{
     BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, palette_space,
+};
+pub use stage3d::{
+    AlphaMode, AmbientLight, BulletLightCap, Camera25D, DirectionalLight, MaterialHandle,
+    MeshHandle, MeshInstance, PbrMaterial, PointLight, TextureHandle,
 };
 
 mod instance {
@@ -222,14 +229,16 @@ pub trait Renderer {
     ///
     /// The default is `false`, which is accurate for any renderer that has not been extended
     /// beyond P0: its `render_stage` only ever draws [`StageFrame::base`] through
-    /// [`Renderer::render`] (see the default body below) and never the bullet, marker or debug
-    /// channels. That is not a failure; callers that care can check this flag and log it once.
+    /// [`Renderer::render`] (see the default body below) and never the bullet, mesh, light, marker
+    /// or debug channels. That is not a failure; callers that care can check this flag and log it
+    /// once.
     fn supports_stage(&self) -> bool {
         false
     }
 
     /// Draws a full [`StageFrame`] (contract §6: world, bullet, player-marker and debug-UI
-    /// layers in [`RenderLayer::ORDER`]).
+    /// layers in [`RenderLayer::ORDER`]; from WP2.2 also meshes and lights on
+    /// [`RenderLayer::World`]).
     ///
     /// The provided default only draws [`StageFrame::base`], by forwarding it to
     /// [`Renderer::render`]; every [`StageStats`] counter beyond `base` is `0`. Override this
@@ -281,11 +290,11 @@ impl Renderer for NullRenderer {
     }
 
     /// Draws nothing, like [`Renderer::render`], but applies the full stage semantics of
-    /// contract §6: it extracts and counts the bullet, marker and debug channels exactly like
-    /// [`WgpuRenderer::render_stage`], so headless tests can exercise the extraction and
-    /// rejection rules without a GPU. `frames_rendered`, `last_sprite_count` (the length of
-    /// `frame.base.sprites`) and `last_size` keep being updated by the inner [`Renderer::render`]
-    /// call.
+    /// contract §6: it extracts and counts the bullet, mesh, material, light, marker and debug
+    /// channels exactly like [`WgpuRenderer::render_stage`], so headless tests can exercise the
+    /// extraction and rejection rules — including the WP2.2 mesh/material/light validation — without
+    /// a GPU. `frames_rendered`, `last_sprite_count` (the length of `frame.base.sprites`) and
+    /// `last_size` keep being updated by the inner [`Renderer::render`] call.
     ///
     /// # Errors
     /// Same as [`Renderer::render`], applied to `frame.base`.
@@ -381,6 +390,14 @@ mod tests {
         frame.bullets.push(accepted_bullet());
         frame.marker_sprites.push(SpriteInstance::default());
         frame.debug_sprites.push(SpriteInstance::default());
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+        frame.point_lights.push(PointLight::default());
+        frame.camera_25d = Some(Camera25D::default());
+        frame.key_light = Some(DirectionalLight::default());
 
         let stats = renderer.render_stage(&frame).expect("render never fails");
         assert_eq!(stats.base.sprites_drawn, 1, "only base.sprites is drawn");
@@ -388,6 +405,19 @@ mod tests {
         assert_eq!(stats.bullets_drawn, 0);
         assert_eq!(stats.bullets_rejected_palette_space, 0);
         assert_eq!(stats.bullets_rejected_invalid, 0);
+        assert_eq!(
+            stats.meshes_drawn, 0,
+            "the provided default never extracts WP2.2 channels"
+        );
+        assert_eq!(stats.meshes_rejected_layer, 0);
+        assert_eq!(stats.meshes_rejected_invalid, 0);
+        assert_eq!(stats.materials_rejected_invalid, 0);
+        assert_eq!(stats.point_lights_drawn, 0);
+        assert_eq!(stats.point_lights_rejected_invalid, 0);
+        assert_eq!(stats.bullet_point_lights_drawn, 0);
+        assert!(!stats.key_light_rejected_invalid);
+        assert!(!stats.ambient_rejected_invalid);
+        assert!(!stats.bullet_light_cap_invalid);
     }
 
     #[test]
@@ -400,6 +430,28 @@ mod tests {
         frame.marker_sprites.push(SpriteInstance::default());
         frame.debug_sprites.push(SpriteInstance::default());
         frame.bullets.push(accepted_bullet());
+        frame.camera_25d = Some(Camera25D::default());
+        // One valid material referenced by one valid mesh, plus a second mesh pointing at an
+        // out-of-range material index.
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(99),
+            ..MeshInstance::default()
+        });
+        // One valid point light flagged as a bullet light, one invalid (negative range).
+        frame.point_lights.push(PointLight {
+            is_bullet_light: true,
+            ..PointLight::default()
+        });
+        frame.point_lights.push(PointLight {
+            range: -1.0,
+            ..PointLight::default()
+        });
+        frame.key_light = Some(DirectionalLight::default());
 
         let stats = renderer
             .render_stage(&frame)
@@ -411,6 +463,19 @@ mod tests {
         assert_eq!(stats.bullets_drawn, 1);
         assert_eq!(stats.bullets_rejected_palette_space, 0);
         assert_eq!(stats.bullets_rejected_invalid, 0);
+        assert_eq!(stats.meshes_drawn, 1);
+        assert_eq!(stats.meshes_rejected_layer, 0);
+        assert_eq!(
+            stats.meshes_rejected_invalid, 1,
+            "out-of-range material index"
+        );
+        assert_eq!(stats.materials_rejected_invalid, 0);
+        assert_eq!(stats.point_lights_drawn, 1);
+        assert_eq!(stats.point_lights_rejected_invalid, 1);
+        assert_eq!(stats.bullet_point_lights_drawn, 1);
+        assert!(!stats.key_light_rejected_invalid);
+        assert!(!stats.ambient_rejected_invalid);
+        assert!(!stats.bullet_light_cap_invalid);
         assert_eq!(
             renderer.last_sprite_count, 1,
             "only base.sprites, P0 semantics"

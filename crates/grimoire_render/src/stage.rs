@@ -4,7 +4,15 @@
 //! This module is the single owner of [`BulletInstance`], the palette-space constants, the
 //! [`RenderLayer`] order and the extension path of [`StageFrame`]. It is purely additive: the P0
 //! types [`RenderFrame`], [`RenderStats`] and [`SpriteInstance`] are reused unchanged.
+//!
+//! [`StageFrame`] and [`StageStats`] also carry the WP2.2 camera, mesh, material and light
+//! channels defined in the sibling `stage3d` module; this module wires them into the frame, its
+//! `clear()` and the shared extraction/counting logic, alongside the P1 bullet channel.
 
+use crate::stage3d::{
+    AmbientLight, BulletLightCap, Camera25D, DirectionalLight, MeshInstance, PbrMaterial,
+    PointLight,
+};
 use crate::{RenderFrame, RenderStats, SpriteInstance};
 
 mod bullet_instance {
@@ -105,9 +113,10 @@ impl RenderLayer {
 /// Everything the stage renderer needs for one frame, in addition to the plain [`RenderFrame`]
 /// that P0 renderers already understand.
 ///
-/// Later work packages grow this type with further channels (WP2.2 adds camera, mesh and light
-/// channels) without breaking existing callers, which is why it is `#[non_exhaustive]` and offers
-/// [`StageFrame::new`] instead of requiring a struct literal.
+/// Later work packages grow this type with further channels without breaking existing callers,
+/// which is why it is `#[non_exhaustive]` and offers [`StageFrame::new`] instead of requiring a
+/// struct literal. WP2.2 is the first to use that growth path: it adds the camera, mesh, material
+/// and light channels below.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StageFrame {
@@ -123,6 +132,27 @@ pub struct StageFrame {
     /// Sprites drawn on [`RenderLayer::DebugUi`], for example a stats overlay (a later work
     /// package).
     pub debug_sprites: Vec<SpriteInstance>,
+    /// Tilted 2.5D camera for the mesh and light channels below (WP2.2). `None` until a camera
+    /// exists (contract §9.3): the facade's mouse-aim sampling (`sample_aim`, contract §9.4) only
+    /// replaces its input axes once a [`Camera25D`] is present here. Persists across
+    /// [`StageFrame::clear`], like [`RenderFrame::camera`].
+    pub camera_25d: Option<Camera25D>,
+    /// Mesh instances drawn on [`RenderLayer::World`] (WP2.2; geometry itself and its GPU upload
+    /// are WP2.3).
+    pub meshes: Vec<MeshInstance>,
+    /// Material table [`crate::MaterialHandle`] indexes into (WP2.2).
+    pub materials: Vec<PbrMaterial>,
+    /// Point lights in view (WP2.2; the clustered forward+ pass and its count budget are WP3.4).
+    pub point_lights: Vec<PointLight>,
+    /// Directional "key light" for this frame, at most one (WP2.2). Persists across
+    /// [`StageFrame::clear`], like [`StageFrame::camera_25d`].
+    pub key_light: Option<DirectionalLight>,
+    /// Ambient/environment term for this frame, always present (WP2.2). Persists across
+    /// [`StageFrame::clear`], like [`StageFrame::camera_25d`].
+    pub ambient: AmbientLight,
+    /// Bullet-light cap for this frame (PRD-0003 rule 5 / FR-15, WP2.2). Persists across
+    /// [`StageFrame::clear`], like [`StageFrame::camera_25d`].
+    pub bullet_light_cap: BulletLightCap,
 }
 
 impl StageFrame {
@@ -132,13 +162,19 @@ impl StageFrame {
         Self::default()
     }
 
-    /// Removes all instances from every channel but keeps their allocations, the camera and the
-    /// clear colour.
+    /// Removes all instances from every channel but keeps their allocations, the camera(s), the
+    /// clear colour and the lighting fields ([`StageFrame::key_light`], [`StageFrame::ambient`],
+    /// [`StageFrame::bullet_light_cap`]) — like [`StageFrame::camera_25d`], these describe the
+    /// current scene rather than a per-frame instance list, so the extraction step overwrites them
+    /// directly instead of re-adding them after a clear.
     pub fn clear(&mut self) {
         self.base.clear();
         self.bullets.clear();
         self.marker_sprites.clear();
         self.debug_sprites.clear();
+        self.meshes.clear();
+        self.materials.clear();
+        self.point_lights.clear();
     }
 }
 
@@ -157,6 +193,32 @@ pub struct StageStats {
     /// Number of bullet instances rejected because they were structurally invalid: non-finite
     /// `position`, `radius` or `rotation`, or `radius <= 0`.
     pub bullets_rejected_invalid: u32,
+    /// Number of mesh instances accepted (finite `transform`, `material` in range and pointing at
+    /// a valid [`PbrMaterial`], `layer == RenderLayer::World`).
+    pub meshes_drawn: u32,
+    /// Number of mesh instances rejected because `layer` was not [`RenderLayer::World`], the only
+    /// layer P1 accepts for meshes.
+    pub meshes_rejected_layer: u32,
+    /// Number of mesh instances rejected because they were structurally invalid: a non-finite
+    /// `transform`, or `material` out of range or pointing at an invalid [`PbrMaterial`].
+    pub meshes_rejected_invalid: u32,
+    /// Number of materials in [`StageFrame::materials`] that failed [`PbrMaterial::is_valid`].
+    pub materials_rejected_invalid: u32,
+    /// Number of point lights accepted (see [`PointLight::is_valid`]).
+    pub point_lights_drawn: u32,
+    /// Number of point lights rejected because [`PointLight::is_valid`] returned `false`.
+    pub point_lights_rejected_invalid: u32,
+    /// Of [`StageStats::point_lights_drawn`], how many had [`PointLight::is_bullet_light`] set
+    /// (PRD-0003 rule 5 / FR-15 visibility, no cap is applied by this crate yet).
+    pub bullet_point_lights_drawn: u32,
+    /// Whether [`StageFrame::key_light`] was present but failed
+    /// [`DirectionalLight::is_valid`].
+    pub key_light_rejected_invalid: bool,
+    /// Whether [`StageFrame::ambient`] failed [`AmbientLight::is_valid`].
+    pub ambient_rejected_invalid: bool,
+    /// Whether [`StageFrame::bullet_light_cap`] failed [`BulletLightCap::is_valid`]; shading falls
+    /// back to [`BulletLightCap::clamped_floor_contribution`] in that case.
+    pub bullet_light_cap_invalid: bool,
 }
 
 /// Outcome of classifying a [`StageFrame::bullets`] channel against the bullet pass rules.
@@ -167,16 +229,18 @@ struct BulletExtraction {
 }
 
 /// Combines a `base` [`RenderStats`] — from drawing `frame.base` through
-/// [`crate::Renderer::render`] — with the extraction and counting of `frame`'s bullet, marker and
-/// debug channels into a full [`StageStats`].
+/// [`crate::Renderer::render`] — with the extraction and counting of `frame`'s bullet, mesh,
+/// material, light, marker and debug channels into a full [`StageStats`].
 ///
 /// Shared by [`crate::NullRenderer::render_stage`] and [`crate::WgpuRenderer::render_stage`] so
 /// both apply contract §6 identically by construction, whether or not the renderer actually
 /// rasterises the additional channels yet: `sprites_drawn` counts every sprite channel (world,
 /// marker and debug sprites), `draw_calls` stays whatever `render` reported (no additional pass
-/// exists yet in P1), and the bullet counters come from [`extract_bullets`].
+/// exists yet in P1), the bullet counters come from [`extract_bullets`], and the mesh/material/
+/// light counters come from [`extract_stage3d`].
 pub(crate) fn stage_stats_from_base(base: RenderStats, frame: &StageFrame) -> StageStats {
     let bullets = extract_bullets(&frame.bullets);
+    let stage3d = extract_stage3d(frame);
     let sprite_channels = frame.marker_sprites.len() + frame.debug_sprites.len();
     StageStats {
         base: RenderStats {
@@ -187,6 +251,16 @@ pub(crate) fn stage_stats_from_base(base: RenderStats, frame: &StageFrame) -> St
         bullets_drawn: bullets.drawn,
         bullets_rejected_palette_space: bullets.rejected_palette_space,
         bullets_rejected_invalid: bullets.rejected_invalid,
+        meshes_drawn: stage3d.meshes_drawn,
+        meshes_rejected_layer: stage3d.meshes_rejected_layer,
+        meshes_rejected_invalid: stage3d.meshes_rejected_invalid,
+        materials_rejected_invalid: stage3d.materials_rejected_invalid,
+        point_lights_drawn: stage3d.point_lights_drawn,
+        point_lights_rejected_invalid: stage3d.point_lights_rejected_invalid,
+        bullet_point_lights_drawn: stage3d.bullet_point_lights_drawn,
+        key_light_rejected_invalid: stage3d.key_light_rejected_invalid,
+        ambient_rejected_invalid: stage3d.ambient_rejected_invalid,
+        bullet_light_cap_invalid: stage3d.bullet_light_cap_invalid,
     }
 }
 
@@ -229,9 +303,87 @@ fn extract_bullets(bullets: &[BulletInstance]) -> BulletExtraction {
     }
 }
 
+/// Outcome of classifying a [`StageFrame`]'s WP2.2 mesh, material and light channels.
+struct Stage3dExtraction {
+    meshes_drawn: u32,
+    meshes_rejected_layer: u32,
+    meshes_rejected_invalid: u32,
+    materials_rejected_invalid: u32,
+    point_lights_drawn: u32,
+    point_lights_rejected_invalid: u32,
+    bullet_point_lights_drawn: u32,
+    key_light_rejected_invalid: bool,
+    ambient_rejected_invalid: bool,
+    bullet_light_cap_invalid: bool,
+}
+
+/// Applies the mesh, material and light validation rules (contract §6, WP2.2) to `frame`; used by
+/// [`stage_stats_from_base`]. Never panics: every rejection is deterministic data classification,
+/// with no debug-only assertion analogous to the bullet pass's palette-space check — there is no
+/// pre-existing hard invariant here for one to guard, only this WP's own new validation.
+///
+/// A mesh instance is drawn only if both its own fields are valid (finite `transform`) **and**
+/// `material` indexes a present, valid [`PbrMaterial`] in `frame.materials`; an out-of-range or
+/// invalid material rejects the mesh (`meshes_rejected_invalid`) without double-counting into
+/// `materials_rejected_invalid`, which counts invalid *materials* themselves regardless of whether
+/// any mesh references them.
+fn extract_stage3d(frame: &StageFrame) -> Stage3dExtraction {
+    let materials_rejected_invalid = frame
+        .materials
+        .iter()
+        .filter(|material| !material.is_valid())
+        .count();
+
+    let mut meshes_drawn = 0u32;
+    let mut meshes_rejected_layer = 0u32;
+    let mut meshes_rejected_invalid = 0u32;
+    for mesh in &frame.meshes {
+        if mesh.layer != RenderLayer::World {
+            meshes_rejected_layer += 1;
+            continue;
+        }
+        let transform_finite = mesh.transform.iter().flatten().all(|c| c.is_finite());
+        let material = frame.materials.get(mesh.material.0 as usize);
+        let material_valid = material.is_some_and(PbrMaterial::is_valid);
+        if transform_finite && material_valid {
+            meshes_drawn += 1;
+        } else {
+            meshes_rejected_invalid += 1;
+        }
+    }
+
+    let mut point_lights_drawn = 0u32;
+    let mut point_lights_rejected_invalid = 0u32;
+    let mut bullet_point_lights_drawn = 0u32;
+    for light in &frame.point_lights {
+        if light.is_valid() {
+            point_lights_drawn += 1;
+            if light.is_bullet_light {
+                bullet_point_lights_drawn += 1;
+            }
+        } else {
+            point_lights_rejected_invalid += 1;
+        }
+    }
+
+    Stage3dExtraction {
+        meshes_drawn,
+        meshes_rejected_layer,
+        meshes_rejected_invalid,
+        materials_rejected_invalid: u32::try_from(materials_rejected_invalid).unwrap_or(u32::MAX),
+        point_lights_drawn,
+        point_lights_rejected_invalid,
+        bullet_point_lights_drawn,
+        key_light_rejected_invalid: frame.key_light.is_some_and(|light| !light.is_valid()),
+        ambient_rejected_invalid: !frame.ambient.is_valid(),
+        bullet_light_cap_invalid: !frame.bullet_light_cap.is_valid(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stage3d::MaterialHandle;
 
     #[test]
     fn bullet_instance_layout() {
@@ -281,8 +433,17 @@ mod tests {
         frame.bullets.push(BulletInstance::default());
         frame.marker_sprites.push(SpriteInstance::default());
         frame.debug_sprites.push(SpriteInstance::default());
+        frame.meshes.push(MeshInstance::default());
+        frame.materials.push(PbrMaterial::default());
+        frame.point_lights.push(PointLight::default());
         frame.base.camera.world_height = 42.0;
         frame.base.clear_color = [0.1, 0.2, 0.3, 1.0];
+        frame.camera_25d = Some(Camera25D::default());
+        frame.key_light = Some(DirectionalLight::default());
+        let cap = BulletLightCap {
+            floor_contribution: 0.3,
+        };
+        frame.bullet_light_cap = cap;
 
         frame.clear();
 
@@ -290,8 +451,14 @@ mod tests {
         assert!(frame.bullets.is_empty());
         assert!(frame.marker_sprites.is_empty());
         assert!(frame.debug_sprites.is_empty());
+        assert!(frame.meshes.is_empty());
+        assert!(frame.materials.is_empty());
+        assert!(frame.point_lights.is_empty());
         assert!((frame.base.camera.world_height - 42.0).abs() < f32::EPSILON);
         assert_eq!(frame.base.clear_color, [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(frame.camera_25d, Some(Camera25D::default()));
+        assert_eq!(frame.key_light, Some(DirectionalLight::default()));
+        assert_eq!(frame.bullet_light_cap, cap);
     }
 
     fn valid_bullet() -> BulletInstance {
@@ -374,5 +541,141 @@ mod tests {
         let result = extract_bullets(&bullets);
         assert_eq!(result.rejected_palette_space, 1);
         assert_eq!(result.rejected_invalid, 0);
+    }
+
+    // --- extract_stage3d: meshes, materials, lights (WP2.2) ----------------------------------
+
+    #[test]
+    fn extract_stage3d_counts_valid_mesh_material_and_light() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+        frame.point_lights.push(PointLight::default());
+        frame.point_lights.push(PointLight {
+            is_bullet_light: true,
+            ..PointLight::default()
+        });
+        frame.key_light = Some(DirectionalLight::default());
+
+        let result = extract_stage3d(&frame);
+        assert_eq!(result.meshes_drawn, 1);
+        assert_eq!(result.meshes_rejected_layer, 0);
+        assert_eq!(result.meshes_rejected_invalid, 0);
+        assert_eq!(result.materials_rejected_invalid, 0);
+        assert_eq!(result.point_lights_drawn, 2);
+        assert_eq!(result.point_lights_rejected_invalid, 0);
+        assert_eq!(result.bullet_point_lights_drawn, 1);
+        assert!(!result.key_light_rejected_invalid);
+        assert!(!result.ambient_rejected_invalid);
+        assert!(!result.bullet_light_cap_invalid);
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_mesh_on_a_foreign_layer() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            layer: RenderLayer::Telegraphy,
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_layer, 1);
+        assert_eq!(result.meshes_rejected_invalid, 0);
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_mesh_with_non_finite_transform() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        let mut mesh = MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        };
+        mesh.transform[0][0] = f32::NAN;
+        frame.meshes.push(mesh);
+
+        let result = extract_stage3d(&frame);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_layer, 0);
+        assert_eq!(result.meshes_rejected_invalid, 1);
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_mesh_with_out_of_range_or_invalid_material() {
+        let mut frame = StageFrame::new();
+        // No materials at all: index 0 is out of range.
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+        // One invalid material at index 0.
+        frame.materials.push(PbrMaterial {
+            metallic_factor: 2.0,
+            ..PbrMaterial::default()
+        });
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_invalid, 2);
+        assert_eq!(
+            result.materials_rejected_invalid, 1,
+            "the invalid material itself is counted once, independent of how many meshes reference it"
+        );
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_invalid_point_light_key_light_ambient_and_cap() {
+        let mut frame = StageFrame::new();
+        frame.point_lights.push(PointLight {
+            intensity: f32::NAN,
+            ..PointLight::default()
+        });
+        frame.key_light = Some(DirectionalLight {
+            direction: [0.0, 0.0, 0.0],
+            ..DirectionalLight::default()
+        });
+        frame.ambient = AmbientLight::Flat {
+            color: [1.0, 1.0, 1.0],
+            intensity: -1.0,
+        };
+        frame.bullet_light_cap = BulletLightCap {
+            floor_contribution: 2.0,
+        };
+
+        let result = extract_stage3d(&frame);
+        assert_eq!(result.point_lights_drawn, 0);
+        assert_eq!(result.point_lights_rejected_invalid, 1);
+        assert_eq!(result.bullet_point_lights_drawn, 0);
+        assert!(result.key_light_rejected_invalid);
+        assert!(result.ambient_rejected_invalid);
+        assert!(result.bullet_light_cap_invalid);
+    }
+
+    #[test]
+    fn extract_stage3d_default_frame_has_no_rejections() {
+        let frame = StageFrame::new();
+        let result = extract_stage3d(&frame);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_layer, 0);
+        assert_eq!(result.meshes_rejected_invalid, 0);
+        assert_eq!(result.materials_rejected_invalid, 0);
+        assert_eq!(result.point_lights_drawn, 0);
+        assert_eq!(result.point_lights_rejected_invalid, 0);
+        assert!(
+            !result.key_light_rejected_invalid,
+            "no key light: nothing to reject"
+        );
+        assert!(!result.ambient_rejected_invalid, "default ambient is valid");
+        assert!(!result.bullet_light_cap_invalid, "default cap is valid");
     }
 }
