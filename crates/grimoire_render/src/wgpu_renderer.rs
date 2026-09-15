@@ -3,13 +3,17 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use grimoire_gpu::{ContextOptions, GpuContext, GpuError, OffscreenTarget, WindowSurface, wgpu};
+use grimoire_gpu::{
+    ContextOptions, GpuContext, GpuError, OffscreenTarget, SurfaceFrame, WindowSurface, wgpu,
+};
 use grimoire_platform::PlatformWindow;
 
+use crate::mesh_pass::MeshPass;
 use crate::sprite_pass::SpritePass;
 use crate::stage;
 use crate::{
-    RenderError, RenderFrame, RenderStats, Renderer, RendererConfig, StageFrame, StageStats,
+    MeshData, MeshError, MeshHandle, RenderError, RenderFrame, RenderStats, Renderer,
+    RendererConfig, StageFrame, StageStats,
 };
 
 enum Target {
@@ -23,6 +27,11 @@ enum Target {
 /// linear; the render target is written through an sRGB view, so the GPU applies the sRGB
 /// encoding and alpha blending happens in linear space.
 ///
+/// [`Renderer::render_stage`] additionally draws [`crate::StageFrame::meshes`] on
+/// [`crate::RenderLayer::World`], depth-tested against a dedicated depth buffer, *before* the
+/// sprite pass (plan 0002 WP2.3; see the `mesh_pass` module) — the sprite pass itself, and its
+/// draw order relative to the other channels (contract §6), are unchanged.
+///
 /// GPU validation and out-of-memory errors raised while a frame is prepared and submitted are
 /// returned from [`Renderer::render`]; a lost GPU device makes every later `render` call fail
 /// with [`RenderError::Backend`].
@@ -34,6 +43,7 @@ pub struct WgpuRenderer {
     context: GpuContext,
     target: Target,
     sprites: SpritePass,
+    mesh_pass: MeshPass,
     width: u32,
     height: u32,
     /// Error of the most recent `resize`; never `SurfaceLost`, which callers treat as a skip.
@@ -124,10 +134,13 @@ impl WgpuRenderer {
         } else {
             (0, 0)
         };
+        let mesh_pass =
+            MeshPass::new(&context, surface.view_format(), width, height).map_err(map_gpu_error)?;
         Ok(Self {
             context,
             target: Target::Window(surface),
             sprites,
+            mesh_pass,
             width,
             height,
             resize_error: None,
@@ -150,10 +163,13 @@ impl WgpuRenderer {
         let target = OffscreenTarget::new(&context, width, height).map_err(map_gpu_error)?;
         let sprites = SpritePass::new(&context, target.format(), config.initial_sprite_capacity)
             .map_err(map_gpu_error)?;
+        let mesh_pass =
+            MeshPass::new(&context, target.format(), width, height).map_err(map_gpu_error)?;
         Ok(Self {
             context,
             target: Target::Offscreen(target),
             sprites,
+            mesh_pass,
             width,
             height,
             resize_error: None,
@@ -181,6 +197,96 @@ impl WgpuRenderer {
     pub fn adapter_report_line(&self) -> String {
         self.context.adapter_report_line()
     }
+
+    /// Registers `mesh`'s CPU geometry, uploads it to the GPU as static vertex/index buffers, and
+    /// returns a [`MeshHandle`] [`crate::MeshInstance::mesh`] can reference afterwards (contract
+    /// §6: "the registry itself... is WP2.3's job", plan 0002 WP2.3). Registration is
+    /// deterministic: handles are assigned in call order, starting at `0` for the first mesh
+    /// registered with this renderer.
+    ///
+    /// Static: `mesh`'s buffers are uploaded once here and reused by every
+    /// [`crate::MeshInstance`] referencing this handle across every later frame, never re-uploaded
+    /// or mutated by [`Renderer::render_stage`].
+    ///
+    /// # Errors
+    /// [`MeshError`] if `mesh` is structurally invalid ([`crate::MeshData::validate`]) or its GPU
+    /// buffers could not be created (for example out of memory). Never panics.
+    pub fn register_mesh(&mut self, mesh: MeshData) -> Result<MeshHandle, MeshError> {
+        self.mesh_pass.register(&self.context, mesh)
+    }
+}
+
+impl WgpuRenderer {
+    /// Acquires the render target for this frame: `Some(surface_frame)` (present it after
+    /// submitting) plus its view for a window renderer, or `None` plus the offscreen view.
+    /// Recovers `self.width`/`self.height` from the surface after acquiring, since recovery from
+    /// `Outdated`/`Lost`/`Suboptimal` may have changed it. Shared by [`Renderer::render`] and
+    /// [`Renderer::render_stage`] so both agree on acquisition and recovery.
+    ///
+    /// # Errors
+    /// [`GpuError::ZeroSize`] if a window surface is not configured for a valid size (callers
+    /// treat this as a skip, not a failure); any other [`GpuError`] the surface reports.
+    fn acquire_target(&mut self) -> Result<(Option<SurfaceFrame>, wgpu::TextureView), GpuError> {
+        match &mut self.target {
+            Target::Window(surface) => {
+                let acquired = surface.acquire(&self.context)?;
+                (self.width, self.height) = surface.size();
+                let view = acquired.view().clone();
+                Ok((Some(acquired), view))
+            }
+            Target::Offscreen(target) => Ok((None, target.view().clone())),
+        }
+    }
+
+    /// Draws `frame.sprites` in one instanced pass into `view`, with `load` controlling whether
+    /// the pass clears (P0's [`Renderer::render`], the only caller before WP2.3) or loads existing
+    /// pixels (the stage's sprite layer drawn on top of the mesh pass, WP2.3's `render_stage`).
+    /// Returns `(sprites_drawn, draw_calls)`.
+    fn draw_sprites(
+        &mut self,
+        view: &wgpu::TextureView,
+        frame: &RenderFrame,
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) -> Result<(u32, u32), GpuError> {
+        let aspect = self.width as f32 / self.height as f32;
+        let view_projection = frame.camera.view_projection(aspect);
+        // Clip space spans 2 units over the target height.
+        let pixels_per_unit = view_projection[1][1] * self.height as f32 * 0.5;
+
+        let context = &self.context;
+        let sprites = &mut self.sprites;
+        context
+            .capture_errors(|device| {
+                let count =
+                    sprites.prepare(context, &view_projection, pixels_per_unit, &frame.sprites)?;
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("grimoire frame encoder"),
+                });
+                let draw_calls = {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("grimoire sprite pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            // Linear values; the sRGB view encodes them like any shaded colour.
+                            ops: wgpu::Operations {
+                                load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    sprites.draw(&mut pass, count)
+                };
+                context.queue().submit([encoder.finish()]);
+                Ok::<_, GpuError>((count, draw_calls))
+            })
+            .and_then(|result| result)
+    }
 }
 
 impl Renderer for WgpuRenderer {
@@ -198,6 +304,8 @@ impl Renderer for WgpuRenderer {
             }
             Target::Offscreen(_) => Ok(()),
         };
+        // The mesh pass's depth buffer must track the colour target's size too (WP2.3).
+        let resized = resized.and_then(|()| self.mesh_pass.resize(&self.context, width, height));
         if let Err(error) = resized {
             log::error!("resize to {width}x{height} failed: {error}");
             self.width = 0;
@@ -221,67 +329,24 @@ impl Renderer for WgpuRenderer {
             return Ok(skipped_frame(start));
         }
 
-        let (surface_frame, view) = match &mut self.target {
-            Target::Window(surface) => match surface.acquire(&self.context) {
-                Ok(acquired) => {
-                    // Recovery from Outdated/Lost/Suboptimal may have changed the surface size.
-                    (self.width, self.height) = surface.size();
-                    let view = acquired.view().clone();
-                    (Some(acquired), view)
-                }
-                Err(GpuError::ZeroSize) => return Ok(skipped_frame(start)),
-                Err(error) => return Err(map_gpu_error(error)),
-            },
-            Target::Offscreen(target) => (None, target.view().clone()),
+        let (surface_frame, view) = match self.acquire_target() {
+            Ok(result) => result,
+            Err(GpuError::ZeroSize) => return Ok(skipped_frame(start)),
+            Err(error) => return Err(map_gpu_error(error)),
         };
 
-        let aspect = self.width as f32 / self.height as f32;
-        let view_projection = frame.camera.view_projection(aspect);
-        // Clip space spans 2 units over the target height.
-        let pixels_per_unit = view_projection[1][1] * self.height as f32 * 0.5;
         let [r, g, b, a] = frame.clear_color;
-
-        let context = &self.context;
-        let sprites = &mut self.sprites;
-        let (count, draw_calls) = context
-            .capture_errors(|device| {
-                let count =
-                    sprites.prepare(context, &view_projection, pixels_per_unit, &frame.sprites)?;
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("grimoire frame encoder"),
-                });
-                let draw_calls = {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("grimoire sprite pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                // Linear values; the sRGB view encodes them like any shaded colour.
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: f64::from(r),
-                                    g: f64::from(g),
-                                    b: f64::from(b),
-                                    a: f64::from(a),
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    sprites.draw(&mut pass, count)
-                };
-                context.queue().submit([encoder.finish()]);
-                Ok::<_, GpuError>((count, draw_calls))
-            })
-            .and_then(|result| result)
+        let clear_color = wgpu::Color {
+            r: f64::from(r),
+            g: f64::from(g),
+            b: f64::from(b),
+            a: f64::from(a),
+        };
+        let (count, draw_calls) = self
+            .draw_sprites(&view, frame, wgpu::LoadOp::Clear(clear_color))
             .map_err(map_gpu_error)?;
         if let Some(acquired) = surface_frame {
-            acquired.present(context.queue());
+            acquired.present(self.context.queue());
         }
 
         Ok(RenderStats {
@@ -299,25 +364,78 @@ impl Renderer for WgpuRenderer {
         true
     }
 
-    /// Applies the full stage semantics of contract §6 for extraction and counting, but — unlike
-    /// the name might suggest — does **not yet draw bullet, mesh, light, marker or debug pixels**:
-    /// it only forwards `frame.base` to the existing sprite pipeline via [`Renderer::render`],
-    /// exactly as [`crate::NullRenderer`]'s `render_stage` does. Bullets are validated (palette
-    /// space, finiteness, `radius > 0`) and counted into [`StageStats`] — including the debug-only
-    /// `debug_assert!` on a foreign palette space — but never rasterised: a real GPU bullet pass
-    /// is WP3.5's job, built on the OF-3.3 ADR. `marker_sprites` and `debug_sprites` are likewise
-    /// only counted into `base.sprites_drawn`, not drawn, because no pipeline for them exists yet.
-    /// The WP2.2 mesh, material and light channels (`meshes`, `materials`, `point_lights`,
-    /// `key_light`, `ambient`, `bullet_light_cap`) are accepted and validated the same way — this
-    /// renderer only needs to *accept* that frame data, per WP2.2's scope — but likewise not yet
-    /// rasterised: the mesh pass with a depth buffer is WP2.3's job, and the PBR shading that
-    /// actually consumes the lights is WP2.5/WP3.4's. This method therefore never touches the GPU
-    /// device beyond what `render` already does.
+    /// Applies the full stage semantics of contract §6 and, from WP2.3, actually draws pixels:
+    /// the mesh pass (this module's `mesh_pass::MeshPass`, depth-tested, provisional shading) runs
+    /// first, clearing colour and depth, then the unchanged sprite pass draws `frame.base.sprites`
+    /// on top with `LoadOp::Load` — both share [`crate::RenderLayer::World`] per contract §6, mesh
+    /// pass first. Bullets are validated (palette space, finiteness, `radius > 0`) and counted
+    /// into [`StageStats`] — including the debug-only `debug_assert!` on a foreign palette space —
+    /// but still never rasterised: the GPU bullet pass is WP3.5's job. `marker_sprites` and
+    /// `debug_sprites` are likewise only counted, not drawn (no pipeline for them yet). Point
+    /// lights, the key light and ambient are validated and counted (as before WP2.3) and now also
+    /// *consumed* by the mesh pass's provisional shading (key light + ambient only; point lights
+    /// stay WP3.4's clustered forward+ job). `StageStats::base.draw_calls` counts every pass
+    /// (contract §6: "draw_calls: alle Pässe") — the mesh pass's draw calls plus the sprite pass's.
     ///
     /// # Errors
-    /// Same as [`Renderer::render`], applied to `frame.base`.
+    /// Same as [`Renderer::render`], applied across both passes.
     fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
-        let base = self.render(&frame.base)?;
-        Ok(stage::stage_stats_from_base(base, frame))
+        let start = Instant::now();
+        if self.context.is_device_lost() {
+            return Err(RenderError::Backend(String::from("GPU device lost")));
+        }
+        if let Some(error) = &self.resize_error {
+            return Err(repeat_error(error));
+        }
+        if self.width == 0 || self.height == 0 {
+            return Ok(stage::stage_stats_from_base(skipped_frame(start), frame));
+        }
+
+        let (surface_frame, view) = match self.acquire_target() {
+            Ok(result) => result,
+            Err(GpuError::ZeroSize) => {
+                return Ok(stage::stage_stats_from_base(skipped_frame(start), frame));
+            }
+            Err(error) => return Err(map_gpu_error(error)),
+        };
+
+        let [r, g, b, a] = frame.base.clear_color;
+        let clear_color = wgpu::Color {
+            r: f64::from(r),
+            g: f64::from(g),
+            b: f64::from(b),
+            a: f64::from(a),
+        };
+        let aspect = self.width as f32 / self.height as f32;
+
+        let mesh_draw_calls = self
+            .mesh_pass
+            .render(
+                &self.context,
+                &view,
+                clear_color,
+                aspect,
+                frame.camera_25d.as_ref(),
+                frame.key_light.as_ref(),
+                &frame.ambient,
+                &frame.meshes,
+                &frame.materials,
+            )
+            .map_err(map_gpu_error)?;
+
+        let (sprite_count, sprite_draw_calls) = self
+            .draw_sprites(&view, &frame.base, wgpu::LoadOp::Load)
+            .map_err(map_gpu_error)?;
+
+        if let Some(acquired) = surface_frame {
+            acquired.present(self.context.queue());
+        }
+
+        let base_stats = RenderStats {
+            sprites_drawn: sprite_count,
+            draw_calls: sprite_draw_calls + mesh_draw_calls,
+            cpu_time: start.elapsed(),
+        };
+        Ok(stage::stage_stats_from_base(base_stats, frame))
     }
 }

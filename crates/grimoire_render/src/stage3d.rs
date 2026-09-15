@@ -14,11 +14,16 @@
 //! toon/cel-shading direction): materials follow glTF metallic-roughness, consistent with the
 //! game's PRD-0003.
 //!
-//! **Deferred to later work packages:** actual mesh geometry and its GPU upload (WP2.3), the
-//! tilted view-projection wired into a following camera system and its replay-hash gate (WP2.4),
-//! the PBR shading itself including shadows and specular anti-aliasing (WP2.5/WP2.6), and the
-//! point-light *count* budget (`Low 32` / `High 256`) together with clustered forward+ lighting
-//! (WP3.4, plan 0002). This module defines only the data contract those steps consume.
+//! **Deferred to later work packages:** the tilted view-projection wired into a following camera
+//! system (look-ahead, critically damped spring) and its replay-hash gate (WP2.4), the real PBR
+//! shading including shadows and specular anti-aliasing (WP2.5/WP2.6), and the point-light *count*
+//! budget (`Low 32` / `High 256`) together with clustered forward+ lighting (WP3.4, plan 0002).
+//! Mesh geometry, its GPU upload and a first (deliberately provisional) directional-light-plus-
+//! ambient shading are WP2.3's job (see [`crate::mesh`], [`crate::procedural`] and
+//! [`crate::WgpuRenderer::register_mesh`]); this module still owns only the data contract those
+//! steps consume, plus the `view_projection` helper WP2.3's mesh pass builds on
+//! ([`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`] stay ray-casts, not a matrix,
+//! so both keep working without a GPU).
 
 use grimoire_core::math::dmath;
 
@@ -157,6 +162,71 @@ const GROUND_PLANE_EPSILON: f32 = f32::EPSILON;
 /// both fail.
 fn is_positive_and_finite(value: f32) -> bool {
     value > 0.0 && value.is_finite()
+}
+
+/// Builds the column-major view-projection matrix for `camera` (plan 0002 WP2.3): a perspective
+/// projection from `camera`'s tilt/FOV/distance, using the same orthonormal basis as
+/// [`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`] so the mesh pass's depth-tested
+/// geometry lines up with the ground ray-cast used for mouse aiming. `near`/`far` are the mesh
+/// pass's own clip planes (not part of the [`Camera25D`] contract, which has no such fields); both
+/// must be finite and `0.0 < near < far`.
+///
+/// Not part of the crate's public API: `grimoire_render` keeps `wgpu` and its clip-space
+/// conventions (zero-to-one depth, right-handed) out of the [`Camera25D`] contract itself,
+/// matching engine ADR-0002. Callers that need the matrix outside this crate build their own from
+/// [`Camera25D`]'s public fields.
+///
+/// Returns a matrix with only finite entries if `camera`'s basis is well-formed (finite `target`,
+/// `tilt_degrees`, `fov_y_degrees`, `distance`) and `aspect`/`near`/`far` are finite and positive;
+/// the mesh pass treats a non-finite result the same as "no camera" (skip drawing, still clear).
+pub(crate) fn view_projection(
+    camera: &Camera25D,
+    aspect: f32,
+    near: f32,
+    far: f32,
+) -> [[f32; 4]; 4] {
+    let basis = camera_basis(camera);
+    let (ex, ey, ez) = (basis.eye[0], basis.eye[1], basis.eye[2]);
+    let (rx, ry, rz) = (basis.right[0], basis.right[1], basis.right[2]);
+    let (ux, uy, uz) = (basis.up[0], basis.up[1], basis.up[2]);
+    let (fx, fy, fz) = (basis.forward[0], basis.forward[1], basis.forward[2]);
+    // World-to-camera-space view matrix: camera space X/Y are `right`/`up`, camera space Z is
+    // `-forward` (so points in front of the camera have negative view-space Z, the right-handed
+    // "looking down -Z" convention the projection matrix below assumes).
+    let view: [[f32; 4]; 4] = [
+        [rx, ux, -fx, 0.0],
+        [ry, uy, -fy, 0.0],
+        [rz, uz, -fz, 0.0],
+        [
+            -(rx * ex + ry * ey + rz * ez),
+            -(ux * ex + uy * ey + uz * ez),
+            fx * ex + fy * ey + fz * ez,
+            1.0,
+        ],
+    ];
+    // Right-handed perspective projection with wgpu's zero-to-one clip-space depth (the standard
+    // `perspectiveRH_ZO` construction), reusing the same `tan_half_fov_y` as the ray casts above.
+    let f = 1.0 / basis.tan_half_fov_y;
+    let range = far - near;
+    let proj: [[f32; 4]; 4] = [
+        [f / aspect, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, -far / range, -1.0],
+        [0.0, 0.0, -far * near / range, 0.0],
+    ];
+    multiply(proj, view)
+}
+
+/// Column-major 4x4 matrix product `a * b` (`a` applied after `b`), matching the storage
+/// convention of [`crate::Camera2D::view_projection`] and [`MeshInstance::transform`].
+fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut result = [[0.0f32; 4]; 4];
+    for (col, row_out) in result.iter_mut().enumerate() {
+        for (row, value) in row_out.iter_mut().enumerate() {
+            *value = (0..4).map(|k| a[k][row] * b[col][k]).sum();
+        }
+    }
+    result
 }
 
 impl Camera25D {
@@ -724,6 +794,108 @@ mod tests {
             camera.target[1] - basis.forward[1] * 1000.0,
         ];
         assert_eq!(camera.ground_to_screen(behind, viewport), None);
+    }
+
+    #[test]
+    fn screen_to_ground_near_the_horizon_stays_finite_or_none_never_nan() {
+        // Review follow-up from WP2.2 (contract §6, "Offen: Test für Bodenpunkte nahe am
+        // Horizont"): approach the horizon row in shrinking steps from both sides. On the "above
+        // the horizon" side the ray never reaches the ground plane (`None`); on the "at or below"
+        // side the intersection distance grows without bound as the pixel row approaches the
+        // horizon, but must stay finite (or cleanly become `None`) rather than ever producing NaN
+        // or a silently wrapped/overflowed value.
+        let camera = Camera25D::default();
+        let viewport = [800.0, 600.0];
+        let basis = camera_basis(&camera);
+        // The horizon row is where the ray direction's Z component is exactly zero; solve for the
+        // pixel Y using the same construction as `screen_to_ground` (ndc_y before the tan/aspect
+        // scale), so the steps below are true "distance to the horizon" steps rather than a guess.
+        let horizon_ndc_y = -basis.forward[2] / basis.up[2];
+        let horizon_pixel_y = (1.0 - horizon_ndc_y) * 0.5 * viewport[1];
+
+        let mut last_finite_ground: Option<[f32; 2]> = None;
+        for step in [10.0_f32, 1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 0.0] {
+            for pixel_y in [horizon_pixel_y - step, horizon_pixel_y + step] {
+                let result = camera.screen_to_ground([400.0, pixel_y], viewport);
+                match result {
+                    None => {} // Above the horizon, or (at step 0.0) exactly on it: both valid.
+                    Some(ground) => {
+                        assert!(
+                            ground[0].is_finite() && ground[1].is_finite(),
+                            "step {step} at pixel_y {pixel_y} produced a non-finite ground point: {ground:?}"
+                        );
+                        last_finite_ground = Some(ground);
+                    }
+                }
+            }
+        }
+        assert!(
+            last_finite_ground.is_some(),
+            "expected at least one finite ground point on the below-horizon side"
+        );
+
+        // Document the large-distance behaviour explicitly: a camera looking almost exactly at
+        // the horizon (a tiny tilt) still returns `None` or a finite point for ordinary viewport
+        // pixels, never NaN or infinity, however large the resulting ground distance gets.
+        let grazing = Camera25D {
+            tilt_degrees: 0.05,
+            ..Camera25D::default()
+        };
+        for pixel_y in [0.0, 1.0, 100.0, 299.0, 300.0, 301.0, 500.0, 599.0] {
+            let result = grazing.screen_to_ground([400.0, pixel_y], viewport);
+            if let Some(ground) = result {
+                assert!(
+                    ground[0].is_finite() && ground[1].is_finite(),
+                    "grazing tilt at pixel_y {pixel_y} produced a non-finite ground point: {ground:?}"
+                );
+            }
+        }
+    }
+
+    // --- view_projection: consistency with the ray-cast basis --------------------------------
+
+    #[test]
+    fn view_projection_is_finite_for_a_well_formed_camera() {
+        let camera = Camera25D::default();
+        let matrix = view_projection(&camera, 800.0 / 600.0, 0.05, 2000.0);
+        for column in matrix {
+            assert!(column.iter().all(|c| c.is_finite()), "{matrix:?}");
+        }
+    }
+
+    #[test]
+    fn view_projection_maps_the_target_ground_point_near_the_viewport_centre() {
+        // The centre pixel always hits the ground at `target` (see
+        // `screen_to_ground_center_pixel_is_target`); clip-space should agree; after the
+        // perspective divide, that point's NDC x/y should be close to the viewport centre (0, 0).
+        let camera = Camera25D {
+            target: [5.0, 7.0],
+            ..Camera25D::default()
+        };
+        let aspect = 800.0 / 600.0;
+        let matrix = view_projection(&camera, aspect, 0.05, 2000.0);
+        let world = [camera.target[0], camera.target[1], 0.0, 1.0];
+        let clip: [f32; 4] =
+            std::array::from_fn(|row| (0..4).map(|col| matrix[col][row] * world[col]).sum());
+        assert!(
+            clip[3] > 0.0,
+            "target must be in front of the camera: {clip:?}"
+        );
+        let ndc_x = clip[0] / clip[3];
+        let ndc_y = clip[1] / clip[3];
+        assert!(ndc_x.abs() < 1e-4, "ndc_x {ndc_x}");
+        assert!(ndc_y.abs() < 1e-4, "ndc_y {ndc_y}");
+    }
+
+    #[test]
+    fn view_projection_never_panics_on_a_non_finite_camera() {
+        let camera = Camera25D {
+            tilt_degrees: f32::NAN,
+            ..Camera25D::default()
+        };
+        // Must not panic; the mesh pass treats a non-finite result like "no camera" (see
+        // `view_projection`'s doc comment).
+        let _ = view_projection(&camera, 800.0 / 600.0, 0.05, 2000.0);
     }
 
     // --- PbrMaterial validation boundaries ---------------------------------------------------

@@ -16,9 +16,11 @@ use std::sync::Once;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use grimoire_render::procedural::{altar_block, floor_tile_grid};
 use grimoire_render::{
-    Camera2D, RenderError, RenderFrame, Renderer, RendererConfig, SpriteInstance, WgpuRenderer,
-    shape,
+    AmbientLight, Camera2D, Camera25D, DirectionalLight, MaterialHandle, MeshHandle, MeshInstance,
+    PbrMaterial, RenderError, RenderFrame, Renderer, RendererConfig, SpriteInstance, StageFrame,
+    WgpuRenderer, shape,
 };
 
 const SIZE: u32 = 64;
@@ -422,6 +424,195 @@ fn zero_size_skips_rendering_until_resized() {
         [255, 0, 0, 255],
         3,
         "centre after resize",
+    );
+}
+
+// --- Mesh pass (WP2.3): depth ordering, and the sprite pass drawn on top of it --------------
+
+/// Column-major translation-only transform (no rotation or scale), same matrix convention as
+/// [`grimoire_render::Camera2D::view_projection`] and [`MeshInstance::transform`].
+fn translation(t: [f32; 3]) -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [t[0], t[1], t[2], 1.0],
+    ]
+}
+
+/// A camera looking straight down (`tilt_degrees: 90.0`) from `(0, 0, 10)`, so screen pixels map
+/// to world X/Y in a simple, symmetric way: the centre pixel always sees world `(0, 0, ..)`, and
+/// `ndc = world_xy / (depth * tan(fov_y / 2))` for any other point at world depth
+/// `depth = 10.0 - world_z` (derived from the same camera basis `stage3d::view_projection` uses).
+///
+/// Built by mutating [`Camera25D::default()`]'s fields rather than a struct literal: it is
+/// `#[non_exhaustive]`, so an external crate (like this integration test) cannot construct one
+/// with a literal at all, even with `..Default::default()` (contract §2 rule 13).
+fn top_down_camera() -> Camera25D {
+    let mut camera = Camera25D::default();
+    camera.target = [0.0, 0.0];
+    camera.tilt_degrees = 90.0;
+    camera.fov_y_degrees = 50.0;
+    camera.distance = 10.0;
+    camera
+}
+
+/// A material with only `base_color_factor` set; used with a bright key light plus ambient so the
+/// provisional shading saturates to (close to) the pure colour, keeping pixel assertions simple.
+fn flat_material(color: [f32; 4]) -> PbrMaterial {
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = color;
+    material
+}
+
+/// One [`MeshInstance`] on [`grimoire_render::RenderLayer::World`] (its `Default`) with the given
+/// mesh, material and transform.
+fn mesh_instance(
+    mesh: MeshHandle,
+    material: MaterialHandle,
+    transform: [[f32; 4]; 4],
+) -> MeshInstance {
+    let mut instance = MeshInstance::default();
+    instance.mesh = mesh;
+    instance.material = material;
+    instance.transform = transform;
+    instance
+}
+
+/// A bright, straight-down key light plus a flat white ambient term, chosen so every up-facing
+/// surface in the tests below is lit at (or above, before clamping) full brightness: pixel colours
+/// then read as the material's `base_color_factor`, independent of the provisional shading maths.
+fn full_bright_lighting(frame: &mut StageFrame) {
+    let mut key_light = DirectionalLight::default();
+    key_light.direction = [0.0, 0.0, -1.0];
+    key_light.color = [1.0, 1.0, 1.0];
+    key_light.intensity = 1.0;
+    frame.key_light = Some(key_light);
+    frame.ambient = AmbientLight::Flat {
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+    };
+}
+
+#[test]
+fn nearer_mesh_occludes_a_farther_one_through_the_depth_buffer() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    // A small box (near, top face at world Z = 3) and a huge floor underneath it (far, at world
+    // Z = -5); same XY region at the centre, so the centre pixel's ray hits both.
+    let near_mesh = renderer
+        .register_mesh(altar_block(2.0, 2.0, 2.0))
+        .expect("valid mesh");
+    let far_mesh = renderer
+        .register_mesh(floor_tile_grid(4, 20.0))
+        .expect("valid mesh");
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(top_down_camera());
+    full_bright_lighting(&mut frame);
+    frame.materials.push(flat_material([1.0, 0.0, 0.0, 1.0])); // index 0: red, the near box
+    frame.materials.push(flat_material([0.0, 1.0, 0.0, 1.0])); // index 1: green, the far floor
+    // Submission order deliberately puts the *nearer* mesh first and the *farther* one second: a
+    // painter's-algorithm bug (draw order deciding the pixel instead of the depth buffer) would
+    // show the farther, later-drawn floor on top at the centre; a correct depth test keeps the
+    // nearer box visible regardless of draw order.
+    frame.meshes.push(mesh_instance(
+        near_mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 2.0]),
+    ));
+    frame.meshes.push(mesh_instance(
+        far_mesh,
+        MaterialHandle(1),
+        translation([0.0, 0.0, -5.0]),
+    ));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.meshes_drawn, 2);
+    assert_eq!(stats.meshes_rejected_layer, 0);
+    assert_eq!(stats.meshes_rejected_invalid, 0);
+    assert_eq!(
+        stats.base.draw_calls, 2,
+        "one draw call per distinct mesh handle, no sprites this frame"
+    );
+
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let center = pixel(&image, SIZE, SIZE / 2, SIZE / 2);
+    assert_near(
+        center,
+        [255, 0, 0, 255],
+        20,
+        "centre pixel: the nearer box must occlude the farther floor",
+    );
+
+    // World (5, 0, -5) is outside the box's XY footprint ([-1, 1]^2 around the origin) but still
+    // on the floor; project it to a pixel with the same maths `top_down_camera`'s doc comment
+    // describes (depth = 10 - (-5) = 15).
+    let tan_half_fov: f32 = 25.0_f32.to_radians().tan();
+    let ndc_x = 5.0 / (15.0 * tan_half_fov);
+    let off_center_x = (((ndc_x + 1.0) * 0.5 * SIZE as f32) as u32).min(SIZE - 1);
+    let off_center = pixel(&image, SIZE, off_center_x, SIZE / 2);
+    assert_near(
+        off_center,
+        [0, 255, 0, 255],
+        20,
+        "outside the box's footprint: the floor must be visible, unoccluded",
+    );
+}
+
+#[test]
+fn render_stage_still_draws_sprites_on_top_of_the_mesh_pass() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mesh = renderer
+        .register_mesh(altar_block(2.0, 2.0, 2.0))
+        .expect("valid mesh");
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.base.camera = Camera2D {
+        center: [0.0, 0.0],
+        world_height: 100.0,
+    };
+    frame.camera_25d = Some(top_down_camera());
+    full_bright_lighting(&mut frame);
+    frame.materials.push(flat_material([1.0, 0.0, 0.0, 1.0]));
+    frame.meshes.push(mesh_instance(
+        mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 2.0]),
+    ));
+    // Far corner of the sprite camera's view, well outside the mesh's small screen footprint at
+    // the centre: proves the (otherwise unchanged) sprite pass still draws, on top, after the new
+    // mesh pass — not merely that `render_stage` no longer errors.
+    frame
+        .base
+        .sprites
+        .push(circle([-40.0, 40.0], 8.0, [0.0, 0.0, 1.0, 1.0]));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.base.sprites_drawn, 1);
+    assert_eq!(stats.meshes_drawn, 1);
+    assert_eq!(
+        stats.base.draw_calls, 2,
+        "one mesh draw call plus one sprite draw call"
+    );
+
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    assert_near(
+        pixel(&image, SIZE, 6, 6),
+        [0, 0, 255, 255],
+        40,
+        "sprite corner, drawn after (on top of) the mesh pass",
+    );
+    assert_near(
+        pixel(&image, SIZE, SIZE / 2, SIZE / 2),
+        [255, 0, 0, 255],
+        20,
+        "mesh centre, unaffected by the sprite pass drawn on top of it",
     );
 }
 
