@@ -10,6 +10,10 @@
 set -euo pipefail
 status=0
 lints=(crates/*/clippy.toml)
+if [ "${#lints[@]}" -ne 7 ]; then
+  echo "::error title=clippy.toml Anzahl falsch::Erwartet 7 identische clippy.toml (fünf Simulations-Crates, grimoire_sigilc und die Fassade grimoire, Vertrag §3), gefunden ${#lints[@]}."
+  status=1
+fi
 if [ "$(sha256sum "${lints[@]}" | awk '{print $1}' | sort -u | wc -l)" -ne 1 ]; then
   echo "::error title=clippy.toml abweichend::Die clippy.toml der Determinismus-Crates sind nicht identisch."
   status=1

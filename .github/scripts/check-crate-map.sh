@@ -16,9 +16,9 @@
 set -euo pipefail
 
 # --- Allowed engine edges (Crate-Verträge §1, "Erlaubte Engine-Kanten (normal, Build)" column).
-# Applied to normal, build AND dev edges alike: the contract gives no separate, wider dev-edge
-# list for these crates (unlike grimoire_exec below), so a dev edge from one of them is held to
-# the same list as its normal/build edges.
+# Applied as-is to normal and build edges. Dev edges differ for the determinism-set crates below
+# (see DETERMINISM_SET): the contract's last §1 bullet allows those to point at any engine crate
+# of the determinism set, not just their own narrower normal/build allowlist.
 declare -A FIXED_ALLOW=(
   [grimoire_core]=""
   [grimoire_platform]="grimoire_core"
@@ -35,6 +35,13 @@ declare -A FIXED_ALLOW=(
   [grimoire_audio]=""
   [grimoire_ui]=""
 )
+
+# The determinism set (Crate-Verträge §3 heading, seven identical clippy.toml): dev edges of these
+# crates may point at any engine crate in this same set, per Crate-Verträge §1's dev-edge bullet
+# ("Dev-Kanten von Crates der Determinismus-Menge zeigen nur auf Engine-Crates dieser Menge").
+# grimoire_exec is excluded on purpose (see EXEC_NORMAL/EXEC_DEV below): it keeps its own,
+# separate dev-edge list and is never itself a determinism-set crate.
+DETERMINISM_SET="grimoire_core grimoire_ecs grimoire_sim grimoire_collide grimoire_sigil grimoire_sigilc grimoire"
 
 # grimoire_exec (engine ADR-0006, PO decision V-1): normal edges and dev edges are different
 # lists, so it is not part of FIXED_ALLOW. Dev edges to grimoire_sigil/grimoire_collide exist so
@@ -76,7 +83,11 @@ check_edge() {
       ;;
     *)
       if [ "${FIXED_ALLOW[$crate]+set}" = "set" ]; then
-        contains_word "${FIXED_ALLOW[$crate]}" "$dep" && return 0
+        if [ "$kind" = "dev" ] && contains_word "$DETERMINISM_SET" "$crate"; then
+          contains_word "$DETERMINISM_SET" "$dep" && return 0
+        elif contains_word "${FIXED_ALLOW[$crate]}" "$dep"; then
+          return 0
+        fi
       else
         echo "::error title=Kanten-Check unvollständig::${crate} ist ein Workspace-Mitglied ohne Eintrag in der Positivliste von check-crate-map.sh (neues Crate? Skript und Crate-Verträge §1 nachziehen)"
         return 1
@@ -108,6 +119,20 @@ run_self_test() {
     "grimoire_audio|normal|grimoire_core|violation"
     "grimoire_sigilc|normal|grimoire_debug|violation"
     "grimoire_sigilc|normal|grimoire_sigil|ok"
+    # Determinism-set dev edges (Crate-Verträge §1 dev-edge bullet): allowed against any other
+    # determinism-set crate, wider than the same crate's own normal/build allowlist.
+    "grimoire_collide|dev|grimoire_sigil|ok"
+    "grimoire_core|dev|grimoire_sim|ok"
+    "grimoire_sigil|dev|grimoire_collide|ok"
+    # ... but normal/build edges still use the narrow, unbroadened allowlist.
+    "grimoire_collide|normal|grimoire_sigil|violation"
+    "grimoire_core|build|grimoire_sim|violation"
+    # ... and even a dev edge never reaches outside the determinism set: not a non-member engine
+    # crate, and not grimoire_exec, which is deliberately excluded from DETERMINISM_SET.
+    "grimoire_sigil|dev|grimoire_render|violation"
+    "grimoire_sigil|dev|grimoire_exec|violation"
+    # A crate outside the determinism set keeps its own (here: empty) allowlist for dev edges too.
+    "grimoire_audio|dev|grimoire_core|violation"
   )
   for case in "${cases[@]}"; do
     IFS='|' read -r crate kind dep expect <<<"$case"
