@@ -67,16 +67,62 @@ None of these trims touch the actual question: whether Callgrind's `Ir` is stabl
 (job-to-job and run-to-run) to gate a >10 % regression, with the wall-clock trend as the
 fallback/companion metric plan 0002 §4.4 already expects to keep.
 
+## Calibration (WP6.2 prerequisite 1)
+
+ADR-0010 records that this spike's nominal `+N` whole-round/tick injection under-delivers: a
+nominal `+12%` measured only `+8.2%` `Ir` on `sim_step_600`, because the fixed per-round/per-tick
+overhead (schedule cost, one-time world/process setup counted once per Callgrind run) dilutes the
+requested percentage, and cuts differently per bench. Before WP6.2 can build the production gate
+on top of these numbers, the injection has to be calibrated (plan §3.1: "der Anteil wird lokal so
+kalibriert, dass `Ir` um den Nennwert steigt").
+
+`bench_noise::run_calibration_units` (`src/lib.rs`) replaces "N more whole rounds of the real
+benchmark body" with a homogeneous, fine-grained unit that carries none of that fixed overhead.
+`scripts/calibrate_injection.sh` measures its marginal `Ir` cost on the runner in the same job as
+the target run (one baseline Callgrind run at `units=0`, one reference run at a large unit count),
+solves the unit count that should land within the target percentage of that same baseline, and
+verifies it with one more Callgrind run — all in exact 64-bit integer arithmetic, matching the
+gate's own exact-integer rule (plan §4.3). `src/bin/calibration_check.rs` then checks, for `+5%`,
+`+12%` and `+20%` on both benches, that the measured percentage is within ±1 percentage point of
+the target and that the exact-integer gate ([`bench_noise::gate_decision`]) verdicts `+5%` never
+red, `+12%`/`+20%` always red — and fails the CI job if not (`calibration` job in the workflow).
+
+## gungraun vs. raw Callgrind (WP6.2 prerequisite 2)
+
+ADR-0010's Folge-Entscheidung leaves open whether WP6.2's production `grimoire_bench` should use
+`gungraun` (this spike's own reasoning for staying with the raw summary-line read here: avoiding
+an unreviewed Rust API/JSON-schema dependency for a one-off throwaway number) or this spike's
+lean, dependency-free Callgrind invocation. `benches/gungraun_bench.rs` is a `gungraun`
+`#[library_benchmark]` harness over the same two benches (`baseline` and the nominal `+12%`
+variant), added only as a **dev-dependency of this throwaway spike crate** — never the engine
+workspace or `grimoire_bench` itself (`crate-vertraege.md` §2 Regel 4 governs that placement; this
+spike is explicitly outside it, same as the raw path above never touching production code). The
+`gungraun-vs-raw` CI job runs both paths for the same benches, twice each, on `ubuntu-latest` (the
+open compatibility question, versus the pinned `ubuntu-24.04` used everywhere else in this spike)
+with the pinned toolchain, and records wall-clock CI time and job-to-job stability for each; the
+ADR-0010 Nachtrag records the resulting recommendation with numbers.
+
+One nuance the comparison surfaces: `gungraun`'s `#[bench::id(expr)]` argument expressions run
+*before* Callgrind's default entry point (the annotated function itself), so — unlike `ir_probe`,
+which counts the whole process — world/sim construction passed as a bench argument is excluded
+from `gungraun`'s measured `Ir`. That does not replace the calibration work above (WP6.2 needs the
+injector to behave the same way regardless of which tool it ends up using), but it is a relevant
+data point for the tool decision and is called out with numbers in the ADR Nachtrag.
+
 ## Files
 
 - `src/lib.rs` — benchmark bodies and the exact-integer gate decision (plan §4.3), unit-tested
   (plan §5's comparator self-test table) — tests run only in CI, never on the development machine.
-- `src/bin/wallclock.rs`, `src/bin/ir_probe.rs` — the two measurement binaries.
+- `src/bin/wallclock.rs`, `src/bin/ir_probe.rs` — the two measurement binaries. `ir_probe` also
+  has a `calibrated <units>` mode for the calibration proof below.
 - `src/bin/analyze.rs` — the comparator: reads every measurement file under a directory, computes
   the CV table and the injected-regression detection counts, prints Markdown and (optionally)
   writes a JSON report.
+- `src/bin/calibration_check.rs` — verifies the calibration proof (accuracy + gate verdict) below.
 - `scripts/measure_ir.sh` — drives Valgrind/Callgrind over every (bench, variant) pair and emits
   one JSON line per run.
+- `scripts/calibrate_injection.sh` — drives the calibrated-injection measurement below.
+- `benches/gungraun_bench.rs` — the `gungraun` harness for the gungraun-vs-raw comparison below.
 
 ## Running
 

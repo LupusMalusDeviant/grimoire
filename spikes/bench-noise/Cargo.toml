@@ -17,6 +17,14 @@ grimoire_sim = { path = "../../crates/grimoire_sim" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Dev-only: the gungraun-vs-raw-Callgrind comparison (ADR-0010 "Vor der Umsetzung in WP6.2",
+# benches/gungraun_bench.rs). Never a dependency of the raw ir_probe/wallclock/analyze path above,
+# and never added to the engine workspace or grimoire_bench (crate-vertraege.md §2 Regel 4 governs
+# that; this spike is explicitly outside it) — this is the throwaway evaluation the ADR's
+# Folge-Entscheidung asks for, not the WP6.2 adoption itself.
+[dev-dependencies]
+gungraun = "0.19.4"
+
 [[bin]]
 name = "wallclock"
 path = "src/bin/wallclock.rs"
@@ -29,9 +37,22 @@ path = "src/bin/ir_probe.rs"
 name = "analyze"
 path = "src/bin/analyze.rs"
 
+[[bin]]
+name = "calibration_check"
+path = "src/bin/calibration_check.rs"
+
+[[bench]]
+name = "gungraun_bench"
+harness = false
+
 # Callgrind needs debug symbols even in a release build (gungraun/iai-callgrind prerequisite:
-# `[profile.bench] debug = true`; this crate has no [[bench]] targets, so it is set on release).
+# `[profile.bench] debug = true`). This crate builds `ir_probe` et al. in `--release` for the raw
+# path (hence it here too), and separately needs it on the actual `bench` profile `cargo bench`
+# uses for `benches/gungraun_bench.rs`.
 [profile.release]
+debug = true
+
+[profile.bench]
 debug = true
 
 [lints.rust]

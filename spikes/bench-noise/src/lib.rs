@@ -186,6 +186,40 @@ pub fn extra_units(base: u32, percent: u32) -> u32 {
     ((u64::from(base) * u64::from(percent)).div_ceil(100)) as u32
 }
 
+/// One iteration of the calibrated regression injector (ADR-0010 "Vor der Umsetzung in WP6.2" /
+/// plan 0002 WP6.1 §3.1: "der Anteil wird lokal so kalibriert, dass `Ir` um den Nennwert steigt").
+///
+/// The nominal "+N whole rounds/ticks" injection above mixes in whatever fixed per-round or
+/// per-tick overhead the real benchmark body carries (schedule cost, one-time world/process
+/// setup counted once per Callgrind run) — which is exactly why a nominal `+12%` on
+/// `sim_step_600` measured only `+8.2%` `Ir` in the WP6.1 spike run (ADR-0010 option 2,
+/// "Negativ"): a *read-only* extra tick costs less than a *regular* tick with schedule overhead,
+/// so the nominal round count under-delivers. This unit carries none of that: it is homogeneous,
+/// arbitrarily fine-grained (its Ir cost per call is tiny relative to 1% of either bench's
+/// baseline), and its own per-unit Ir cost is measured on the runner in the same job as the
+/// target run (`scripts/calibrate_injection.sh`), so the number of units needed for a target
+/// percentage is solved from a real measurement, not assumed.
+///
+/// `black_box` on both the input and the output prevents the compiler from folding repeated
+/// calls into a closed form (or removing the loop outright), which would make the per-unit cost
+/// depend on the unit count instead of being constant.
+#[inline(never)]
+fn calibration_unit(acc: f32) -> f32 {
+    black_box(acc) * black_box(1.000_000_1) + black_box(0.000_000_1)
+}
+
+/// Runs `units` [`calibration_unit`] iterations and returns the (otherwise unused) accumulator,
+/// so the loop cannot be optimized away. Called from `ir_probe`'s `calibrated` mode; see
+/// `scripts/calibrate_injection.sh` for how the unit count is solved for a target percentage of
+/// the baseline `Ir` measured in the same run.
+pub fn run_calibration_units(units: u64) -> f32 {
+    let mut acc = 1.0f32;
+    for _ in 0..units {
+        acc = calibration_unit(acc);
+    }
+    acc
+}
+
 /// Outcome of comparing one candidate measurement against an accepted basis (plan 0002 WP6.1
 /// §4.3): the exitcode a real gate would use, plus whether it is a warning-only crossing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,6 +316,18 @@ mod tests {
         assert_eq!(extra_units(2_000, 5), 100);
         assert_eq!(extra_units(2_000, 12), 240);
         assert_eq!(extra_units(100, 12), 12);
+    }
+
+    #[test]
+    fn run_calibration_units_is_deterministic_for_a_given_count() {
+        // Not a claim about Ir (only Callgrind on the CI runner measures that, per the hard
+        // rule); just a sanity check that the same unit count always does the same arithmetic.
+        assert_eq!(run_calibration_units(1_000), run_calibration_units(1_000));
+    }
+
+    #[test]
+    fn run_calibration_units_zero_is_a_no_op_accumulator() {
+        assert_eq!(run_calibration_units(0), 1.0f32);
     }
 
     #[test]

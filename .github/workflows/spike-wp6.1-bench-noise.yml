@@ -157,6 +157,150 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # WP6.2 prerequisite 1 (ADR-0010 "Vor der Umsetzung in WP6.2" / calibration Nachtrag): proves
+  # the calibrated injector (bench_noise::run_calibration_units, scripts/calibrate_injection.sh)
+  # lands within +/-1 percentage point of +5/+12/+20% Ir, and that the exact-integer gate (plan
+  # §4.3) then verdicts +5% never red and +12%/+20% always red, on both spike benches on this
+  # runner. One job, not part of the 10-rep noise matrix above: this measures whether the
+  # calibration *method* works, not job-to-job noise (already covered by linux-measure).
+  calibration:
+    name: calibration proof (ecs, sim)
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/bench-noise
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Calibrate ecs_query_10k
+        run: |
+          mkdir -p results
+          bash scripts/calibrate_injection.sh ./target/release/ir_probe ecs \
+            results/calibration-ecs.jsonl cg-out-calibration
+      - name: Calibrate sim_step_600
+        run: |
+          bash scripts/calibrate_injection.sh ./target/release/ir_probe sim \
+            results/calibration-sim.jsonl cg-out-calibration
+      - name: Calibration check (accuracy within +/-1pp, gate verdicts as expected)
+        run: ./target/release/calibration_check results | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload calibration results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wp62-calibration
+          path: spikes/bench-noise/results/
+          if-no-files-found: error
+          retention-days: 30
+
+  # WP6.2 prerequisite 2 (ADR-0010 "Vor der Umsetzung in WP6.2" Folge-Entscheidung): gungraun vs.
+  # this spike's raw Callgrind-summary-line approach for the production grimoire_bench. Runs on
+  # ubuntu-latest (not the pinned ubuntu-24.04 used above) because ubuntu-latest compatibility is
+  # itself one of the open questions; both paths run in the same job on the same image so the
+  # comparison (setup complexity, CI time, stability) isn't confounded by environment drift.
+  gungraun-vs-raw:
+    name: gungraun vs. raw Callgrind (ubuntu-latest)
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind (apt; both paths below use this same package)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/bench-noise
+      - name: Fingerprint (ubuntu-latest)
+        run: |
+          echo "rustc: $(rustc -Vv | tr '\n' ' ')"
+          echo "valgrind: $(valgrind --version)"
+          echo "glibc: $(ldd --version | head -1)"
+          lscpu | grep 'Model name' || true
+      - name: Build release (raw path)
+        run: cargo build --release --locked
+      - name: Raw Callgrind path, run 1 (timed, all 4 variants both benches)
+        run: |
+          mkdir -p results
+          START=$(date +%s)
+          bash scripts/measure_ir.sh ./target/release/ir_probe \
+            results/ir-raw-ubuntu-latest-run1.jsonl cg-out-raw-run1
+          END=$(date +%s)
+          echo "raw_run1_seconds=$((END - START))" >> "$GITHUB_ENV"
+      - name: Raw Callgrind path, run 2 (timed, stability check)
+        run: |
+          START=$(date +%s)
+          bash scripts/measure_ir.sh ./target/release/ir_probe \
+            results/ir-raw-ubuntu-latest-run2.jsonl cg-out-raw-run2
+          END=$(date +%s)
+          echo "raw_run2_seconds=$((END - START))" >> "$GITHUB_ENV"
+      - name: Setup gungraun (installs gungraun-runner + Valgrind per its own strategy)
+        uses: gungraun/setup-gungraun@62591572561bb2f4ed2ae300b8a8bea99ea8ddaf # v1.1.3
+        with:
+          runner-version: auto
+          valgrind-strategy: system
+      - name: gungraun path, run 1 (timed)
+        run: |
+          START=$(date +%s)
+          cargo bench --locked --bench gungraun_bench | tee results/gungraun-run1.txt
+          END=$(date +%s)
+          echo "gungraun_run1_seconds=$((END - START))" >> "$GITHUB_ENV"
+      - name: gungraun path, run 2 (timed, stability check)
+        run: |
+          START=$(date +%s)
+          cargo bench --locked --bench gungraun_bench | tee results/gungraun-run2.txt
+          END=$(date +%s)
+          echo "gungraun_run2_seconds=$((END - START))" >> "$GITHUB_ENV"
+      - name: Extract gungraun's own Callgrind Ir (same summary-line format as the raw path)
+        run: |
+          echo "== gungraun callgrind .out files, run 2's on-disk state =="
+          if [ -d target/gungraun ]; then
+            find target/gungraun -name 'callgrind.*.out' -print0 \
+              | while IFS= read -r -d '' f; do
+                  echo "$f:"
+                  grep '^summary:' "$f" | tail -n1
+                done
+          else
+            echo "target/gungraun not found (unexpected gungraun output layout)"
+          fi | tee results/gungraun-ir-summary.txt
+      - name: Timing and setup-complexity summary
+        run: |
+          {
+            echo "## gungraun vs. raw Callgrind (ubuntu-latest)"
+            echo ""
+            echo "| Path | Run 1 (s) | Run 2 (s) |"
+            echo "|---|---|---|"
+            echo "| raw (scripts/measure_ir.sh, 2 benches x 4 variants = 8 Callgrind runs) | ${raw_run1_seconds} | ${raw_run2_seconds} |"
+            echo "| gungraun (benches/gungraun_bench.rs, 2 benches x 2 variants = 4 Callgrind runs) | ${gungraun_run1_seconds} | ${gungraun_run2_seconds} |"
+            echo ""
+            echo "Setup: raw path needs \`scripts/measure_ir.sh\` (~45 lines bash) plus"
+            echo "\`src/bin/ir_probe.rs\`, no extra Cargo dependency. gungraun needs the"
+            echo "\`gungraun\` dev-dependency, \`benches/gungraun_bench.rs\`"
+            echo "(\`#[library_benchmark]\`/\`library_benchmark_group!\`/\`main!\`), and the"
+            echo "\`gungraun/setup-gungraun\` action in CI."
+          } | tee -a "$GITHUB_STEP_SUMMARY" results/gungraun-vs-raw-summary.md
+      - name: Upload comparison results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wp62-gungraun-vs-raw
+          path: |
+            spikes/bench-noise/results/
+            spikes/bench-noise/target/gungraun/
+          if-no-files-found: error
+          retention-days: 30
+
   aggregate:
     name: aggregate + comparator self-test
     needs: [linux-measure, crossos-wallclock]
