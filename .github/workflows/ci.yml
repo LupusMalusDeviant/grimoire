@@ -3,16 +3,27 @@
 #   gh run watch --exit-status        (red run: gh run view --log-failed)
 name: CI
 
+# `docs/formats/*.md` is generated output (project ADR-0011, WP8.1), not prose documentation: a
+# commit that touches only those pages (or the `schema/*.gschema` sources they are generated
+# from) must still run the "generated schema code is current" drift check (job `docs`, step
+# "Generated schema code is current"), or a schema/docs edit that forgets to regenerate goes
+# unchecked. `paths-ignore` patterns are evaluated in order with later patterns overriding earlier
+# ones and a `!`-prefixed pattern negating a match (GitHub Actions path-filter semantics); putting
+# `!docs/formats/**` after the broad doc excludes re-includes that one subtree while every other
+# `**/*.md`/`docs/**` change stays excluded. `schema/**` itself is not `**/*.md` or under `docs/`,
+# so it already triggers the workflow without a filter change.
 on:
   push:
     branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+      - "!docs/formats/**"
   pull_request:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+      - "!docs/formats/**"
   workflow_dispatch:
 
 # Superseded pull request runs are cancelled. Runs on main are never cancelled: every main commit
@@ -95,6 +106,12 @@ jobs:
         run: bash .github/scripts/check-crate-map.sh --self-test
       - name: Crate dependencies follow the crate map (contract §1, engine ADR-0008)
         run: bash .github/scripts/check-crate-map.sh
+      # Project ADR-0011 (schema codegen), Plan-0002 WP8.1: regenerates the debug-protocol and
+      # pack-manifest Rust types/codecs and their docs/formats/*.md pages from schema/*.gschema
+      # and fails if that changes anything the previous step didn't already catch as a checked-in
+      # file (contract §12/§13).
+      - name: Generated schema code is current (project ADR-0011, WP8.1)
+        run: bash .github/scripts/check-schemagen-drift.sh
       - name: cargo doc
         run: cargo doc --workspace --no-deps --locked
 

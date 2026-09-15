@@ -1,0 +1,141 @@
+# Debug protocol v1 payload types (engine contract §13 "Kodierung der Nutzlast" and
+# "Nachrichtenkatalog"). Project ADR-0011 (accepted, option 2e), Plan-0002 WP8.1.
+#
+# This schema covers only the payload types and the message catalogue's metadata (id, direction,
+# payload struct). The frame envelope (`len`/`id`/`flags`/`seq`), the handshake state machine and
+# the `Message` enum's `to_frame`/`from_frame` dispatch stay hand-written in
+# crates/grimoire_debug/src/frame.rs (Plan-0002 WP1.3 and WP8.2): they are control flow with only
+# a handful of fields, not the wire-format vocabulary this schema language exists to describe.
+#
+# `error_type` names the crate's own error type: crates/grimoire_debug/src/frame.rs's
+# `ProtocolError` already carries `UnexpectedEnd`/`TrailingBytes`/`InvalidUtf8`/`FieldTooLong`/
+# `InvalidEnum` (added by hand alongside this schema in the same PR, since a codec needs them
+# before it has anything to generate against) so this schema's generated `encode`/`decode`
+# functions return that same type rather than a second, parallel error enum.
+
+schema "debug_protocol_v1"
+version 1
+error_type "crate::frame::ProtocolError"
+"Payload types of the Grimoire debug protocol v1 (engine contract §13)."
+
+doc "Which side of a debug-link connection a peer is (contract §13 `Hello.role`)."
+enum PeerRole : u8 {
+    Tool = 0 "Tool-side peer: editor, CLI (`grimoire-link`), or a future C# client."
+    Engine = 1 "Engine-side peer: the running Grimoire engine."
+}
+
+doc "Machine-readable reason attached to an `Error` message (contract §13)."
+doc "`#[non_exhaustive]`: new codes are additive (contract §2 rule 13). A code this build does not"
+doc "recognise (e.g. sent by a newer protocol version) decodes as `Malformed` rather than failing"
+doc "outright, because `Error`'s id and layout are frozen across every protocol version."
+enum ErrorCode : u16 non_exhaustive fallback Malformed {
+    HandshakeRequired = 1 "The first frame of a connection was not a valid `Hello`."
+    VersionMismatch = 2 "`protocol_version`, `engine_version` or `build_hash` did not match."
+    Unauthorized = 3 "The `Hello` token did not match."
+    Malformed = 4 "A frame's payload failed to decode even though its length was valid."
+    UnknownMessage = 5 "The message id is not in the v1 catalogue and not reserved."
+    TooLarge = 6 "A frame (or the pre-handshake first frame) exceeded its length limit."
+    NotSupported = 7 "The message id is reserved, or its direction does not match the sender."
+    Busy = 8 "A second client tried to connect while one was already connected."
+    Internal = 9 "An internal error on the responding side prevented handling the message."
+}
+
+doc "Handshake request/response (contract §13, message id `0x0001`, `T↔E`)."
+doc "Frozen across all protocol versions: this id, and `protocol_version` as its first field."
+struct Hello {
+    protocol_version: u16 "Protocol version the sender speaks; always this struct's first field."
+    role: PeerRole "Tool or Engine."
+    engine_version: str(64) "The sender's `ENGINE_VERSION` (contract §8.1)."
+    build_hash: str(64) "The sender's `BuildHash::to_hex()`, or the literal `unknown`."
+    token: [u8; 32] "Debug-link token; all zero when sent by the engine."
+    stats_interval_frames: u16 "`Stats` cadence in frames the tool requests; `0` = no `Stats`."
+}
+
+doc "Reports a protocol- or application-level error (contract §13, message id `0x0002`, `T↔E`)."
+doc "Frozen across all protocol versions: this id, and this struct's layout."
+struct ErrorMsg {
+    code: ErrorCode "Machine-readable reason."
+    in_reply_to: u32 "`seq` of the frame this responds to, or `0` if unsolicited."
+    message: str(1024) "Human-readable detail, not meant to be matched on."
+}
+
+doc "One engine log line, forwarded over the debug link (contract §13, message id `0x0003`, `E→T`)."
+struct LogMsg {
+    level: u8 "Log level: `1` error, `2` warn, `3` info, `4` debug, `5` trace."
+    tick: u64 "Simulation tick the log line was emitted on."
+    target: str(128) "Log target (module path or subsystem name)."
+    text: str(4096) "The log message."
+}
+
+doc "One profiler scope's totals for one frame (row type of `Stats.scopes`)."
+doc "`#[non_exhaustive]` with `Default`: the facade builds it outside `grimoire_debug`"
+doc "(contract §2 rule 13)."
+struct StatsScope growable {
+    scope: u16 "`ScopeId` the totals belong to."
+    name: str(64) "Scope name, as first recorded this frame; may be truncated at a char boundary."
+    total_ns: u64 "Accumulated duration in nanoseconds; `u64::MAX` on overflow, never a panic."
+    calls: u32 "Number of times this scope was recorded this frame."
+    budget_ns: u64 "Budget in nanoseconds, or `0` for none."
+    estimate: bool "`true` marks a fallback value taken without a real measurement."
+}
+
+doc "One named counter's value for one frame (row type of `Stats.counters`)."
+struct StatsCounter {
+    name: str(64) "Counter name."
+    value: u64 "Counter value."
+}
+
+doc "Per-frame profiler snapshot (contract §13, message id `0x0010`, `E→T`)."
+doc "`#[non_exhaustive]` with `Default`: the facade builds it outside `grimoire_debug`, and it"
+doc "grows fields with Plan-0002 WP6.3 (contract §2 rule 13)."
+struct Stats growable {
+    frame: u64 "Frame counter."
+    sim_tick: u64 "Simulation tick counter."
+    ticks_this_frame: u32 "Number of simulation ticks run this frame."
+    alpha: f32 "Interpolation factor between the last two ticks."
+    frame_time_ns: u64 "Frame duration in nanoseconds; `u64::MAX` on overflow."
+    fps: f32 "Frames per second, as `f32` (contract §13; the facade's own value is `f64`)."
+    dropped_time_ns: u64 "Time dropped by the fixed-timestep clamp, in nanoseconds."
+    content_swaps: u32 "Number of Sigil unit swaps applied so far."
+    content_manifest: u64 "Content epoch (contract §11.8), i.e. the current content-manifest hash."
+    scopes: vec(64) StatsScope "Profiler scopes, in first-recorded order; at most 64, truncated deterministically."
+    counters: vec(64) StatsCounter "Named counters, in first-recorded order; at most 64, truncated deterministically."
+}
+
+doc "Requests a hot-swap of one Sigil unit (contract §13, message id `0x0020`, `T→E`)."
+struct SwapSigilUnit {
+    unit_path: str(255) "`AssetPath` of the unit to swap in."
+    unit_bytes: bytes(8_388_608) "Binary `SigilUnit` bytes (contract §11.1); at most `MAX_UNIT_BYTES`."
+}
+
+doc "Acknowledges a `SwapSigilUnit` request (contract §13, message id `0x0021`, `E→T`)."
+doc "`#[non_exhaustive]` with `Default`: the facade builds it outside `grimoire_debug`"
+doc "(contract §2 rule 13)."
+struct SwapAck growable {
+    in_reply_to: u32 "`seq` of the triggering `SwapSigilUnit` frame."
+    status: u8 "`0` applied, `1` rejected, `2` superseded by a later swap of the same unit."
+    applied_tick: u64 "First tick that ran with the new unit; `0` if not applied."
+    content_swaps: u32 "Number of Sigil unit swaps applied so far (after this one, if applied)."
+    content_manifest: u64 "Content epoch after this swap (contract §11.8)."
+    unit_hash: u64 "The swapped unit's `SigilUnit::content_hash`."
+    reason: str(1024) "Human-readable detail when `status != 0`."
+}
+
+doc "Requests an offline preview run of a Sigil unit (contract §13, message id `0x0022`, `T→E`)."
+doc "In protocol v1 the engine always answers `Error(NotSupported)` (the editor preview uses"
+doc "`sigilc simulate` instead, project ADR-0010); the payload is still defined so the codec and"
+doc "its fixtures are complete for when a later version implements it."
+struct SigilPreview {
+    unit_path: str(255) "`AssetPath` of the unit to preview."
+    unit_bytes: bytes(8_388_608) "Binary `SigilUnit` bytes; at most `MAX_UNIT_BYTES`."
+    ticks: u32 "Number of ticks to simulate."
+    target: option([f32; 2]) "Optional aim-target position sampled during the preview."
+}
+
+message Hello = 0x0001 dir both payload Hello "Handshake request/response."
+message Error = 0x0002 dir both payload ErrorMsg "Protocol- or application-level error."
+message Log = 0x0003 dir engine_to_tool payload LogMsg "One forwarded engine log line."
+message Stats = 0x0010 dir engine_to_tool payload Stats "Per-frame profiler snapshot."
+message SwapSigilUnit = 0x0020 dir tool_to_engine payload SwapSigilUnit "Hot-swap request."
+message SwapAck = 0x0021 dir engine_to_tool payload SwapAck "Hot-swap acknowledgement."
+message SigilPreview = 0x0022 dir tool_to_engine payload SigilPreview "Offline preview request (`NotSupported` in v1)."

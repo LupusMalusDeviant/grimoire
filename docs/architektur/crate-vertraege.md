@@ -44,7 +44,13 @@ graph TD
     SIGC[grimoire_sigilc<br/>Compiler + CLI sigilc] --> SIG & SIM & ECS & CORE
     LINK[grimoire_link<br/>CLI grimoire-link] --> DBG & SIGC
     BENCH[grimoire_bench] --> FAC & EXE
+    SCHEMAGEN[grimoire_schemagen<br/>Build-Zeit-Compiler, CLI grimoire-schemagen]
 ```
+
+`grimoire_schemagen` steht ohne Pfeil im Diagramm: Es hat keine `grimoire_*`-Kante (nicht einmal
+eine Dev-Kante), sondern liest nur `schema/*.gschema` und schreibt in die besitzenden Crates
+`grimoire_debug` und `grimoire_assets` (als eingecheckten, generierten Quelltext, keine
+Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nachtrag).
 
 | Crate | Art | Determinismus-Menge (`clippy.toml`) | Erlaubte Engine-Kanten (normal, Build) | Ausdrücklich verboten (jede Kantenart) |
 |-------|-----|-------------------------------------|----------------------------------------|----------------------------------------|
@@ -64,6 +70,7 @@ graph TD
 | `grimoire_sigilc` | Werkzeug: Bibliothek + CLI `sigilc` | ja | `sigil`, `sim`, `ecs`, `core` (`sim`/`ecs` für `sigilc simulate`, Plan 0002 WP5.6) | `platform`, `render`, `assets`, `debug`, `exec`, `rayon`, andere Werkzeug-Crates |
 | `grimoire_link` | Werkzeug: CLI `grimoire-link` | nein | `debug` (Feature `tcp`), `sigilc`; weitere Laufzeit-Crates erlaubt | `bench` |
 | `grimoire_bench` | Werkzeug: Benchmarks, JSON-Schemata (§15) | nein | jede Laufzeit-Crate, `exec` | `sigilc`, `link` |
+| `grimoire_schemagen` | Werkzeug: Build-Zeit-Schema-Compiler, CLI `grimoire-schemagen` (Projekt-ADR-0011) | nein, keine `clippy.toml` | keine (dependency-frei, auch keine Dev-Kante) | jede Engine-Crate (Laufzeit- wie Werkzeug-Crates) |
 
 - Normale und Build-Kanten zeigen nur nach unten. Kein Crate kennt ein Spiel; das Standalone-Gate prüft
   `Cargo.toml`, `crates/**` und — sobald die C#-Suite dort liegt (P-1) — `tools/**`.
@@ -106,6 +113,12 @@ graph TD
   Subsystem-Hashes. Ihre Bibliothek enthält die JSON-Schema-Typen für Bench-Ergebnisse und Golden Master (§15).
 - **`grimoire_link`** aktiviert das Feature `tcp` von `grimoire_debug` fest und nutzt `sigilc` als Bibliothek.
   In P1 ist es kein Release-Artefakt (P-14); gebaut wird aus dem Tag.
+- **`grimoire_schemagen`** (additiv, *Nachtrag WP8.1 zu Engine-ADR-0008 — vom PO freigegeben am 2026-09-16, V-20*):
+  Build-Zeit-Schema-Compiler (Projekt-ADR-0011, Option 2e), der `schema/*.gschema` liest und Rust-Codec
+  sowie `docs/formats/*.md`-Feldtabellen für `grimoire_debug` und `grimoire_assets` erzeugt. Er ist
+  bewusst dependency-frei (keine `grimoire_*`-Kante, auch keine Dev-Kante) und trägt keine `clippy.toml`,
+  weil nichts, was er erzeugt, zur Laufzeit läuft. Sein Ausgang landet als eingecheckter, generierter
+  Quelltext in den besitzenden Crates, nicht über eine Cargo-Kante.
 - **`tools/`** (C#-Suite, P-1): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
   Formatdokumente (`docs/formats/`), Golden-Fixtures und die JSON-Ausgaben von `sigilc` an der Engine.
 - Abbildungen zwischen `grimoire_sigil`, `grimoire_collide`, `grimoire_render`, `grimoire_assets` und
@@ -2361,9 +2374,13 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
 
 *Freigegeben (WP1.2).*
 
-Format-Dokumentation: `docs/formats/pack.md` (WP8.3). Dieser Abschnitt ist die verbindliche Kurzfassung. Der
-Manifest-Code wird nach Projekt-ADR-0011 (Vorschlag) aus einer Schema-Quelle erzeugt und muss das hier festgelegte
-Byte-Layout exakt reproduzieren.
+Format-Dokumentation: `docs/formats/pack.md` (Manifest-Feldtabelle generiert, WP8.1; Header/TOC/Ausrichtung bleiben
+Ablauflogik und stehen nur hier). Dieser Abschnitt ist die verbindliche Kurzfassung. Nach Projekt-ADR-0011
+(angenommen, Option 2e) erzeugt `grimoire_schemagen` aus `schema/pack_manifest_v1.gschema` einen Manifest-Codec
+(`crates/grimoire_assets/src/generated/pack_manifest.rs`, Typ `PackManifestBody`) und die Feldtabelle oben; er muss
+das hier festgelegte Byte-Layout exakt reproduzieren. WP8.1 lässt `PackManifestBody` bewusst noch unverdrahtet
+neben dem handgeschriebenen `PackReader`/`PackWriter`-Code (Begründung im Schema-Kommentar); die Verdrahtung ist
+WP8.3.
 
 **Trait-Entscheid (PRD-0002 FR-02, §2a):**
 
@@ -2535,10 +2552,14 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
 
 *Freigegeben (WP1.2).*
 
-Format-Dokumentation: `docs/formats/debug-protocol.md` (WP8.2). Transportdetails (TCP gegen Named Pipe/UDS,
-Token-Ausgabe, Thread-Modell) legt das Engine-ADR „Debug-Link v1“ (WP8.2) fest. Es darf diesen Abschnitt nur per
-Vertrags-PR ändern (§2b). Nachrichtentypen werden nach Projekt-ADR-0011 (Vorschlag) generiert und müssen das Layout
-exakt treffen.
+Format-Dokumentation: `docs/formats/debug-protocol.md` (Nutzlast-Feldtabellen und Nachrichtenkatalog generiert,
+WP8.1; Framing/Handshake bleiben Ablauflogik und stehen nur hier, WP8.2). Transportdetails (TCP gegen Named
+Pipe/UDS, Token-Ausgabe, Thread-Modell) legt das Engine-ADR „Debug-Link v1“ (WP8.2) fest. Es darf diesen Abschnitt
+nur per Vertrags-PR ändern (§2b). Nach Projekt-ADR-0011 (angenommen, Option 2e) erzeugt `grimoire_schemagen` aus
+`schema/debug_protocol_v1.gschema` die Nutzlasttypen (`crates/grimoire_debug/src/generated/debug_protocol.rs`),
+`PeerRole`, `ErrorCode` und die Katalog-IDs unten (`catalogue`-Modul); sie müssen das Layout exakt treffen. Der
+`Message`-Enum, dessen `to_frame`/`from_frame`-Dispatch und der Handshake bleiben handgeschrieben (WP8.2) und
+nutzen die generierten Typen nur als Bausteine.
 
 **Trait-Entscheid (§2a):** `DebugTransport` ist ein Trait mit den Implementierungen `InProcessTransport` (Paar),
 `TcpServerTransport` (Feature `tcp`) und `NullTransport`. Protokoll-Codec und Profiler-Datenmodell sind konkrete

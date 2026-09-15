@@ -9,30 +9,50 @@
 //! feature) plus their conformance suite (`conformance`, behind the `conformance` feature; not
 //! an intra-doc link, since that module does not exist for a `cargo doc` run without it).
 //!
-//! ## Scope (WP1.3 vs. WP8.2)
+//! ## Scope (WP1.3 vs. WP8.1 vs. WP8.2)
 //!
-//! The full engine contract for `grimoire_debug` (contract §13) also specifies an entire
-//! versioned wire *protocol* on top of this transport: a message catalog (`Hello`, `Error`,
-//! `Log`, `Stats`, `SwapSigilUnit`, `SwapAck`, `SigilPreview`), the handshake state machine that
+//! The full engine contract for `grimoire_debug` (contract §13) specifies an entire versioned
+//! wire *protocol* on top of the transport above: a message catalog (`Hello`, `Error`, `Log`,
+//! `Stats`, `SwapSigilUnit`, `SwapAck`, `SigilPreview`), the handshake state machine that
 //! negotiates it, and a profiler data model (`FrameProfile`, `ScopeId`, `StatsFrame`). Per the
-//! engine's work-package plan, that entire layer is scope for **WP8.2**, not this crate's
-//! current state. Accordingly, this crate does **not** define `Message`, the seven payload
-//! structs, `PeerRole`, `ErrorCode`, any handshake logic, or the profiler types — not even as
-//! stubs, since a half-finished version would only create rework and contract drift once WP8.2
-//! lands. [`PROTOCOL_VERSION`], [`MAX_HELLO_FRAME_LEN`], [`HANDSHAKE_TIMEOUT`] and
-//! [`MAX_INBOUND_QUEUED_BYTES`] are kept as constants now (other crates and tests reference
-//! them), but nothing in this crate enforces the handshake or queue-size semantics they describe
-//! yet — that wiring is also WP8.2's job. Similarly, `TcpConfig::token` is carried through
-//! `TcpConfig::from_env` but not validated by [`TcpServerTransport`]: there is no handshake here
-//! to check it against yet.
+//! engine's work-package plan, that layer splits across two steps:
+//!
+//! - **WP8.1** (this crate's current state, project ADR-0011): the message catalog's *payload
+//!   types* — [`Hello`], [`ErrorMsg`], [`LogMsg`], [`Stats`], [`StatsScope`], [`StatsCounter`],
+//!   [`SwapSigilUnit`], [`SwapAck`], [`SigilPreview`], [`PeerRole`] and [`ErrorCode`] — are
+//!   generated from `schema/debug_protocol_v1.gschema` by `grimoire_schemagen` into
+//!   `src/generated/debug_protocol.rs` and re-exported here. Each carries its own
+//!   `encode`/`decode` pair following contract §2 rule 9 (length/count checked against both a
+//!   documented maximum and the bytes actually remaining, before any allocation; never panics).
+//!   The five [`ProtocolError`] variants those functions can return
+//!   (`UnexpectedEnd`/`TrailingBytes`/`InvalidUtf8`/`FieldTooLong`/`InvalidEnum`) were added to
+//!   this crate's own, previously frame-envelope-only error type in the same PR that introduced
+//!   the generated code, since a codec needs them before it has anything to generate against.
+//! - **WP8.2** (not yet started): the `Message` enum, its `id()`/`to_frame`/`from_frame`
+//!   dispatch by message id, the handshake state machine, and the profiler data model
+//!   (`FrameProfile`, `ScopeId`, `StatsFrame`) all stay hand-written on top of the payload types
+//!   above — they are control flow with only a few fields each, not a wire-format vocabulary a
+//!   schema compiler earns its keep describing (project ADR-0011 "Vorschlag" point 1).
+//!   [`PROTOCOL_VERSION`], [`MAX_HELLO_FRAME_LEN`], [`HANDSHAKE_TIMEOUT`] and
+//!   [`MAX_INBOUND_QUEUED_BYTES`] are kept as constants now (other crates and tests reference
+//!   them, and [`catalogue`] records the frozen message ids),
+//!   but nothing in this crate enforces the handshake or queue-size semantics they describe yet
+//!   — that wiring is WP8.2's job. Similarly, `TcpConfig::token` is carried through
+//!   `TcpConfig::from_env` but not validated by [`TcpServerTransport`]: there is no handshake
+//!   here to check it against yet.
 
 mod frame;
+mod generated;
 mod transport;
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
 
 pub use frame::{Frame, FrameDecoder, MessageId, ProtocolError, encode_frame, peek_hello_version};
+pub use generated::debug_protocol::{
+    ErrorCode, ErrorMsg, Hello, LogMsg, PeerRole, SigilPreview, Stats, StatsCounter, StatsScope,
+    SwapAck, SwapSigilUnit, catalogue,
+};
 pub use transport::{
     DEBUG_ADDR_ENV, DEBUG_TOKEN_ENV, DEFAULT_DEBUG_PORT, DebugTransport, InProcessOptions,
     InProcessTransport, NullTransport, SOCKET_TESTS_ENV, TransportError, socket_tests_enabled,

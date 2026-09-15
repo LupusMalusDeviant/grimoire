@@ -55,6 +55,16 @@ EXEC_DEV="grimoire grimoire_core grimoire_sim grimoire_sigil grimoire_collide"
 LINK_FORBIDDEN="grimoire_bench"
 BENCH_FORBIDDEN="grimoire_sigilc grimoire_link"
 
+# Tool crates with zero grimoire_* dependency edges of any kind (project ADR-0011:
+# grimoire_schemagen is deliberately dependency-free, not even on another grimoire_* crate). The
+# edge loop below only ever discovers a workspace member by seeing it as the *source* of a
+# grimoire_* edge, so a crate with none is otherwise invisible to it and would never be checked at
+# all — the very loophole this script's full-membership pass (see `known_member` and its use
+# below) exists to close. Listed explicitly, the same way EXEC_NORMAL/EXEC_DEV, LINK_FORBIDDEN and
+# BENCH_FORBIDDEN list their own crate's special case, rather than folding it into FIXED_ALLOW
+# (which is keyed by allowed *dependencies*, meaningless for a crate that has none).
+NO_ENGINE_EDGE_TOOL_CRATES="grimoire_schemagen"
+
 # contains_word <space-separated words> <needle>
 contains_word() {
   local haystack=" $1 " needle="$2"
@@ -97,6 +107,24 @@ check_edge() {
 
   echo "::error title=Unzulässige Kante::${crate} --${kind}--> ${dep} ist nicht in der Positivliste (Crate-Verträge §1, Engine-ADR-0008)"
   return 1
+}
+
+# known_member <crate>
+# True (silent) if `crate` is accounted for by this script in some form: a FIXED_ALLOW entry,
+# grimoire_exec/grimoire_link/grimoire_bench (each already special-cased above), or a listed
+# no-engine-edge tool crate. False (silent; the caller prints the ::error::) otherwise. This is
+# the full-workspace-membership counterpart of check_edge's own "unknown crate" branch: check_edge
+# only ever runs for a crate that shows up as the *source* of at least one grimoire_* edge, so a
+# crate with none (grimoire_schemagen) would silently never be checked without this.
+known_member() {
+  local crate="$1"
+  case "$crate" in
+    grimoire_exec | grimoire_link | grimoire_bench)
+      return 0
+      ;;
+  esac
+  [ "${FIXED_ALLOW[$crate]+set}" = "set" ] && return 0
+  contains_word "$NO_ENGINE_EDGE_TOOL_CRATES" "$crate"
 }
 
 # --- Self-test: a handful of synthetic edges with known verdicts, exercised directly against
@@ -148,6 +176,43 @@ run_self_test() {
       failures=$((failures + 1))
     fi
   done
+  # Full-membership cases (known_member), exercised the same synthetic way as the edge cases
+  # above: a crate present via FIXED_ALLOW, one of the three specially-cased tool crates, a listed
+  # no-engine-edge tool crate, and finally the case this whole pass exists to catch — an unknown
+  # member with no grimoire_* edges, which check_edge above never even sees.
+  # <crate> <expected: ok|violation>
+  local member_cases=(
+    "grimoire_sim|ok"
+    "grimoire_exec|ok"
+    "grimoire_link|ok"
+    "grimoire_bench|ok"
+    "grimoire_schemagen|ok"
+    "grimoire_totally_unknown_tool|violation"
+  )
+  for case in "${member_cases[@]}"; do
+    IFS='|' read -r crate expect <<<"$case"
+    if known_member "$crate"; then
+      got=ok
+    else
+      got=violation
+    fi
+    if [ "$got" = "$expect" ]; then
+      echo "ok   known_member ${crate} (expected ${expect})"
+    else
+      echo "FAIL known_member ${crate}: expected ${expect}, got ${got}"
+      failures=$((failures + 1))
+    fi
+  done
+  # Named per the loophole it guards against: a workspace member with zero grimoire_* edges
+  # (so it never appears as a `check_edge` source at all) must still fail as an unknown member
+  # instead of silently passing by never being checked.
+  if known_member "grimoire_totally_unknown_tool"; then
+    echo "FAIL unknown member without edges fails: expected known_member to reject it"
+    failures=$((failures + 1))
+  else
+    echo "ok   unknown member without edges fails"
+  fi
+
   if [ "$failures" -ne 0 ]; then
     echo "${failures} self-test case(s) failed"
     return 1
@@ -217,6 +282,51 @@ done <<<"$edges"
 
 if [ "$found_positive_control" -ne 1 ]; then
   echo "::error title=Kanten-Abfrage defekt::grimoire_sim -> grimoire_ecs (normal) wurde nicht gefunden; die cargo-metadata-Auswertung liefert offenbar keine Kanten mehr, statt eines stillen Bestehens."
+  exit 1
+fi
+
+# --- Full workspace membership check. The loop above only ever discovers a crate by seeing it as
+# the *source* of a grimoire_* edge, so a member with none at all (grimoire_schemagen: no
+# grimoire_* dependency, not even a dev one) is invisible to it and would otherwise never be
+# checked against anything. Enumerate every workspace member directly from the same `cargo
+# metadata` output and fail any one `known_member` does not recognise, whether or not it was
+# already seen above (a crate flagged by check_edge for having a disallowed edge is also, by
+# construction, not `known_member`-recognised as a bare name, so it would be reported a second
+# time here; that duplication only affects wording, never the exit status, and is cheaper than
+# threading an extra "already reported" flag through two independent passes).
+if [ "$JSON_TOOL" = jq ]; then
+  all_members="$(jq -r '
+    .workspace_members as $wm
+    | .packages[]
+    | select(.id as $id | $wm | any(. == $id))
+    | .name
+  ' <<<"$metadata" | tr -d '\r')"
+else
+  all_members="$(python3 -c '
+import json, sys
+
+data = json.load(sys.stdin)
+workspace_members = set(data["workspace_members"])
+for pkg in data["packages"]:
+    if pkg["id"] in workspace_members:
+        print(pkg["name"])
+' <<<"$metadata" | tr -d '\r')"
+fi
+
+found_member_positive_control=0
+while IFS= read -r member; do
+  [ -z "$member" ] && continue
+  if [ "$member" = "grimoire_sim" ]; then
+    found_member_positive_control=1
+  fi
+  if ! known_member "$member"; then
+    echo "::error title=Kanten-Check unvollständig::${member} ist ein Workspace-Mitglied ohne Eintrag in der Positivliste von check-crate-map.sh (neues Crate? Skript und Crate-Verträge §1 nachziehen)"
+    status=1
+  fi
+done <<<"$all_members"
+
+if [ "$found_member_positive_control" -ne 1 ]; then
+  echo "::error title=Kanten-Abfrage defekt::grimoire_sim wurde nicht als Workspace-Mitglied gefunden; die cargo-metadata-Auswertung liefert offenbar keine Mitglieder mehr, statt eines stillen Bestehens."
   exit 1
 fi
 

@@ -15,8 +15,18 @@
 //! Every decoder in this crate treats its input as foreign bytes (contract §2 rule 9):
 //! [`PackReader::from_bytes`] never panics, for any input, and reports a structural problem as a
 //! [`PackError`] instead.
+//!
+//! ## Generated manifest codec (project ADR-0011, Plan-0002 WP8.1)
+//!
+//! [`PackManifestBody`] is a schema-generated, standalone codec for the contract §12 manifest
+//! layout, with its own `encode`/`decode` following contract §2 rule 9. It is **not** used by
+//! [`PackReader`]/[`PackWriter`] yet — see `schema/pack_manifest_v1.gschema`'s header comment
+//! and the (private) `generated` module's own docs for why, and Plan-0002 WP8.3 for the
+//! follow-up that revisits the swap. [`PackManifest`] (below) remains this crate's real,
+//! hand-written manifest type.
 
 mod error;
+mod generated;
 mod ids;
 mod pack;
 mod source;
@@ -26,6 +36,7 @@ mod store;
 pub mod conformance;
 
 pub use error::{AssetError, PackError};
+pub use generated::pack_manifest::{PackManifestBody, PackManifestV1Error};
 pub use ids::{AssetEntry, AssetId, AssetKind, AssetPath, ContentHash, Sha256};
 pub use pack::{PackManifest, PackReader, PackWriter};
 pub use source::{AssetSource, EmptyAssetSource, MemorySource};

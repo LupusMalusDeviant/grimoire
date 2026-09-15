@@ -1,0 +1,25 @@
+[package]
+name = "grimoire_schemagen"
+description = "Schema-description compiler (project ADR-0011): parses schema/*.gschema and emits the Rust payload types/codecs and docs/formats/*.md field tables for the debug protocol (contract §13) and the pack manifest (contract §12). Never a dependency of a runtime crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "grimoire-schemagen"
+path = "src/bin/grimoire-schemagen.rs"
+
+# Deliberately dependency-free (not even a grimoire_* crate, not even a third-party parsing
+# crate): the schema description language (see `parser` module docs) is small enough for a
+# hand-written recursive-descent parser, which keeps this tool crate off both the crate-map
+# allowlist (contract §1, engine ADR-0008; grep for "grimoire_schemagen" in
+# .github/scripts/check-crate-map.sh finds nothing on purpose) and the determinism set — it needs
+# no clippy.toml because nothing it emits runs at game time (project ADR-0011 "Vorschlag" point 2).
+[dependencies]
+
+[lints]
+workspace = true

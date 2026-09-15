@@ -32,6 +32,12 @@ grimoire_ui = { path = "crates/grimoire_ui" }
 # Tool crates (engine ADR-0008): never a dependency of a runtime crate.
 grimoire_bench = { path = "crates/grimoire_bench" }
 grimoire_link = { path = "crates/grimoire_link" }
+# Schema-codegen tool (project ADR-0011, WP8.1; engine ADR-0008's crate-map addendum and contract
+# §1's table both record it). Has no grimoire_* dependency at all (not even a dev one); see the
+# crate's own docs for why, and .github/scripts/check-crate-map.sh's NO_ENGINE_EDGE_TOOL_CRATES
+# for how the crate-map check still accounts for a workspace member with no grimoire_* edge to
+# check in the first place.
+grimoire_schemagen = { path = "crates/grimoire_schemagen" }
 
 # Third party. Versions are pinned deliberately; upgrades are explicit commits.
 bytemuck = { version = "1.25.2", features = ["derive"] }
