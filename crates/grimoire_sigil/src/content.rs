@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use grimoire_core::{StableHash, StableHasher, impl_stable_hash};
+use grimoire_sim::ContentManifestHash;
 
 use crate::behavior::BehaviorRegistry;
 use crate::error::SigilError;
@@ -95,19 +96,19 @@ pub struct ContentEpoch {
     pub swaps: u32,
     /// Manifest hash identifying the loaded units and behavior registry.
     ///
-    /// PROVISIONAL (WP1.3, contract-change candidate): the contract types this field as
-    /// `grimoire_sim::ContentManifestHash` (§8.1), which does not exist yet — `grimoire_sim`
-    /// defines no such type as of WP1.2/1.3. A plain `u64` is used instead; the value is computed
-    /// with exactly the §11.8 formula (`StableHasher` over the registry fingerprint, the unit
-    /// count, then each unit's id and content hash in ascending `UnitId` order), so introducing
-    /// the real newtype later is a type-level change only.
-    pub manifest_hash: u64,
+    /// Typed as `grimoire_sim::ContentManifestHash` (contract §8.1), now that the type exists and
+    /// the crate map already allows the `grimoire_sigil -> grimoire_sim` edge this uses
+    /// (Engine-ADR-0008, contract §1; the same edge already carries `Simulation`,
+    /// `derive_block_rng`, `Tick`, `SimSeed` and `stream`). The value is still computed with
+    /// exactly the §11.8 formula (`StableHasher` over the registry fingerprint, the unit count,
+    /// then each unit's id and content hash in ascending `UnitId` order).
+    pub manifest_hash: ContentManifestHash,
 }
 
 impl ContentEpoch {
     /// Builds an epoch from its fields.
     #[must_use]
-    pub const fn new(swaps: u32, manifest_hash: u64) -> Self {
+    pub const fn new(swaps: u32, manifest_hash: ContentManifestHash) -> Self {
         Self {
             swaps,
             manifest_hash,
@@ -121,7 +122,7 @@ impl_stable_hash!(ContentEpoch {
 
 /// Computes the §11.8 manifest hash for a freshly built library: the registry fingerprint, the
 /// unit count, then each unit's id and content hash, in ascending `UnitId` order.
-fn manifest_hash(registry_fingerprint: u64, units: &[SigilUnit]) -> u64 {
+fn manifest_hash(registry_fingerprint: u64, units: &[SigilUnit]) -> ContentManifestHash {
     let mut hasher = StableHasher::new();
     hasher.write_u64(registry_fingerprint);
     hasher.write_usize(units.len());
@@ -129,7 +130,7 @@ fn manifest_hash(registry_fingerprint: u64, units: &[SigilUnit]) -> u64 {
         hasher.write_u64(unit.id().0);
         hasher.write_u64(unit.content_hash());
     }
-    hasher.finish()
+    ContentManifestHash(hasher.finish())
 }
 
 /// Immutable set of loaded Sigil units plus the behavior registry they were validated against.
