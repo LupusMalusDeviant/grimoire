@@ -1,0 +1,801 @@
+{
+ "bullet_contrast": {
+  "realistic": {
+   "busy": {
+    "median": 2.190763371459748,
+    "min": 1.0011768617987784,
+    "n": 1983,
+    "p5": 1.0706080016690527,
+    "share_ge_4_5": 0.13111447302067575
+   },
+   "busy_dim": {
+    "median": 3.241648846522238,
+    "min": 1.0056246635232,
+    "n": 1983,
+    "p5": 1.1719129344573314,
+    "share_ge_4_5": 0.329803328290469
+   },
+   "calm": {
+    "median": 3.5072380629893454,
+    "min": 1.0206996382853462,
+    "n": 180,
+    "p5": 1.1992552435512918,
+    "share_ge_4_5": 0.36666666666666664
+   }
+  },
+  "stylized": {
+   "busy": {
+    "median": 1.9655933740136535,
+    "min": 1.0000409001495578,
+    "n": 1983,
+    "p5": 1.0632988591536332,
+    "share_ge_4_5": 0.11043872919818457
+   },
+   "busy_dim": {
+    "median": 2.9634351185055885,
+    "min": 1.000502576449095,
+    "n": 1983,
+    "p5": 1.109895861331613,
+    "share_ge_4_5": 0.2622289460413515
+   },
+   "calm": {
+    "median": 3.3261787890544556,
+    "min": 1.0145095487040843,
+    "n": 180,
+    "p5": 1.1609479149121207,
+    "share_ge_4_5": 0.3
+   }
+  },
+  "toon": {
+   "busy": {
+    "median": 4.173511528898745,
+    "min": 1.079611994865625,
+    "n": 1983,
+    "p5": 1.9921620671029225,
+    "share_ge_4_5": 0.4876449823499748
+   },
+   "busy_dim": {
+    "median": 4.518600225009102,
+    "min": 1.2202331178243229,
+    "n": 1983,
+    "p5": 2.0739170773571005,
+    "share_ge_4_5": 0.5017650025214322
+   },
+   "calm": {
+    "median": 4.515137409701064,
+    "min": 1.3181135296922297,
+    "n": 180,
+    "p5": 1.8891542979321114,
+    "share_ge_4_5": 0.5
+   }
+  }
+ },
+ "bullets_layer_sha256": {
+  "busy": "730547d993b0418980946a9b765f351e282cbd5e6d8c2152bc6a59c09cf5bc21",
+  "calm": "b5dacfa4de18a439cb17c9c7d44704f020314aadeb10be81c53e7e924c1086cb"
+ },
+ "bullets_rejected_palette_space": {
+  "busy": 0,
+  "calm": 0
+ },
+ "calibration": {
+  "achieved_display_median": {
+   "realistic": 0.1806083552044979,
+   "stylized": 0.1817426572399656,
+   "toon": 0.1817426572399656
+  },
+  "gains": {
+   "realistic": 1.0,
+   "stylized": 0.8673383533797006,
+   "toon": 1.4562976645214871
+  },
+  "history": [
+   {
+    "display_median_at_gain": 0.17999999999999863,
+    "display_median_at_gain1": 0.13034430004061626,
+    "floor_pixels": 679287,
+    "gain": 1.4993079754794418,
+    "light_scale": 5.5,
+    "look": "realistic",
+    "retargeted_light_scale": 8.24619386513693,
+    "time_s": 2.524547099994379
+   },
+   {
+    "display_median_at_gain": 0.1799999999999981,
+    "display_median_at_gain1": 0.18011519040747137,
+    "floor_pixels": 679287,
+    "gain": 0.9992179197291289,
+    "light_scale": 8.24619386513693,
+    "look": "realistic",
+    "stored_gain": 1.0,
+    "time_s": 0.8791564999992261
+   },
+   {
+    "display_median_at_gain": 0.1799999999999982,
+    "display_median_at_gain1": 0.1376692414797373,
+    "floor_pixels": 679287,
+    "gain": 1.438205256885582,
+    "light_scale": 8.24619386513693,
+    "look": "toon",
+    "time_s": 2.099490100008552
+   },
+   {
+    "display_median_at_gain": 0.18000000000000246,
+    "display_median_at_gain1": 0.19836814338891595,
+    "floor_pixels": 679287,
+    "gain": 0.8839879743137535,
+    "light_scale": 8.24619386513693,
+    "look": "stylized",
+    "time_s": 3.4790088000008836
+   },
+   {
+    "display_median_at_gain": 0.18000000000000071,
+    "display_median_at_gain1": 0.18136524049451552,
+    "floor_pixels": 679287,
+    "gain": 0.9903709241955336,
+    "light_scale": 8.24619386513693,
+    "look": "realistic",
+    "retargeted_light_scale": 8.166790639311202,
+    "time_s": 0.8466402000049129
+   },
+   {
+    "display_median_at_gain": 0.18000000000000274,
+    "display_median_at_gain1": 0.1800388788112343,
+    "floor_pixels": 679287,
+    "gain": 0.9997161609276012,
+    "light_scale": 8.166790639311202,
+    "look": "realistic",
+    "stored_gain": 1.0,
+    "time_s": 0.8195636999880662
+   },
+   {
+    "display_median_at_gain": 0.17999999999999766,
+    "display_median_at_gain1": 0.13646908675810537,
+    "floor_pixels": 679287,
+    "gain": 1.4553218432352215,
+    "light_scale": 8.166790639311202,
+    "look": "toon",
+    "time_s": 0.8872042000002693
+   },
+   {
+    "display_median_at_gain": 0.1800000000000031,
+    "display_median_at_gain1": 0.20213137085096963,
+    "floor_pixels": 679287,
+    "gain": 0.8673383533797006,
+    "light_scale": 8.166790639311202,
+    "look": "stylized",
+    "time_s": 0.9191852000076324
+   },
+   {
+    "display_median_at_gain": 0.18000000000000313,
+    "display_median_at_gain1": 0.1363264125001391,
+    "floor_pixels": 679287,
+    "gain": 1.4562976645214871,
+    "light_scale": 8.166790639311202,
+    "look": "toon",
+    "time_s": 3.897024899997632
+   }
+  ],
+  "light_scale": 8.166790639311202,
+  "stops": {
+   "realistic": 0.0,
+   "stylized": -0.2053331885020659,
+   "toon": 0.5423052698482368
+  },
+  "units": {
+   "k_point": 0.025330295910584444,
+   "k_sun": 0.3183098861837907,
+   "k_world": 1.0
+  }
+ },
+ "deviations": [
+  "Ruhige Variante: 3 Spiralarme mit je 12 statt 20 Reis-Geschossen (die Design-Z\u00e4hlung ergibt 204 statt 180). Die 18 Streukugeln sind die Stress-Platzierungen (6 Fackelpool, 6 Ritualkreis, 3 Spielerrand, 3 S\u00e4ulen). Unruhige Variante: die 60 Stress-Geschosse stammen aus dem 416er-Driftfeld.",
+  "Toon-B\u00e4nder und stilisierter Wrap wirken auf die gesamte direkte Beleuchtung (Eevee liefert \u00fcber Shader to RGB nur die Summe aller Lichter), nicht pro Licht. Das Mondlicht wird mitquantisiert statt mit eigenen Schwellen 0,05/0,5.",
+  "Kalibrierung als Licht-Gain in der Look-Schattierung (wirkt auf Diffus, Ambient, Glanz; nicht auf Rim, Emissive, Dekal-Emission, freundliche Geschosse). Compositor-Belichtung neutral (0). Ziel: Median der Boden-Leuchtdichte als Anzeigewert 0,18 (sRGB nach View-Transform, linear etwa 0,027). Der globale Lichtfaktor ist so gew\u00e4hlt, dass der realistische Look Gain 1,0 hat.",
+  "Punktlicht-Abfall: Eevee rechnet 1/d\u00b2 mit Fenster (1-(d/r)^4)\u00b2 statt 1/(1+d\u00b2). Um das Design am Boden nachzubilden, sitzt jedes Punktlicht in der H\u00f6he sqrt(h\u00b2+1) \u00fcber dem Boden darunter (h = Design-H\u00f6he) und cutoff_distance = sqrt(r\u00b2+1); der Boden erh\u00e4lt damit genau den Design-Abstandsterm. Ohne diese Anhebung brannten Randkerzen, Runensteine und Cluster-Lichter singul\u00e4re Hotspots (Bugfix im Entwurf, kein Tuning). Senkrechte Fl\u00e4chen direkt neben einer Lichtquelle bleiben heller als im Design. Ein globaler Watt-Faktor.",
+  "Echte Schattenw\u00fcrfe (Eevee Shadow Maps) f\u00fcr Mond, 8 Fackeln/Kohlebecken und Stab-Orb in allen Looks; alle anderen Lichter ohne Schatten.",
+  "Geometrie: Plinthe (1,0) und Kapitell (0,9) als Halbma\u00dfe; Wandleuchter der gebrochenen S\u00e4ulen bei z = min(3,6; S\u00e4ulenh\u00f6he - 0,5); Mauerbogen tangential, minimal nach (-7,9 | 10,0) verschoben (2,28 Einheiten), damit er S\u00e4ule und Plinthe bei 150\u00b0 um mindestens 1 Einheit freigibt; umgest\u00fcrzte S\u00e4ule samt Glutlicht bei (8,5 | -4,0) wie im Engine-Spike; Glutlicht auf z 0,25 statt Bodenkontakt (sonst singul\u00e4rer Hotspot).",
+  "Toon-Outlines als invertierte H\u00fclle (Solidify nach au\u00dfen, gespiegelte Normalen, Backface-Culling, #0B0A0D, Dicke 0,04 Welteinheiten, d\u00fcnne Teile 0,02) statt Screen-Space-Pass; nicht auf Boden, Dekal und Emissive.",
+  "Bloom: Blender-Glare im Bloom-Modus (Schwelle 1,0, Gl\u00e4ttung 0,5, St\u00e4rke 0,08, Gr\u00f6\u00dfe 0,1) statt 4-stufiger Dual-Filter-Kette; in den 1x-Crops wird Bloom nur auf dem Crop-Ausschnitt gerechnet. Kein 2x-SSAA, sondern 32 Eevee-Samples mit 1,5-px-Filter.",
+  "Stilisiert: Glanz \u00fcber GGX Glossy BSDF (Rauheit aus dem Glanzexponenten, Farbe ks) statt normalisiertem Blinn-Phong; nimmt auch die schwache Welt-Umgebung als Reflexion auf.",
+  "Freundliche Geschosse als Kapsel-Meshes (Blended, Alpha 0,75) statt Billboards; die 64 Randkerzen der unruhigen Variante sind reine Lichter ohne Mesh.",
+  "Komposit-Gr\u00f6\u00dfen 1928x724 und 1928x360 wegen 4-px-Rinnen zwischen den Zellen."
+ ],
+ "figure_contrast": {
+  "realistic": {
+   "busy": {
+    "median": 1.665255664723169,
+    "min": 1.1927101526261175,
+    "per_figure": {
+     "Brute 1": 1.6342076559118341,
+     "Brute 2": 1.1927101526261175,
+     "Imp 1": 1.3674180979065311,
+     "Imp 2": 1.4887764800903545,
+     "Imp 3": 3.135085540296366,
+     "Imp 4": 1.9288668948491154,
+     "Imp 5": 3.153724768210988,
+     "Imp 6": 3.367414590018849,
+     "Spieler": 1.665255664723169
+    },
+    "weakest": "Brute 2"
+   },
+   "busy_dim": {
+    "median": 2.152109340319231,
+    "min": 1.5105148908219905,
+    "per_figure": {
+     "Brute 1": 2.152109340319231,
+     "Brute 2": 1.780706346124584,
+     "Imp 1": 1.5105148908219905,
+     "Imp 2": 1.6165439571103797,
+     "Imp 3": 3.3617251062221896,
+     "Imp 4": 3.1013914236036833,
+     "Imp 5": 3.802921648265416,
+     "Imp 6": 4.450642541685945,
+     "Spieler": 1.7704535418100125
+    },
+    "weakest": "Imp 1"
+   },
+   "calm": {
+    "median": 2.0220369518630674,
+    "min": 1.5600346348982284,
+    "per_figure": {
+     "Brute 1": 2.158519768257812,
+     "Brute 2": 2.0220369518630674,
+     "Imp 1": 1.7044392995571804,
+     "Imp 2": 1.5600346348982284,
+     "Imp 3": 2.9753045024864933,
+     "Imp 4": 1.6772634821722179,
+     "Imp 5": 4.087083730351472,
+     "Imp 6": 3.642339059173035,
+     "Spieler": 1.8256543427416598
+    },
+    "weakest": "Imp 2"
+   }
+  },
+  "stylized": {
+   "busy": {
+    "median": 1.7160625424969551,
+    "min": 1.2251993404366004,
+    "per_figure": {
+     "Brute 1": 1.8460983439856482,
+     "Brute 2": 1.410728358383484,
+     "Imp 1": 1.2434959614742223,
+     "Imp 2": 1.2251993404366004,
+     "Imp 3": 3.171888853037573,
+     "Imp 4": 1.7160625424969551,
+     "Imp 5": 3.375435952302017,
+     "Imp 6": 3.0898048185551588,
+     "Spieler": 1.3550151967480604
+    },
+    "weakest": "Imp 2"
+   },
+   "busy_dim": {
+    "median": 2.8187757754500473,
+    "min": 1.3120364304040806,
+    "per_figure": {
+     "Brute 1": 2.8187757754500473,
+     "Brute 2": 2.097442870827051,
+     "Imp 1": 1.3607302948676827,
+     "Imp 2": 1.3120364304040806,
+     "Imp 3": 3.4412979164117328,
+     "Imp 4": 2.9864622756111343,
+     "Imp 5": 4.175548160048493,
+     "Imp 6": 4.497586946557447,
+     "Spieler": 1.4504027732217109
+    },
+    "weakest": "Imp 2"
+   },
+   "calm": {
+    "median": 2.6235435036912826,
+    "min": 1.2260634072853431,
+    "per_figure": {
+     "Brute 1": 2.739938233665364,
+     "Brute 2": 2.6235435036912826,
+     "Imp 1": 1.4153448527162371,
+     "Imp 2": 1.2260634072853431,
+     "Imp 3": 3.1070775250157525,
+     "Imp 4": 1.4653186035613732,
+     "Imp 5": 4.592075295813464,
+     "Imp 6": 4.127549501222145,
+     "Spieler": 1.4921611883007337
+    },
+    "weakest": "Imp 2"
+   }
+  },
+  "toon": {
+   "busy": {
+    "median": 3.4589435258542083,
+    "min": 1.4445795609945413,
+    "per_figure": {
+     "Brute 1": 1.5506686862508137,
+     "Brute 2": 1.4445795609945413,
+     "Imp 1": 3.318998789604689,
+     "Imp 2": 4.177385110749546,
+     "Imp 3": 3.4589435258542083,
+     "Imp 4": 4.041802033520205,
+     "Imp 5": 3.775002279434515,
+     "Imp 6": 4.358477296304418,
+     "Spieler": 1.643741160290444
+    },
+    "weakest": "Brute 2"
+   },
+   "busy_dim": {
+    "median": 3.5001061472204626,
+    "min": 1.5564602059609203,
+    "per_figure": {
+     "Brute 1": 1.880733150413873,
+     "Brute 2": 1.5564602059609203,
+     "Imp 1": 3.1935355750730254,
+     "Imp 2": 3.6813977554402264,
+     "Imp 3": 4.550890488145482,
+     "Imp 4": 3.5001061472204626,
+     "Imp 5": 4.387049419839961,
+     "Imp 6": 5.204631434429687,
+     "Spieler": 1.8132369037462475
+    },
+    "weakest": "Brute 2"
+   },
+   "calm": {
+    "median": 3.2843034397799453,
+    "min": 1.8156728162672715,
+    "per_figure": {
+     "Brute 1": 1.8344395670648657,
+     "Brute 2": 1.8156728162672715,
+     "Imp 1": 3.4241196596234786,
+     "Imp 2": 3.2843034397799453,
+     "Imp 3": 4.019998097513853,
+     "Imp 4": 2.860540123375661,
+     "Imp 5": 5.332884145724734,
+     "Imp 6": 4.025122038146162,
+     "Spieler": 1.8556143015791509
+    },
+    "weakest": "Brute 2"
+   }
+  }
+ },
+ "legend": "Spalten: toon | stylized | realistic; Zeilen: calm oben, busy unten",
+ "look_params": {
+  "realistic": {
+   "rough_min": 0.25
+  },
+  "stylized": {
+   "rim": {
+    "brute": {
+     "color": "#FF9A6A",
+     "k": 0.4,
+     "p": 2.5
+    },
+    "imp": {
+     "color": "#FF9A6A",
+     "k": 0.35,
+     "p": 2.5
+    },
+    "player": {
+     "color": "#A8E6FF",
+     "k": 0.55,
+     "p": 3.0
+    }
+   },
+   "spec_gain": 1.0,
+   "tint_smooth": [
+    0.0,
+    0.6
+   ],
+   "wrap": 0.45,
+   "wrap_ref": 0.15
+  },
+  "toon": {
+   "band_full": 0.27,
+   "band_levels": [
+    0.0,
+    0.45,
+    1.0
+   ],
+   "edge_rel": 0.04,
+   "hue_clamp": 8.0,
+   "outline_color": "#0B0A0D",
+   "outline_thickness": 0.05,
+   "outline_thin_scale": 0.5,
+   "t1": 0.03,
+   "t2": 0.22
+  }
+ },
+ "materials": {
+  "altar": {
+   "albedo": "#2A2528",
+   "g": 20,
+   "ks": 0.1,
+   "m": 0.0,
+   "r": 0.6,
+   "tint": "#2A1830"
+  },
+  "bronze": {
+   "albedo": "#6B4A2A",
+   "g": 32,
+   "ks": 0.5,
+   "m": 1.0,
+   "r": 0.35,
+   "spec_albedo": true,
+   "tint": "#5A3A20"
+  },
+  "brute_flesh": {
+   "albedo": "#5E3530",
+   "g": 18,
+   "ks": 0.1,
+   "m": 0.0,
+   "r": 0.6,
+   "rim": "brute",
+   "tint": "#3A1F3A"
+  },
+  "cloak": {
+   "albedo": "#24505C",
+   "g": 6,
+   "ks": 0.03,
+   "m": 0.0,
+   "r": 0.9,
+   "rim": "player",
+   "tint": "#1E2A4A"
+  },
+  "floor_stone": {
+   "albedo": "#33363D",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.85,
+   "tint": "#3A3F66"
+  },
+  "grout": {
+   "albedo": "#1A1C21",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.95,
+   "tint": "#3A3F66"
+  },
+  "hood_inside": {
+   "albedo": "#0A0C0E",
+   "g": 6,
+   "ks": 0.03,
+   "m": 0.0,
+   "r": 0.9,
+   "rim": "player",
+   "tint": "#1E2A4A"
+  },
+  "horn": {
+   "albedo": "#C9BBA0",
+   "g": 16,
+   "ks": 0.08,
+   "m": 0.0,
+   "r": 0.6,
+   "rim": "imp",
+   "tint": "#4A3550"
+  },
+  "imp_skin": {
+   "albedo": "#7A7068",
+   "g": 20,
+   "ks": 0.12,
+   "m": 0.0,
+   "r": 0.55,
+   "rim": "imp",
+   "tint": "#4A3550"
+  },
+  "mask": {
+   "albedo": "#CFC3A8",
+   "g": 16,
+   "ks": 0.08,
+   "m": 0.0,
+   "r": 0.6,
+   "rim": "player",
+   "tint": "#1E2A4A"
+  },
+  "moss": {
+   "albedo": "#2E3A2A",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.85,
+   "tint": "#3A3F66"
+  },
+  "pillar": {
+   "albedo": "#3E4047",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.75,
+   "tint": "#3A3F66"
+  },
+  "plates": {
+   "albedo": "#3B3A3E",
+   "g": 40,
+   "ks": 0.3,
+   "m": 0.0,
+   "r": 0.4,
+   "rim": "brute",
+   "tint": "#3A1F3A"
+  },
+  "plinth": {
+   "albedo": "#2C2E34",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.85,
+   "tint": "#3A3F66"
+  },
+  "rubble": {
+   "albedo": "#45464A",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.85,
+   "tint": "#3A3F66"
+  },
+  "ruin_wall": {
+   "albedo": "#383A3F",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.85,
+   "tint": "#3A3F66"
+  },
+  "staff_wood": {
+   "albedo": "#4A3524",
+   "g": 10,
+   "ks": 0.05,
+   "m": 0.0,
+   "r": 0.7,
+   "rim": "player",
+   "tint": "#1E2A4A"
+  },
+  "wax": {
+   "albedo": "#D8CDB4",
+   "g": 12,
+   "ks": 0.06,
+   "m": 0.0,
+   "r": 0.85,
+   "tint": "#3A3F66"
+  }
+ },
+ "post": {
+  "bloom_quality": "High",
+  "bloom_size": 0.1,
+  "bloom_smoothness": 0.5,
+  "bloom_strength": 0.08,
+  "bloom_threshold": 1.0,
+  "calib_erode_px": 2,
+  "calib_exclude_radius": 6.2,
+  "calib_tolerance": 0.05,
+  "compositor_exposure": 0.0,
+  "filter_final": 1.5,
+  "look": "None",
+  "samples_crop": 1,
+  "samples_final": 32,
+  "target_display_median": 0.18,
+  "view_transform": "Khronos PBR Neutral"
+ },
+ "render_time_label": "Blender Eevee auf der GPU des Entwicklungsrechners, kein Engine-Budget",
+ "render_time_s": {
+  "realistic": {
+   "busy": {
+    "control": {
+     "median": 0.3495561000017915,
+     "timed": [
+      0.35079050000058487,
+      0.3522643999895081,
+      0.3495561000017915,
+      0.3484759000129998,
+      0.343378900011885
+     ],
+     "warmup": [
+      0.9740165999974124,
+      0.35190230001171585,
+      0.34582050000608433
+     ]
+    },
+    "median": 0.33910199999809265,
+    "timed": [
+     0.33910199999809265,
+     0.3338073000049917,
+     0.3417877000028966
+    ],
+    "warmup": [
+     0.9385124999971595
+    ]
+   },
+   "busy_dim": {
+    "median": 0.3430863999965368,
+    "timed": [
+     0.352379199990537,
+     0.3383707000029972,
+     0.3430863999965368
+    ],
+    "warmup": [
+     0.9992586000007577
+    ]
+   },
+   "calm": {
+    "control": {
+     "median": 0.27227260000654496,
+     "timed": [
+      0.265445400000317,
+      0.27227260000654496,
+      0.270598200004315,
+      0.2723674000008032,
+      0.2758563000097638
+     ],
+     "warmup": [
+      0.8632008999993559,
+      0.26831870000751223,
+      0.2602215999941109
+     ]
+    },
+    "median": 0.26931319999857806,
+    "timed": [
+     0.2804920999915339,
+     0.26915930000541266,
+     0.26931319999857806
+    ],
+    "warmup": [
+     3.557216999994125
+    ]
+   }
+  },
+  "stylized": {
+   "busy": {
+    "control": {
+     "median": 0.4274511999974493,
+     "timed": [
+      0.4274511999974493,
+      0.42355870000028517,
+      0.44049019999511074,
+      0.4319866000005277,
+      0.4229182999988552
+     ],
+     "warmup": [
+      1.0520344999968074,
+      0.4394013000128325,
+      0.4384857000113698
+     ]
+    },
+    "median": 0.408786300002248,
+    "timed": [
+     0.4147037999937311,
+     0.408786300002248,
+     0.40398930000083055
+    ],
+    "warmup": [
+     1.0188420000049518
+    ]
+   },
+   "busy_dim": {
+    "median": 0.439969300001394,
+    "timed": [
+     0.4410378999891691,
+     0.439969300001394,
+     0.43698090000543743
+    ],
+    "warmup": [
+     1.0558696999942185
+    ]
+   },
+   "calm": {
+    "control": {
+     "median": 0.30997909999859985,
+     "timed": [
+      0.30198010000458453,
+      0.30813590000616387,
+      0.31167979999736417,
+      0.30997909999859985,
+      0.32080679999489803
+     ],
+     "warmup": [
+      0.9278836000012234,
+      0.31671839999035,
+      0.30620099999941885
+     ]
+    },
+    "median": 0.301506599993445,
+    "timed": [
+     0.301506599993445,
+     0.30044779999298044,
+     0.32738449999305885
+    ],
+    "warmup": [
+     3.6240699000045424
+    ]
+   }
+  },
+  "toon": {
+   "busy": {
+    "control": {
+     "median": 0.41814540000632405,
+     "timed": [
+      0.41368170001078397,
+      0.4174277999991318,
+      0.41838810000626836,
+      0.42424429999664426,
+      0.41814540000632405
+     ],
+     "warmup": [
+      1.1060906000057003,
+      0.4280561000050511,
+      0.4466480999981286
+     ]
+    },
+    "median": 0.3992454999970505,
+    "timed": [
+     0.4042688000045018,
+     0.3951549000048544,
+     0.3992454999970505
+    ],
+    "warmup": [
+     1.0212729999911971
+    ]
+   },
+   "busy_dim": {
+    "median": 0.41729290000512265,
+    "timed": [
+     0.4169990999944275,
+     0.41729290000512265,
+     0.4251679000008153
+    ],
+    "warmup": [
+     1.10559999999532
+    ]
+   },
+   "calm": {
+    "control": {
+     "median": 0.30835570000635926,
+     "timed": [
+      0.29599030000099447,
+      0.2966317000100389,
+      0.3155177000007825,
+      0.32437129999743775,
+      0.30835570000635926
+     ],
+     "warmup": [
+      0.905907299995306,
+      0.3038416000053985,
+      0.30242290000023786
+     ]
+    },
+    "median": 1.1429640999995172,
+    "timed": [
+     1.860586400012835,
+     1.1429640999995172,
+     1.0374402000015834
+    ],
+    "warmup": [
+     2.626714899990475
+    ]
+   }
+  }
+ },
+ "tuning_log": [
+  {
+   "look": "toon",
+   "new": "0.05",
+   "old": "0.04",
+   "param": "outline_thickness",
+   "reason": "Linien ma\u00dfen im Finalbild etwa 1,3 px (0,04 Einheiten bei rund 33 px pro Einheit) und lagen damit unter dem Ziel von 1,5-2 px; 0,05 ergibt etwa 1,65 px. D\u00fcnne Teile (Stab, Kerzen, Dreibeine) skalieren mit 0,5."
+  },
+  {
+   "look": "stylized",
+   "new": "-",
+   "old": "-",
+   "param": "(keine \u00c4nderung)",
+   "reason": "Kein Fehlerbild; Rim, Wrap und Glanz lesen sich wie spezifiziert. Keine Anpassung, um nicht in Richtung eines Favoriten zu tunen."
+  },
+  {
+   "look": "realistic",
+   "new": "-",
+   "old": "-",
+   "param": "(keine \u00c4nderung)",
+   "reason": "Kein Fehlerbild; die Plastik-Anmutung liegt an den untexturierten Proxies, nicht an Parametern."
+  }
+ ],
+ "variants": [
+  "calm",
+  "busy",
+  "busy_dim"
+ ]
+}
