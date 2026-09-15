@@ -3,13 +3,20 @@
 //!
 //! A demo simulation with at least 2 000 moving entities, a random spawner and despawner,
 //! component inserts/removes and input-driven steering.
+//!
+//! [`build_simulation`] is the P0 form with exclusive systems only. [`build_parallel_simulation`]
+//! is its parallel form (engine ADR-0006): `steer` and `integrate` stay exclusive but iterate in
+//! data-parallel blocks, `census` and `agitate` share a parallel stage and `spawn` records
+//! structural commands. Both forms must produce identical checkpoints and `GOLDEN_FINAL_HASH`.
 
 // Each including test binary uses a different subset of this module.
 #![allow(dead_code)]
 
 use grimoire_core::math::dmath;
 use grimoire_core::{Vec2, impl_stable_hash};
-use grimoire_ecs::{CommandBuffer, Entity, With, Without, World, system_fn};
+use grimoire_ecs::{
+    Access, CommandBuffer, Entity, StageMode, With, Without, World, parallel_system_fn, system_fn,
+};
 use grimoire_sim::{InputFrame, SimRng, SimSeed, Simulation, Tick, TickInput, derive_rng};
 
 /// Final `Simulation::state_hash` of the demo scenario after 10 000 ticks.
@@ -106,13 +113,14 @@ fn current_input(world: &World) -> TickInput {
     world.resource::<TickInput>().copied().unwrap_or_default()
 }
 
-fn spawn_agent(world: &mut World, rng: &mut SimRng) {
+/// Draws the components of a new agent; the draw order is part of the golden scenario.
+fn agent(rng: &mut SimRng) -> (Position, Velocity, Lifetime) {
     let x = rng.range_f32(-ARENA_HALF, ARENA_HALF);
     let y = rng.range_f32(-ARENA_HALF, ARENA_HALF);
     let heading = rng.range_f32(0.0, dmath::TAU);
     let speed = rng.range_f32(20.0, 80.0);
     let ticks_left = rng.range_u32(300, 1_500);
-    world.spawn((
+    (
         Position {
             value: Vec2::new(x, y),
         },
@@ -120,11 +128,21 @@ fn spawn_agent(world: &mut World, rng: &mut SimRng) {
             value: Vec2::from_angle(heading) * speed,
         },
         Lifetime { ticks_left },
-    ));
+    )
 }
 
-/// Slot 0 axes steer every entity, button 0 boosts; a tick-driven swirl rotates velocities.
-fn steer(world: &mut World) {
+fn spawn_agent(world: &mut World, rng: &mut SimRng) {
+    world.spawn(agent(rng));
+}
+
+/// Per-tick steering parameters: input push, swirl angle and speed limit.
+struct Steering {
+    push: Vec2,
+    swirl: f32,
+    max_speed: f32,
+}
+
+fn steering(world: &World) -> Steering {
     let (_, tick) = seed_and_tick(world);
     let pilot = current_input(world).slots[0];
     let push = Vec2::new(pilot.axis(0), pilot.axis(1)) * (STEER_ACCEL * DT);
@@ -134,22 +152,53 @@ fn steer(world: &mut World) {
     } else {
         MAX_SPEED
     };
-    for (velocity, agitated) in world.query_mut::<(&mut Velocity, Option<&Agitated>)>() {
-        let spin = swirl + agitated.map_or(0.0, |agitated| agitated.strength * 0.01);
-        let turned = (velocity.value + push).rotate(spin);
-        velocity.value = if turned.length_squared() > max_speed * max_speed {
-            turned.normalize_or_zero() * max_speed
-        } else {
-            turned
-        };
+    Steering {
+        push,
+        swirl,
+        max_speed,
     }
+}
+
+fn steer_velocity(velocity: &mut Velocity, agitated: Option<&Agitated>, steering: &Steering) {
+    let spin = steering.swirl + agitated.map_or(0.0, |agitated| agitated.strength * 0.01);
+    let turned = (velocity.value + steering.push).rotate(spin);
+    let max_speed = steering.max_speed;
+    velocity.value = if turned.length_squared() > max_speed * max_speed {
+        turned.normalize_or_zero() * max_speed
+    } else {
+        turned
+    };
+}
+
+/// Slot 0 axes steer every entity, button 0 boosts; a tick-driven swirl rotates velocities.
+fn steer(world: &mut World) {
+    let steering = steering(world);
+    for (velocity, agitated) in world.query_mut::<(&mut Velocity, Option<&Agitated>)>() {
+        steer_velocity(velocity, agitated, &steering);
+    }
+}
+
+/// Parallel form of [`steer`]: the same per-entity update in data-parallel blocks.
+fn steer_blocks(world: &mut World) {
+    let steering = steering(world);
+    world.par_blocks_mut::<(&mut Velocity, Option<&Agitated>), _>(|block| {
+        for (velocity, agitated) in block {
+            steer_velocity(velocity, agitated, &steering);
+        }
+    });
 }
 
 /// Slot 1 button 0 agitates random entities; while released, agitation wears off at random.
 fn agitate(world: &mut World) {
+    let mut commands = CommandBuffer::new();
+    record_agitation(world, &mut commands);
+    commands.apply(world);
+}
+
+/// Records the agitation commands of [`agitate`]; the parallel form runs it as a parallel system.
+fn record_agitation(world: &World, commands: &mut CommandBuffer) {
     let (seed, tick) = seed_and_tick(world);
     let mut rng = derive_rng(seed, tick, STREAM_AGITATE);
-    let mut commands = CommandBuffer::new();
     if current_input(world).slots[1].is_pressed(0) {
         for (entity, ()) in world.query::<(Entity, Without<Agitated>)>() {
             if rng.chance(0.01) {
@@ -164,25 +213,50 @@ fn agitate(world: &mut World) {
             }
         }
     }
-    commands.apply(world);
+}
+
+/// Parallel-form reader that folds positions and velocities over blocks and records nothing, so
+/// it shares a stage with `agitate` without changing the state.
+fn census(world: &World, _commands: &mut CommandBuffer) {
+    let sums = world.par_blocks::<(&Position, &Velocity), _>(|block| {
+        block.fold(0.0_f32, |sum, (position, velocity)| {
+            sum + position.value.x + velocity.value.y
+        })
+    });
+    let total = sums.into_iter().fold(0.0_f32, |sum, block| sum + block);
+    std::hint::black_box(total);
+}
+
+/// Moves one entity and wraps it around the square arena.
+fn wrap(position: &mut Position, velocity: &Velocity) {
+    let mut next = position.value + velocity.value * DT;
+    if next.x > ARENA_HALF {
+        next.x -= 2.0 * ARENA_HALF;
+    } else if next.x < -ARENA_HALF {
+        next.x += 2.0 * ARENA_HALF;
+    }
+    if next.y > ARENA_HALF {
+        next.y -= 2.0 * ARENA_HALF;
+    } else if next.y < -ARENA_HALF {
+        next.y += 2.0 * ARENA_HALF;
+    }
+    position.value = next;
 }
 
 /// Moves entities and wraps them around the square arena.
 fn integrate(world: &mut World) {
     for (position, velocity) in world.query_mut::<(&mut Position, &Velocity)>() {
-        let mut next = position.value + velocity.value * DT;
-        if next.x > ARENA_HALF {
-            next.x -= 2.0 * ARENA_HALF;
-        } else if next.x < -ARENA_HALF {
-            next.x += 2.0 * ARENA_HALF;
-        }
-        if next.y > ARENA_HALF {
-            next.y -= 2.0 * ARENA_HALF;
-        } else if next.y < -ARENA_HALF {
-            next.y += 2.0 * ARENA_HALF;
-        }
-        position.value = next;
+        wrap(position, velocity);
     }
+}
+
+/// Parallel form of [`integrate`] in data-parallel blocks.
+fn integrate_blocks(world: &mut World) {
+    world.par_blocks_mut::<(&mut Position, &Velocity), _>(|block| {
+        for (position, velocity) in block {
+            wrap(position, velocity);
+        }
+    });
 }
 
 /// Ages entities; expired ones, a few random ones and (while slot 0 button 1 is held) many in
@@ -215,7 +289,20 @@ fn spawn(world: &mut World) {
     }
 }
 
-pub fn build_simulation(seed: u64) -> Simulation {
+/// Parallel form of [`spawn`]: records the same spawns as structural commands.
+fn record_spawns(world: &World, commands: &mut CommandBuffer) {
+    let (seed, tick) = seed_and_tick(world);
+    let mut rng = derive_rng(seed, tick, STREAM_SPAWN);
+    let count = world.entity_count();
+    let wanted = MIN_ENTITIES.saturating_sub(count) + rng.range_u32(0, 4) as usize;
+    let room = MAX_ENTITIES.saturating_sub(count);
+    for _ in 0..wanted.min(room) {
+        commands.spawn(agent(&mut rng));
+    }
+}
+
+/// Simulation with registered components and the initial population, without systems.
+fn populated_simulation(seed: u64) -> Simulation {
     let mut sim = Simulation::new(seed);
     let world = sim.world_mut();
     world.register_component::<Position>();
@@ -226,12 +313,51 @@ pub fn build_simulation(seed: u64) -> Simulation {
     for _ in 0..MIN_ENTITIES {
         spawn_agent(world, &mut rng);
     }
+    sim
+}
+
+/// The P0 form: five exclusive systems.
+pub fn build_simulation(seed: u64) -> Simulation {
+    let mut sim = populated_simulation(seed);
     sim.schedule_mut()
         .add_system(system_fn("steer", steer))
         .add_system(system_fn("agitate", agitate))
         .add_system(system_fn("integrate", integrate))
         .add_system(system_fn("age_and_cull", age_and_cull))
         .add_system(system_fn("spawn", spawn));
+    sim
+}
+
+/// The parallel form with the given stage mode (engine ADR-0006).
+pub fn build_parallel_simulation(seed: u64, mode: StageMode) -> Simulation {
+    let mut sim = populated_simulation(seed);
+    sim.schedule_mut()
+        .add_system(system_fn("steer", steer_blocks))
+        .add_parallel_system(parallel_system_fn(
+            "census",
+            Access::new().read::<Position>().read::<Velocity>(),
+            census,
+        ))
+        .add_parallel_system(parallel_system_fn(
+            "agitate",
+            Access::new()
+                .read_resource::<Tick>()
+                .read_resource::<SimSeed>()
+                .read_resource::<TickInput>()
+                .structural(),
+            record_agitation,
+        ))
+        .add_system(system_fn("integrate", integrate_blocks))
+        .add_system(system_fn("age_and_cull", age_and_cull))
+        .add_parallel_system(parallel_system_fn(
+            "spawn",
+            Access::new()
+                .read_resource::<Tick>()
+                .read_resource::<SimSeed>()
+                .structural(),
+            record_spawns,
+        ))
+        .set_stage_mode(mode);
     sim
 }
 

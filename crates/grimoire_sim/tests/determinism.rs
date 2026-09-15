@@ -7,17 +7,22 @@
 //! 2. a snapshot at tick 4 000, restored into a freshly built simulation, continues identically;
 //! 3. `replay` over the recorded (and re-encoded) `InputLog` reproduces the hash sequence;
 //! 4. the final hash equals a golden constant (`scenario::GOLDEN_FINAL_HASH`) that CI reproduces
-//!    on Windows, Linux and macOS, which makes every CI run a cross-platform determinism check.
+//!    on Windows, Linux and macOS, which makes every CI run a cross-platform determinism check;
+//! 5. the parallel form of the scenario (engine ADR-0006) reproduces every checkpoint and the
+//!    golden hash with grouped and isolated stages under the sequential, permuted and reversed
+//!    executors, also after restoring a snapshot of the P0 form. The thread-pool gate in
+//!    `grimoire_exec/tests/hash_gate.rs` runs the same form on real threads.
 
 mod scenario;
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use grimoire_ecs::{Entity, With};
+use grimoire_ecs::{Entity, Executor, PermutedExecutor, SequentialExecutor, StageMode, With};
 use grimoire_sim::{InputLog, SimSnapshot, replay};
 use scenario::{
     Agitated, GOLDEN_FINAL_HASH, HASH_EVERY, MAX_ENTITIES, MIN_ENTITIES, SEED, SNAPSHOT_TICK,
-    TICK_RATE_HZ, TOTAL_TICKS, build_simulation, run_until, scripted_input,
+    TICK_RATE_HZ, TOTAL_TICKS, build_parallel_simulation, build_simulation, run_until,
+    scripted_input,
 };
 
 struct Recording {
@@ -164,5 +169,88 @@ fn checkpoint_report_lists_every_checkpoint_in_order() {
         report,
         "measured final hash: 7; checkpoints (tick, state_hash):\n     600 0x00000000000000ab\n   \
          10000 0x0000000000000007"
+    );
+}
+
+/// Runs the parallel form with `executor` in `mode` and checks every checkpoint against the P0
+/// run and the final hash against the golden value.
+fn check_parallel_form(executor: Arc<dyn Executor>, mode: StageMode) {
+    let mut sim = build_parallel_simulation(SEED, mode);
+    sim.world_mut().set_executor(executor);
+    let hashes = run_until(&mut sim, TOTAL_TICKS, |_| {});
+    let final_hash = hashes.last().map_or(0, |&(_, hash)| hash);
+    assert_eq!(
+        hashes,
+        reference().hashes,
+        "{}",
+        checkpoint_report(final_hash, &hashes)
+    );
+    assert_eq!(final_hash, GOLDEN_FINAL_HASH);
+}
+
+#[test]
+fn parallel_form_sequential() {
+    check_parallel_form(Arc::new(SequentialExecutor), StageMode::Grouped);
+}
+
+#[test]
+fn parallel_form_isolated() {
+    check_parallel_form(Arc::new(SequentialExecutor), StageMode::Isolated);
+}
+
+#[test]
+fn parallel_form_permuted_1() {
+    check_parallel_form(Arc::new(PermutedExecutor::new(1)), StageMode::Grouped);
+}
+
+#[test]
+fn parallel_form_permuted_2() {
+    check_parallel_form(Arc::new(PermutedExecutor::new(2)), StageMode::Grouped);
+}
+
+#[test]
+fn parallel_form_reversed() {
+    check_parallel_form(Arc::new(PermutedExecutor::reversed()), StageMode::Grouped);
+}
+
+#[test]
+fn parallel_form_restored_snapshot_continues() {
+    let reference = reference();
+    let mut sim = build_parallel_simulation(SEED, StageMode::Grouped);
+    sim.world_mut()
+        .set_executor(Arc::new(PermutedExecutor::new(3)));
+    sim.restore(&reference.snapshot);
+    assert_eq!(sim.tick(), SNAPSHOT_TICK);
+    assert_eq!(sim.state_hash(), reference.snapshot_hash);
+
+    let hashes = run_until(&mut sim, TOTAL_TICKS, |_| {});
+    let expected: Vec<(u64, u64)> = reference
+        .hashes
+        .iter()
+        .copied()
+        .filter(|&(tick, _)| tick > SNAPSHOT_TICK)
+        .collect();
+    assert_eq!(hashes, expected);
+}
+
+/// Frozen stage plan of the parallel form: a declaration that changes it shows up in review.
+#[test]
+fn parallel_form_stage_plan() {
+    let mut sim = build_parallel_simulation(SEED, StageMode::Grouped);
+    let plan: Vec<String> = sim
+        .schedule_mut()
+        .stages()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        plan,
+        [
+            "exclusive [steer] (exclusive system)",
+            "parallel [census, agitate] (follows an exclusive system)",
+            "exclusive [integrate] (exclusive system)",
+            "exclusive [age_and_cull] (exclusive system)",
+            "parallel [spawn] (follows an exclusive system)",
+        ]
     );
 }
