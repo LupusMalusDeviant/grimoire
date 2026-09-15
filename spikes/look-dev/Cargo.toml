@@ -1,0 +1,20 @@
+[package]
+name = "look-dev"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Look-dev spike (plan 0002 WP2): toon vs. stylized 3D vs. realistic shading, rendered offscreen for comparison images"
+
+# Standalone crate: deliberately not a member of the engine workspace, so its lints and CI stay untouched.
+[workspace]
+
+[dependencies]
+# wgpu comes re-exported from grimoire_gpu (pinned 30.0.1 by the engine workspace).
+grimoire_gpu = { path = "../../crates/grimoire_gpu" }
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+log = "=0.4.34"
+png = "=0.18.1"
+
+[lints.rust]
+unsafe_code = "deny"
