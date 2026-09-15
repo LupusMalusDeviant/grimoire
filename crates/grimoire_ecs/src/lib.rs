@@ -32,6 +32,7 @@
 //! assert_eq!(moved, vec![(entity, &Pos { x: 2.0 })]);
 //! ```
 
+mod access;
 mod archetype;
 mod bundle;
 mod command;
@@ -44,6 +45,7 @@ mod resource;
 mod schedule;
 mod world;
 
+pub use access::Access;
 pub use bundle::Bundle;
 pub use command::CommandBuffer;
 pub use component::Component;
