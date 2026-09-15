@@ -1,0 +1,310 @@
+# ADR-0007: Sigil-Quelltextsyntax v1
+
+- **Status:** Akzeptiert (2026-09-15; PO-Entscheidung in Sammelsitzung B, Spiel-Repo Plan 0002 P-10)
+- **Datum:** 2026-09-15
+- **Autor:** Claude (Ausarbeitung, unbeaufsichtigter Lauf) im Auftrag von Lupus Malus Deviant (PO)
+- **Konsultiert:** — (PO-Entscheidung in Sammelsitzung B erfolgt)
+
+## Kontext und Problemstellung
+
+Sigil ist die deklarative Daten-DSL für Bullet-Patterns (Projekt-ADR-0006). Quelltexte `.sigil` werden
+offline kompiliert: Die Laufzeit lädt nur Binär-Units, der Parser liegt nicht im Laufzeitpfad
+(Projekt-ADR-0007). Nach Plan 0002 WP1.3 gehört `grimoire_sigilc` mit der CLI `sigilc` in die
+Determinismus-Menge. PRD-0004 OF-4.1 lässt offen, ob die Quelltextsyntax auf RON aufsetzt oder eine eigene
+Grammatik bekommt. Das Kriterium sind die besten Fehlermeldungen und die Editier-Ergonomie im Tooling.
+WP4.1 baut den Parser in P1 und verlangt einen verlustfreien Syntaxbaum, Diagnosen mit Knotenpfad sowie
+einen Konformitätskorpus. Die Syntax prägt damit Compiler, Tooling-Suite (Projekt-ADR-0008),
+Formatdokumentation und jeden Content bis zum Mini-Run.
+
+Der Spike WP1.4 hat beide Kandidaten gemessen. Bericht:
+[`docs/spikes/of-4.1-sigil-quelltextsyntax.md`](../spikes/of-4.1-sigil-quelltextsyntax.md), Rohdaten:
+[`spikes/sigil-syntax/results.md`](https://github.com/LupusMalusDeviant/grimoire/blob/p1/wp1.4-sigil-syntax-spike/spikes/sigil-syntax/results.md) auf Branch `p1/wp1.4-sigil-syntax-spike` (Spike-Code, nicht nach `main` übernommen). Kurz:
+
+- **Fehlermeldungen:** sigil 1 erreicht in den zehn Korpusfällen 119 von 120 Punkten, RON mit `ron` 0.12.2
+  und eigener Zusatzschicht 102. RON verliert nur noch bei den Syntaxfehlern e02, e04 und e09, und dort an
+  `ron` selbst. Fehlendes Pflichtfeld und falsche Einheit lagen in der ersten Fassung ebenfalls zurück; das
+  lag an der dünnen RON-Zusatzschicht und ist mit wenigen Zeilen behoben. Eine blinde Zweitbewertung durch
+  Codex bestätigt die Handbewertung: 37 von 40 Werten gleich, keine Abweichung über einen Punkt, 120 zu 104.
+- **Rundreise:** Einen Wert an einem Knotenpfad ohne Kommentarverlust setzen gelingt in beiden Syntaxen,
+  aber nur mit einem selbst geschriebenen verlustfreien Baum. Über das `ron`-Crate gehen alle Kommentare
+  verloren.
+- **Länge:** sigil 1 braucht 56 % der Tokens von RON. Das ist nur ein Richtwert, weil jeder Scanner anders
+  zählt; die Differenz stammt zu 40 % aus Trennkommas und zu 31 % aus Einheiten-Hüllen.
+- **Aufwand:** 2 241 Zeilen eigener Parser gegen 713 Zeilen eigene Zusatzschicht für RON.
+- **Generierbarkeit:** Codex als fremder Autor und Claude schreiben drei neue Muster im ersten Versuch in
+  beiden Syntaxen ohne Diagnose und modellgleich. Ein Unterschied ist nicht messbar. Die Aufgaben waren aber
+  vollständig beziffert, und Grammatik samt Beispielpaar lag im Kontext; die Messung trennt also kaum.
+
+Plan 0002 WP1.4 verlangt außerdem einen Versions-Header `sigil 1`, eine Migrationsregel und die Schließung
+von OF-4.2 (f32 oder Festkomma) per Verweis auf ADR-0004.
+
+**Kernfrage:** Welche Quelltextsyntax bekommt Sigil v1, damit Modder und Agenten Patterns mit präzisen
+Fehlermeldungen schreiben und Werkzeuge einzelne Werte verlustfrei ändern können — und wie werden
+künftige Syntaxversionen gekennzeichnet und migriert?
+
+## Anforderungen
+
+### Funktional
+
+- Alle Sprachmerkmale aus PRD-0004 FR-01 bis FR-05, FR-08 und FR-10 bis FR-12 sind als Daten ausdrückbar, einschließlich Komposition mit Import und Parameter-Overrides.
+- Einheiten (Ticks, Grad, Welteinheiten und ihre Raten) sind am Wert sichtbar und werden gegen das Zielfeld geprüft, auch in Overrides. Wallclock-Einheiten gibt es nicht, `beats` ist für v1 reserviert und wird abgelehnt.
+- Jede Diagnose nennt Datei, Zeile, Spalte, Knotenpfad, Ursache, Fix-Hinweis und Code, als Text und als JSON (WP4.1).
+- Ein Werkzeug setzt einen Wert an einem Knotenpfad, ohne Kommentare oder Formatierung außerhalb des Werts zu verändern (`sigilc set`, Tooling-Suite).
+- `parse → fmt → parse` ergibt dasselbe Modell (Property-Test aus WP4.1).
+- Jede Datei trägt ihre Syntaxversion. Eine Datei nicht unterstützter Version erzeugt genau eine Diagnose.
+- Es gibt eine Migrationsregel zwischen Syntaxversionen.
+- Agenten können Patterns generieren und statisch prüfen lassen (PRD-0004 US-02, Projekt-ADR-0006).
+
+### Nicht-Funktional
+
+- Fehlermeldungen sind menschen- und agentenlesbar, die Syntax ist öffentlich dokumentiert (PRD-0004 NFR, `docs/formats/sigil.md`, Modding-by-documentation).
+- Determinismus: Dieselbe Quelle ergibt auf Windows x86_64, Linux x86_64 und macOS arm64 dieselbe Binär-Unit (ADR-0004).
+- Robustheit: Keine Eingabe bringt Parser oder Compiler zum Panic (Review-Kriterium aus WP1.7).
+- Diagnosequalität und Dateiformat hängen nicht stumm vom Verhalten einer Drittcrate-Version ab.
+- Der eigene Code bleibt überschaubar und ist in WP4.1 ohne Verzug der P1-Stränge umsetzbar.
+- Die Syntax ist unabhängig davon tragfähig, wie P-2 (Projekt-ADR-0010, Compiler-Hoheit in Rust) entschieden wird.
+
+## Betrachtete Optionen
+
+### Option 1: RON über das Crate `ron`, mit eigener Pfad- und Editierschicht
+
+Idiomatisches serde-RON mit `#![enable(implicit_some)]`, PascalCase-Varianten und Einheiten als Newtypes
+(`Ticks(20)`, `Deg(11.0)`). `ron` parst und deserialisiert. Eine eigene Schicht leitet Fix-Hinweise aus
+den Fehlercodes ab, ein eigener verlustfreier Scanner liefert Knotenpfade, Positionen und `set`. Im Spike
+steht die Version im Feld `version: 1`. RON kennt keine eigene Kopfzeile; für den Versions-Header unten
+schlägt der Autor deshalb einen Vorab-Scan vor: Er liest Zeile 1 `sigil 1` und übergibt den Rest der Datei
+mit einer Leerzeile an ihrer Stelle an `ron`, damit Zeilennummern stimmen. Eine Datei mit Header ist dann
+kein reines RON mehr. Die Alternative, ein Kommentar `// sigil 1`, bliebe gültiges RON, widerspräche aber
+der Header-Regel (kein Kommentar vor dem Header) und ist deshalb nicht vorgeschlagen. Der Vorab-Scan ist im
+Spike nicht umgesetzt. **Gemessen** im Spike.
+
+**Positiv:**
+- Kein eigener Parser für das Modell: serde derive liefert Schema-Pass und Typprüfung.
+- RON ist im Rust-Umfeld verbreitet und öffentlich dokumentiert. In der Nachmessung schrieb Codex es im ersten Versuch fehlerfrei, sigil 1 aber ebenso; einen Vorsprung aus Trainingsdaten zeigt die Messung nicht.
+- Kleinerer eigener Code: 713 Zeilen im Spike für Hinweise, Pfade, Positionen und `set`.
+- Schema-Befunde lassen sich mit wenigen Zeilen Zusatzschicht auf das Niveau von sigil 1 heben: Das fehlende Pflichtfeld (e03) verlegt sie über den Scanner vom Strukturende auf den Emitter, bei der falschen Einheit (e07) nennt sie Feld und Wert.
+- `ron` 0.12.2 prüft Newtype-Namen, eine falsche Einheit (`Ticks` statt `Deg`) wird also erkannt.
+
+**Negativ:**
+- Syntaxfehler führen gemessen in die falsche Richtung, und das liegt an `ron` selbst, nicht an der Zusatzschicht: Fehlerklasse oder Ursache sind falsch, und der Fehlercode enthält nicht, was ein Hinweis bräuchte. `3.5` statt Ganzzahl heißt „Expected comma“, eine fehlende Klammer erscheint als unbekanntes Feld `Bullet`, ein doppeltes Komma als fehlende Struktur `Key` (e02, e04, e09). Außerhalb des Korpus meldet ein fehlender Newtype (`speed: 0.05`) „Expected opening `(` for struct `UnitsPerTick`“ und ein fehlender Strukturname „Expected identifier“, beide ohne Hinweis (Sonden, `results.md` 2.7).
+- `ron` bricht beim ersten Fehler ab und trennt Syntax- und Schemafehler nicht sauber.
+- Verlustfreies Editieren braucht einen zweiten Parser neben `ron`, der dieselbe Sprache anders liest. Jede Abweichung zwischen beiden ist eine eigene Fehlerquelle.
+- Trennkommas und Einheiten als Hülle kosten Tokens und Verschachtelung: 1 588 gegen 883 Tokens (Richtwert; 280 der 705 Tokens Differenz sind Kommas, 216 Einheiten-Hüllen), ein Stützpunkt steht auf 24 statt 6 Leerzeichen Einrückung.
+- Die Einheitenprüfung hängt an der `ron`-Version und daran, dass nichts über `ron::Value` läuft. Dort wird `Ticks(240)` stillschweigend zu `Deg(240.0)`; Overrides müssen deshalb als `RawValue` gehalten werden.
+- Der Versions-Header braucht eine Vorverarbeitung außerhalb von `ron` (Vorab-Scan, siehe oben), und eine Datei mit Header ist kein reines RON mehr. Dass der Spike die Version erst nach der vollständigen Deserialisierung prüft, ist dagegen ein Artefakt des Prototyps, keine Eigenschaft von RON: Mit dem Vorab-Scan wird sie vorher geprüft. Ohne ihn würde eine echte v2-Datei zuerst Schemafehler melden (nicht gemessen).
+
+### Option 2: Eigene Grammatik „sigil 1“ mit verlustfreiem Syntaxbaum
+
+Zeilenorientierte Grammatik (`corpus/grammar/sigil-1.ebnf`) mit dem Kopf `sigil 1` in Zeile 1.
+Schlüsselwörter für Einträge (`meta`, `import`, `bullet`, `emitter`) und Blöcke (`block`, `modifier`,
+`transform`), Felder als `name = wert`, Einheiten als Suffix (`20t`, `11deg`, `0.09u/t`). Die Grammatik
+ist generisch; Feldnamen, Typen, Einheiten und Bereiche prüft das gemeinsame Schema. Ein handgeschriebener
+Parser baut einen verlustfreien Syntaxbaum mit allen Tokens samt Leerraum und Kommentaren, setzt nach
+Fehlern wieder auf und senkt in einen Wertebaum mit Spans ab. Darüber läuft ein serde-Deserializer.
+**Gemessen** im Spike.
+
+**Positiv:**
+- Beste gemessene Diagnosen: 119/120 Punkte (blinde Zweitbewertung durch Codex: 120/120), alle zehn Korpusfälle mit exakter Position, exaktem Knotenpfad und genau einer Diagnose je Datei. Das gilt nur für diese zehn Fälle (siehe Negativ).
+- Nach einem Syntaxfehler setzt der Parser wieder auf und meldet danach noch Schemafehler.
+- Ein Parser für alles: Kompilieren, `fmt`, `set` und `migrate` arbeiten auf demselben verlustfreien Baum.
+- Kompakter und flacher: 56 % der Tokens (Richtwert, siehe Kontext) und 87 % der Zeilen von RON. Modifikatoren sind eigenständige Blöcke ohne Kommas über mehrere Ebenen.
+- Einheiten stehen am Literal und bleiben in Overrides erhalten, unabhängig von einer Drittcrate.
+- Der Versions-Header wird vor allem anderen geprüft; eine fremde Version ergibt genau eine Diagnose.
+- Keine Fremdabhängigkeit im Parser, das Format bleibt unter eigener Kontrolle.
+
+**Negativ:**
+- Eigener Parser mit rund 2 241 Zeilen im Spike, etwa 3,1-mal so viel eigener Code wie die RON-Schicht (713 Zeilen). Er muss gewartet, dokumentiert und gegen beliebige Eingaben gehärtet werden (Fuzzing).
+- Syntaxspezifische Fehlerbilder außerhalb des Korpus sind gemessen schwächer. `count: 24` (RON-Gewohnheit) ergibt drei Diagnosen, zwei Felder auf einer Zeile ergeben zwei, jeweils mit einem falschen Folgebefund „fehlendes Pflichtfeld“. `0.25 u` und `30s` ergeben je zwei Diagnosen, `30s` ohne Hinweis (Sonden, `results.md` 2.7). Der Fehlerkorpus enthält nur Mutationen, die in beiden Syntaxen gleich aussehen.
+- Die Syntax ist neu: Agenten und Modder kennen sie nicht aus anderen Projekten. In der Nachmessung schrieb Codex sie mit Grammatik und Beispielpaar im Kontext im ersten Versuch fehlerfrei; ohne diese Hilfen und bei offener formulierten Aufgaben ist das nicht gemessen und bleibt ein Risiko.
+- Keine Editor-Unterstützung von Haus aus: Syntaxhervorhebung, Formatierer und später LSP sind Eigenbau.
+- Die 30/30-Werte sind befangen, denn Grammatik, Soll-Meldungen und Parser stammen vom selben Autor. Sie zeigen, was erreichbar ist, nicht was ohne Aufwand entsteht.
+- Lehnt der PO P-2 ab (R20), braucht auch die C#-Seite einen Parser für eine Grammatik ohne fremde Implementierung.
+
+### Option 3: KDL 2.0 über das Crate `kdl`
+
+KDL ist eine knotenorientierte Dokumentsprache: Knoten mit Argumenten, Eigenschaften und Kinderblöcken in
+geschweiften Klammern, getrennt durch Zeilenumbrüche. Einheiten ließen sich als Typannotation schreiben,
+etwa `key at=(t)20 mul=0.3`. **Nicht gemessen**, bewertet nach Spezifikation und Crate-Dokumentation;
+Beispiele sind nicht gegen einen Parser geprüft.
+
+**Positiv:**
+- Die Spezifikation 2.0.0 ist seit 2024-12-21 final. Das Crate `kdl` (6.7.1) implementiert sie standardmäßig und bewahrt laut Dokumentation die Formatierung beim Editieren. Verlustfreies `set` käme also ohne eigenen Scanner.
+- Diagnosen mit Spans über `miette` sind im Crate vorgesehen.
+- Die Oberfläche ähnelt sigil 1: Blöcke in Klammern, ein Konstrukt je Zeile, Kommentare mit `//`, `/* */` und `/-` zum Auskommentieren ganzer Knoten.
+- Es ist eine öffentliche, sprachübergreifende Spezifikation; das mildert R20 möglicherweise (C#-Implementierungen nicht geprüft).
+
+**Negativ:**
+- Nicht gemessen: Weder die Fehlermeldungen des Crates zu den zehn Korpusfällen noch die Generierbarkeit sind bekannt.
+- Schema, Knotenpfade, Einheiten und Fix-Hinweise bleiben Eigenbau. KDL kennt kein serde-Schema mit Feldprüfung wie RON; der Schema-Pass liefe über das Dokumentmodell.
+- Die Typannotation für zusammengesetzte Einheiten wie `u/t` bräuchte nach Spezifikation vermutlich Anführungszeichen (`("u/t")0.09`); das ist ungeprüft und liest sich schlechter als ein Suffix.
+- KDL 1 und 2 sind inkompatibel (etwa `#true` statt `true`). Ob Werkzeuge und Trainingsdaten schon KDL 2 sprechen, ist offen.
+- Das Format liegt unter fremder Kontrolle; Spezifikations- und Crate-Upgrades wären Migrationsanlässe.
+
+### Option 4: TOML 1.1 über das Crate `toml_edit`
+
+Patterns als TOML-Dokumente mit Tabellen-Arrays (`[[emitters]]`, `[[emitters.modifiers]]`) und
+Inline-Tabellen, Einheiten als Zeichenketten (`"20t"`) oder im Feldnamen. **Nicht gemessen**, bewertet nach
+Spezifikation und Crate-Dokumentation.
+
+**Positiv:**
+- Sehr verbreitet (Cargo); Modder und Agenten kennen TOML.
+- `toml_edit` (0.25.15, Spezifikation 1.1.0) bewahrt laut Dokumentation Kommentare, Leerraum und die relative Reihenfolge beim Editieren.
+- Seit TOML 1.1.0 dürfen Inline-Tabellen mehrere Zeilen umfassen und ein nachgestelltes Komma tragen.
+
+**Negativ:**
+- Tiefe Verschachtelung (Emitter → Modifikatoren → Stützpunkte, Transformationen mit Blöcken) wird entweder zu langen Tabellenpfad-Kaskaden oder zu verschachtelten Inline-Tabellen. Die Zugehörigkeit eines Blocks zu seinem Emitter ist bei Tabellen-Arrays nur über die Reihenfolge im Dokument sichtbar.
+- Einheiten haben keinen eigenen Typ. Als Zeichenkette verliert der Parser die Typinformation, im Feldnamen (`delay_ticks`) wird eine falsche Einheit stumm (vgl. die Anmerkung zur fairen RON-Form im Korpus-README).
+- `toml_edit` bewahrt laut Dokumentation die Reihenfolge gepunkteter Schlüssel nicht.
+- Schema, Knotenpfade und Fix-Hinweise bleiben Eigenbau; die Diagnosequalität ist nicht gemessen.
+
+## Vorschlag des Autors
+
+**Option 2, die eigene Grammatik „sigil 1“** (vorläufig, die Bestätigung durch den PO steht aus).
+
+PRD-0004 nennt Fehlermeldungen und Editier-Ergonomie als Kriterien, und bei beiden liegt sigil 1 gemessen
+vorn. Der Hauptvorteil von RON, kein eigener Parser, trägt nicht so weit, wie es scheint: Plan 0002 verlangt
+Knotenpfade in Diagnosen und verlustfreies Setzen von Werten, und dafür braucht auch RON einen eigenen
+Scanner. Übrig bleibt ein Aufwandsunterschied von etwa Faktor 3,1 statt „null gegen alles“, und dazu das
+Risiko zweier Parser für eine Sprache. KDL (Option 3) ist die ernsthafteste Alternative, weil das Crate
+verlustfreies Editieren mitbringt. Es ist aber nicht gemessen, und Einheiten sowie Schema bleiben
+Eigenbau. TOML (Option 4) passt schlecht zur tiefen Verschachtelung der Patterns.
+
+Die Befangenheit des Spikes wiegt schwer. Der Autor hat deshalb **Bedingungen vor der Abnahme**
+vorgeschlagen. Zwei davon sind seit der Nachmessung vom 2026-09-15 erfüllt; keine der beiden Messungen
+widerspricht dem Vorschlag, der deshalb unverändert bleibt:
+
+1. **Generierbarkeit nachholen — erfüllt.** Codex hat die Muster G1 bis G3 in beiden Syntaxen im ersten
+   Versuch ohne Diagnose geschrieben (Spike-Bericht, Abschnitt 4.3). sigil 1 schneidet nicht schlechter ab
+   als RON; die vorgeschlagene Schwelle für eine Neugewichtung von Option 1 oder 3 („deutlich schlechter im
+   ersten Versuch“) ist nicht erreicht. Weil die Messung an der Decke liegt, bleibt dem PO die Frage, ob er
+   vor der Abnahme eine trennschärfere Messung verlangt.
+2. **Zweitbewertung — erfüllt** durch Codex, blind gegenüber Claudes Werten: 37 von 40 Werten gleich, drei
+   Abweichungen von je einem Punkt (Fix-Hinweis bei e03 in beiden Syntaxen und bei e04 in RON), keine von 2
+   oder mehr. Eine Bewertung durch den PO ersetzt das nicht.
+3. **Syntaxspezifische Fehlerfälle** in den Fehlerkorpus aufnehmen und bewerten: für sigil 1 `:` statt `=`,
+   mehrere Felder auf einer Zeile, Leerzeichen vor der Einheit und eine Wallclock-Einheit; für RON ein
+   fehlender Newtype und ein fehlender Strukturname; für beide Kaskadentiefe über 3, ein Kaskadenzyklus und
+   `beats`. Ausgangspunkt sind die Sonden in `results.md` 2.7. Die falschen Folgebefunde von sigil 1 sollten
+   vor der Bewertung behoben sein.
+
+**Versions-Header (für jede Option vorgeschlagen; in Option 1 liest ein Vorab-Scan die Kopfzeile und übergibt
+den Rest an `ron`):**
+
+- Zeile 1 beginnt in Spalte 1 mit `sigil <N>`, wobei `<N>` eine positive Ganzzahl ist. Vor dem Header
+  stehen weder BOM noch Kommentar. v1-Dateien beginnen mit `sigil 1`.
+- Der Header wird vor allen anderen Pässen geprüft. Fehlt er oder nennt er eine nicht unterstützte Version,
+  entsteht genau eine Diagnose mit Fix-Hinweis (Header ergänzen, `sigilc migrate` oder ein neueres `sigilc`).
+- Die Quelltextversion ist unabhängig von der Version des Binärformats `SigilUnit` (Vertrag WP1.2); beide
+  werden getrennt gezählt.
+
+**Migrationsregel (Vorschlag):**
+
+1. **Inkompatible Änderungen erhöhen `<N>`.** Inkompatibel ist jede Änderung, nach der eine unter `N`
+   gültige Datei ungültig wird oder eine andere Binär-Unit ergibt: Umbenennen oder Entfernen von Feldern
+   und Arten, geänderte Defaults, geänderte Einheitensemantik, geänderte Grammatik.
+2. **Additive Änderungen bleiben in `N`:** neue Arten, neue optionale Felder, deren Fehlen die bisherige
+   Bedeutung behält. Ein älteres `sigilc` meldet solche Konstrukte als unbekannt und weist darauf hin, dass
+   ein neueres `sigilc` nötig sein könnte.
+3. **Übergangsfenster:** `sigilc` für `N+1` liest `N` weiter und warnt dabei mit Migrationshinweis. Die Länge
+   des Fensters legt der PO fest; der Autor schlägt als Untergrenze das Ende der folgenden Phase vor.
+4. **`sigilc migrate`** schreibt eine Datei schrittweise von `N` auf `N+1` um, bei größeren Sprüngen als
+   Kette. Es arbeitet auf dem verlustfreien Syntaxbaum: Kommentare und Formatierung außerhalb geänderter
+   Knoten bleiben erhalten. Die Migration ist idempotent.
+5. **Nachweis:** Für jede Datei des Konformitätskorpus ergibt die migrierte Fassung dieselbe Binär-Unit
+   (Content-Hash) wie das Original. Ausgenommen sind nur Bedeutungsänderungen, die in den Migrationsnotizen
+   der Version stehen; sie bekommen eigene Goldens. Replays und Golden Master beziehen sich auf Binär-Units,
+   nicht auf Quelltext.
+6. Jede Version hat einen eigenen Abschnitt in `docs/formats/sigil.md` mit Änderungsliste.
+
+**OF-4.2 (f32 oder Festkomma), unabhängig von der Optionswahl:** geschlossen durch das akzeptierte
+[ADR-0004](0004-deterministische-gleitkommaarithmetik.md). Bullets bewegen sich in `f32` nach dessen
+Regeln, transzendente Funktionen laufen über `grimoire_core::math::dmath`. Festkomma gibt es in v1 nicht.
+Der Fallback über den Typalias `SimVec` bleibt offen: Er käme nur über ein Folge-ADR, falls das
+Annahmekriterium von ADR-0004 später bricht. Für die Syntax folgt daraus:
+
+- Der Quelltext legt keinen Laufzeit-Zahlentyp fest. Literale sind dezimal, und der Compiler bildet sie auf
+  die Darstellung der Binär-Unit ab. Ein späterer Wechsel auf Festkomma ändert Compiler und Binärformat,
+  nicht die Quelltextsyntax.
+- Einlesen der Literale und Umrechnen der Einheiten geschehen in `grimoire_sigilc` und nur mit Operationen,
+  die nach ADR-0004 erlaubt sind (Regeln 1–3). Dass die Binär-Units plattformgleich sind, prüft ein
+  Golden-Test über den Konformitätskorpus auf allen drei Plattformen.
+
+## Entscheidung
+
+**Gewählte Option:** 2 — eigene Grammatik „sigil 1“, wie vom Autor vorgeschlagen.
+
+**Nachtrag (2026-09-15, PO-Entscheidung Sammelsitzung B):** Angenommen ohne weitere Messung vor der Abnahme; die unter „Vorschlag des Autors“ Punkt 3 genannten syntaxspezifischen Fehlerfälle bleiben eine Folgearbeit vor WP4.1, keine Voraussetzung der Annahme.
+
+Versions-Header, Migrationsregel und die Schließung von OF-4.2 stehen im Vorschlag des Autors. Sie gelten
+für jede Option und werden in Sammelsitzung B mit abgenommen.
+
+## Konsequenzen
+
+Die folgenden Punkte beschreiben die Folgen bei Annahme des Vorschlags (Option 2).
+
+### Positiv
+
+- Modder und Agenten bekommen Diagnosen, die auf das zu ändernde Token zeigen und Feld und Besitzer nennen, auch bei Syntaxfehlern. In den meisten Korpusfällen schlagen sie einen konkreten Ersatz vor; Ausnahmen sind e03 (Hinweis ohne Beispielwert) und e08 (Umbenennen ohne konkreten Namen). Für syntaxspezifische Fehlerbilder gilt das erst nach der Nacharbeit aus Bedingung 3.
+- Kompilieren, `fmt`, `set` und `migrate` arbeiten auf einem einzigen verlustfreien Syntaxbaum. Die Tooling-Suite kann Werte schreiben, ohne Kommentare zu zerstören.
+- Einheiten stehen sichtbar am Literal und werden in Overrides ohne Sonderfall geprüft.
+- Das Format hängt nicht vom Verhalten einer Drittcrate-Version ab. Versionen und Migration liegen vollständig in eigener Hand.
+- Der Spike-Korpus und die Soll-Diagnosen gehen direkt in den Konformitätskorpus aus WP4.1 über.
+- OF-4.2 ist ohne Zusatzaufwand geschlossen; die Syntax bleibt von einem späteren Festkomma-Wechsel unberührt.
+
+### Negativ
+
+- Eigener Parser von geschätzt gut 2 000 Zeilen in `grimoire_sigilc`, dazu Pflege, Fuzzing und Formatdokumentation. Die Spike-Zahlen sind unoptimierter Prototyp-Code.
+- Keine Editor-Unterstützung von Haus aus: Syntaxhervorhebung, Formatierer und später LSP sind Eigenbau.
+- Agenten kennen die Syntax nicht aus anderen Projekten. Die Generierbarkeit hängt an Formatdoku, Beispielen und Diagnoseschleife; die Nachmessung zeigt mit Grammatik und Beispielpaar im Kontext keinen Nachteil, schwierigere Bedingungen sind nicht gemessen.
+- Die gemessene Diagnosequalität ist befangen und muss sich an fremden Fehlerbildern erst bewähren. Das Wiederaufsetzen ist nur für die Korpus-Fehlerarten ausgelegt; syntaxspezifische Sonden zeigen schon Folgefehler.
+- Mehrere Schemafehler je Lauf meldet der Spike nicht; das bräuchte einen eigenen, nicht abbrechenden Schema-Pass statt serde derive.
+- Lehnt der PO P-2 ab (R20), braucht die C#-Seite einen eigenen Parser für diese Grammatik.
+
+### Folge-Entscheidungen
+
+- **Vor der Abnahme:** syntaxspezifische Fehlerfälle aufnehmen (Bedingung 3). Generierbarkeitsmessung und Zweitbewertung sind nachgeholt; ob vorher eine trennschärfere Generierbarkeitsmessung nötig ist, entscheidet der PO.
+- **P-2 / Projekt-ADR-0010** (Compiler-Hoheit in Rust): Bei Ablehnung gewinnt die Verfügbarkeit fremder Parser-Implementierungen an Gewicht (Option 3 oder 4).
+- **Länge des Übergangsfensters** beim Lesen alter Syntaxversionen (Migrationsregel, Punkt 3).
+- **Mehrfachbefunde im Schema-Pass:** ob `sigilc` alle Schemafehler einer Datei meldet, und wie (eigener Pass statt serde derive).
+- **Endgültige Grammatik und Schema** in WP4.1 und WP4.2: Feldnamen, Arten, Bereiche; die Korpus-Annahmen sind vorläufig.
+- **Editor-Unterstützung:** TextMate-Grammatik für Syntaxhervorhebung jetzt oder LSP später (Tooling-Suite, PRD-0016).
+- **Falls Option 1 gewählt wird:** Overrides als `RawValue`, `ron` exakt pinnen, Upgrades gegen den Konformitätskorpus prüfen; Vorab-Scan des Versions-Headers bestätigen und umsetzen.
+- **`SimVec`-Fallback** (OF-4.2) nur über ein Folge-ADR zu ADR-0004.
+
+### Review
+
+**Reality-Check geplant für:** nach WP4.1, sobald `sigilc check` gegen den Konformitätskorpus läuft und die ersten Referenz-Patterns von Agenten stammen; spätestens an M4 (Ende P1)
+
+## Weitere Informationen
+
+### Scope
+
+Gilt für die Quelltextsyntax aller `.sigil`-Dateien: Grammatik, Versions-Header, Migrationsregel, Knotenpfade
+und Diagnoseformat an der Quelle, umgesetzt in `grimoire_sigilc` (`sigilc check`, `build`, `fmt`, `set`,
+`migrate`). Nicht erfasst sind:
+
+- das Binärformat `SigilUnit` (Vertrag WP1.2),
+- die Laufzeit `grimoire_sigil`,
+- die Frage, wer Parser und Compiler implementiert (Projekt-ADR-0010, P-2),
+- das genaue Schema aus Feldnamen, Arten und Bereichen (WP4.1/WP4.2),
+- andere Content-Formate außerhalb von `.sigil`.
+
+### Tooling-Empfehlung
+
+- Spike-Korpus (`spikes/sigil-syntax/corpus/`) samt `expected.json` als Grundstock des Konformitätskorpus aus WP4.1 übernehmen, ergänzt um die syntaxspezifischen Sonden, Kaskadentiefe über 3, Kaskadenzyklen, `beats`, mehrzeilige Fehlerbilder und echte v2-Dateien.
+- Property-Tests `parse → fmt → parse` und „Verkettung aller Tokens = Quelldatei“ (Verlustfreiheit), dazu Fuzzing von Lexer und Parser; Ziel: kein Panic bei beliebiger Eingabe.
+- `sigilc check --json` als Rückmeldungsschleife für Agenten; die Messung zur Generierbarkeit (`cargo run -- report`) als wiederholbarer Test mit neuen Aufgabentexten.
+- Golden-Test über den Korpus: gleiche Binär-Unit auf Windows, Linux und macOS (OF-4.2, ADR-0004).
+- Eine kleine TextMate-Grammatik für Syntaxhervorhebung im Editor; LSP erst, wenn die Tooling-Suite es braucht.
+
+### Referenzen
+
+- Spike-Bericht: [`docs/spikes/of-4.1-sigil-quelltextsyntax.md`](../spikes/of-4.1-sigil-quelltextsyntax.md)
+- Messdaten: [`spikes/sigil-syntax/results.md`](https://github.com/LupusMalusDeviant/grimoire/blob/p1/wp1.4-sigil-syntax-spike/spikes/sigil-syntax/results.md); Korpus und Grammatik: [`spikes/sigil-syntax/corpus/`](https://github.com/LupusMalusDeviant/grimoire/blob/p1/wp1.4-sigil-syntax-spike/spikes/sigil-syntax/corpus/README.md) — beide nur auf Branch `p1/wp1.4-sigil-syntax-spike`, nicht nach `main` übernommen
+- [ADR-0004](0004-deterministische-gleitkommaarithmetik.md) — `f32` mit Regeln und `dmath`, `SimVec` als Fallback; schließt OF-4.2
+- Spiel-Repo: PRD-0004 (OF-4.1, OF-4.2, FR-01 bis FR-12, US-02), PRD-0016 (Tooling-Suite), Plan 0002 (WP1.3, WP1.4, WP1.6, WP4.1, P-2, P-10, R5, R20), Projekt-ADR-0006 (Sigil-Daten-DSL), ADR-0007 (Offline-Kompilierung), ADR-0008 (Avalonia-Tooling)
+- `ron` 0.12.2 (gemessen): https://docs.rs/ron/0.12.2
+- KDL-Spezifikation 2.0: https://kdl.dev/spec/ und Release-Hinweise https://github.com/kdl-org/kdl/releases (Final seit 2024-12-21; abgerufen 2026-09-15, nicht gemessen)
+- Crate `kdl` 6.7.1 (Formatierung bleibt beim Editieren erhalten, `miette`-Diagnosen): https://docs.rs/kdl (abgerufen 2026-09-15, nicht gemessen)
+- Crate `toml_edit` 0.25.15 (Kommentare, Leerraum und Reihenfolge bleiben erhalten; gepunktete Schlüssel nicht): https://docs.rs/toml_edit (abgerufen 2026-09-15, nicht gemessen)
+- TOML 1.1.0 (mehrzeilige Inline-Tabellen, nachgestelltes Komma): https://github.com/toml-lang/toml/releases/tag/1.1.0 (abgerufen 2026-09-15)
