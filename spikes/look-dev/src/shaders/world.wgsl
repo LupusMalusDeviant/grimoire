@@ -32,9 +32,16 @@ struct Frame {
     decal_color: vec3<f32>,
     floor_salt: u32,
     blobs: array<vec4<f32>, 9>,
-    // Global light-intensity factor times the look's calibrated light gain. Scales only the terms
-    // derived from lights (direct, ambient, specular), never rim, emission, decal or bolts.
+    // Global light-intensity factor times the look's calibrated light gain. Scales only the direct
+    // light (point lights and moon; diffuse and specular), never ambient, rim, emission, decal or bolts.
     light_gain: f32,
+    // Global light-intensity factor alone, identical for every look: scales the hemisphere ambient
+    // and is the reference scale of the toon ramp.
+    light_factor: f32,
+    _pad0: f32,
+    _pad1: f32,
+    // Toon ramp in absolute luminance at light gain 1: threshold 1, threshold 2, mid level, top level.
+    toon_ramp: vec4<f32>,
 }
 
 struct Light {
@@ -54,6 +61,8 @@ struct Material {
     emissive: vec4<f32>,
     tint: vec4<f32>,
     params: vec4<f32>,
+    // rgb metal base colour F0 (equals the albedo for non-metals).
+    metal: vec4<f32>,
 }
 
 struct Rim {
@@ -202,7 +211,7 @@ fn blob_shadow(p: vec2<f32>) -> f32 {
     for (var i = 0u; i < frame.blob_count; i = i + 1u) {
         let b = frame.blobs[i];
         let t = length(p - b.xy) / b.z;
-        f = f * mix(0.55, 1.0, smoothstep(0.0, 1.0, t));
+        f = f * mix(0.4, 1.0, smoothstep(0.0, 1.0, t));
     }
     return f;
 }
@@ -220,6 +229,7 @@ struct Surface {
     emissive: vec3<f32>,
     tint: vec3<f32>,
     spec_color: vec3<f32>,
+    metal_color: vec3<f32>,
     gloss: f32,
     ks: f32,
     roughness: f32,
@@ -262,7 +272,8 @@ fn surface(in: VertexOut) -> Surface {
     s.ks = mix(mat.params.x, grout.params.x, g);
     s.roughness = mix(mat.params.y, grout.params.y, g);
     s.metalness = mix(mat.params.z, grout.params.z, g);
-    s.spec_color = mix(vec3<f32>(1.0), base, mat.albedo.a);
+    s.spec_color = mix(vec3<f32>(1.0), mat.metal.rgb, mat.albedo.a);
+    s.metal_color = mat.metal.rgb;
     s.emissive = mat.emissive.rgb + frame.decal_color * (frame.decal_emission * decal);
     s.shadow = select(1.0, blob_shadow(world_xy), is_floor);
     s.excluded = select(0.0, 1.0, is_floor && (decal_d < 0.1 || s.shadow < 0.999));
@@ -275,6 +286,10 @@ fn atten(d: f32, r: f32) -> f32 {
     let x2 = x * x;
     let q = saturate(1.0 - x2 * x2);
     return q * q / (1.0 + d * d);
+}
+
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 fn ambient(n: vec3<f32>) -> vec3<f32> {
@@ -291,59 +306,36 @@ fn output(s: Surface, color: vec3<f32>) -> FragOut {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Look 1: toon (3 bands per light, anti-aliased band edges only).
+// Look 1: toon (Lambert irradiance quantised once into 3 bands, shadow tint, hard highlight).
 // ---------------------------------------------------------------------------------------------
 
-// Band thresholds on x = saturate(N.L) * atten and the minimum edge half-width (materials.rs).
-// Bug fix: the specification's 0.02 / 0.20 / 0.004 were scaled by 0.2, because the floor response
-// under a pillar torch mounted at z 3.8 peaks at about 0.061 and never reached 0.20.
-const TOON_BAND_LOW: f32 = 0.004;
-const TOON_BAND_HIGH: f32 = 0.04;
-const TOON_EDGE_MIN: f32 = 0.0008;
+// Minimum anti-aliasing half-width of a ramp edge as a fraction of the upper threshold, and the
+// hard highlight (step of the Blinn-Phong lobe, level = mean of the lobe above the step). materials.rs
+// holds the same values.
+const TOON_EDGE_MIN: f32 = 0.01;
+const TOON_HIGHLIGHT_EDGE: f32 = 0.5;
+const TOON_HIGHLIGHT_LEVEL: f32 = 0.72;
 
 fn aa(x: f32, t: f32, w: f32) -> f32 {
     return smoothstep(t - w, t + w, x);
 }
 
-// d atten / d d.
-fn atten_dd(d: f32, r: f32) -> f32 {
-    let x = d / r;
-    let x2 = x * x;
-    let x4 = x2 * x2;
-    let q = saturate(1.0 - x4);
-    let inv = 1.0 / (1.0 + d * d);
-    let dq = select(0.0, -4.0 * x2 * x / r, x4 < 1.0);
-    return 2.0 * q * dq * inv - q * q * 2.0 * d * inv * inv;
-}
-
-// Screen-space width of x = saturate(N.L) * atten, i.e. fwidth(x). WGSL forbids derivatives after
-// the non-uniform radius early-out of the light loop, so the derivative is propagated analytically
-// from dpdx/dpdy of position and normal taken before the loop.
-fn toon_band_width(
-    N: vec3<f32>, L: vec3<f32>, d: f32, r: f32, nl: f32, a: f32,
-    dPx: vec3<f32>, dPy: vec3<f32>, dNx: vec3<f32>, dNy: vec3<f32>,
-) -> f32 {
-    let lit_mask = select(0.0, 1.0, nl > 0.0);
-    let da = atten_dd(d, r);
-    let dLx = (L * dot(L, dPx) - dPx) / d;
-    let dLy = (L * dot(L, dPy) - dPy) / d;
-    let gx = a * lit_mask * (dot(dNx, L) + dot(N, dLx)) - saturate(nl) * da * dot(L, dPx);
-    let gy = a * lit_mask * (dot(dNy, L) + dot(N, dLy)) - saturate(nl) * da * dot(L, dPy);
-    return abs(gx) + abs(gy);
+// One-step highlight per light. No derivatives inside the light loop: fixed-width step, SSAA smooths it.
+fn toon_highlight(s: Surface, L: vec3<f32>, E: vec3<f32>) -> vec3<f32> {
+    let nlc = saturate(dot(s.N, L));
+    let H = normalize(L + s.V);
+    let lobe = pow(max(dot(s.N, H), 1e-4), s.gloss);
+    let step_lobe = smoothstep(TOON_HIGHLIGHT_EDGE - 0.05, TOON_HIGHLIGHT_EDGE + 0.05, lobe);
+    let level = s.ks * (s.gloss + 8.0) / 8.0 * TOON_HIGHLIGHT_LEVEL;
+    return s.spec_color * (level * step_lobe * nlc * smoothstep(0.0, 0.2, nlc)) * E;
 }
 
 @fragment
 fn fs_toon(in: VertexOut) -> FragOut {
     let s = surface(in);
-    let dPx = dpdx(s.P);
-    let dPy = dpdy(s.P);
-    let dNx = dpdx(s.N);
-    let dNy = dpdy(s.N);
-
-    let xk = saturate(dot(s.N, frame.key_dir));
-    let wk = max(fwidth(xk), 0.004);
-    let bk = 0.45 * aa(xk, 0.05, wk) + 0.55 * aa(xk, 0.5, wk);
-    var light = ambient(s.N) + frame.key_color * frame.key_intensity * bk;
+    let key_e = frame.key_color * frame.key_intensity;
+    var irradiance = key_e * saturate(dot(s.N, frame.key_dir));
+    var highlight = toon_highlight(s, frame.key_dir, key_e);
 
     for (var i = 0u; i < frame.light_count; i = i + 1u) {
         let l = lights.data[i];
@@ -356,13 +348,19 @@ fn fs_toon(in: VertexOut) -> FragOut {
         let L = dl / d;
         let a = atten(d, l.radius);
         // ---- look-specific term ----
-        let nl = dot(s.N, L);
-        let x = saturate(nl) * a;
-        let w = max(toon_band_width(s.N, L, d, l.radius, nl, a, dPx, dPy, dNx, dNy), TOON_EDGE_MIN);
-        let b = 0.45 * aa(x, TOON_BAND_LOW, w) + 0.55 * aa(x, TOON_BAND_HIGH, w);
-        light = light + l.color * (0.3 * b);
+        irradiance = irradiance + l.color * (saturate(dot(s.N, L)) * a);
+        highlight = highlight + toon_highlight(s, L, l.color * a);
     }
-    let color = s.albedo * light * (s.shadow * frame.light_gain) + s.emissive;
+    // Quantise the accumulated direct irradiance once, in absolute luminance at light gain 1. The loop
+    // leaves control flow uniform again, so the derivative is legal here.
+    let ramp = frame.toon_ramp;
+    let y = luminance(irradiance) * frame.light_factor;
+    let w = max(fwidth(y), TOON_EDGE_MIN * ramp.y);
+    let level = ramp.z * aa(y, ramp.x, w) + (ramp.w - ramp.z) * aa(y, ramp.y, w);
+    let direct = s.albedo * irradiance * (level / max(y, 1e-6)) + highlight;
+    // Shadow colour: the unlit band keeps only the ambient, tinted like the stylized look's ambient.
+    let amb = ambient(s.N) * s.albedo * s.tint;
+    let color = (direct * frame.light_gain + amb * frame.light_factor) * s.shadow + s.emissive;
     return output(s, color);
 }
 
@@ -408,7 +406,7 @@ fn fs_stylized(in: VertexOut) -> FragOut {
     }
     let amb = ambient(s.N) * s.albedo * s.tint;
     // The rim is a look property, not a light: it is not scaled by the light gain.
-    let color = (direct + amb) * (s.shadow * frame.light_gain) + rim_term(s) + s.emissive;
+    let color = (direct * frame.light_gain + amb * frame.light_factor) * s.shadow + rim_term(s) + s.emissive;
     return output(s, color);
 }
 
@@ -416,19 +414,18 @@ fn fs_stylized(in: VertexOut) -> FragOut {
 // Look 3: realistic (GGX / height-correlated Smith / Schlick, analytic ambient).
 // ---------------------------------------------------------------------------------------------
 
-fn ggx_light(s: Surface, L: vec3<f32>, E: vec3<f32>) -> vec3<f32> {
+// a2 = GGX alpha squared, already widened by the geometric specular anti-aliasing.
+fn ggx_light(s: Surface, L: vec3<f32>, E: vec3<f32>, a2: f32) -> vec3<f32> {
     let nl_raw = dot(s.N, L);
     let NL = max(nl_raw, 1e-4);
     let NV = max(dot(s.N, s.V), 1e-4);
     let H = normalize(L + s.V);
     let NH = max(dot(s.N, H), 1e-4);
     let VH = max(dot(s.V, H), 1e-4);
-    let a = s.roughness * s.roughness;
-    let a2 = a * a;
     let dd = NH * NH * (a2 - 1.0) + 1.0;
     let D = a2 / (PI * dd * dd);
     let vis = 0.5 / (NL * sqrt(NV * NV * (1.0 - a2) + a2) + NV * sqrt(NL * NL * (1.0 - a2) + a2));
-    let F0 = mix(vec3<f32>(0.04), s.albedo, s.metalness);
+    let F0 = mix(vec3<f32>(0.04), s.metal_color, s.metalness);
     let m = 1.0 - VH;
     let m5 = m * m * m * m * m;
     let F = F0 + (vec3<f32>(1.0) - F0) * m5;
@@ -450,7 +447,14 @@ fn env_brdf_approx(F0: vec3<f32>, roughness: f32, NV: f32) -> vec3<f32> {
 @fragment
 fn fs_realistic(in: VertexOut) -> FragOut {
     let s = surface(in);
-    var direct = ggx_light(s, frame.key_dir, frame.key_color * frame.key_intensity);
+    // Geometric specular anti-aliasing (Kaplanyan/Filament): widen alpha^2 by the screen-space
+    // variance of the shading normal, taken before the light loop.
+    let dNx = dpdx(s.N);
+    let dNy = dpdy(s.N);
+    let variance = 0.15915494 * (dot(dNx, dNx) + dot(dNy, dNy));
+    let alpha = s.roughness * s.roughness;
+    let a2 = saturate(alpha * alpha + min(2.0 * variance, 0.18));
+    var direct = ggx_light(s, frame.key_dir, frame.key_color * frame.key_intensity, a2);
 
     for (var i = 0u; i < frame.light_count; i = i + 1u) {
         let l = lights.data[i];
@@ -463,13 +467,14 @@ fn fs_realistic(in: VertexOut) -> FragOut {
         let L = dl / d;
         let a = atten(d, l.radius);
         // ---- look-specific term ----
-        direct = direct + ggx_light(s, L, l.color * a);
+        direct = direct + ggx_light(s, L, l.color * a, a2);
     }
     let NV = max(dot(s.N, s.V), 1e-4);
     let R = reflect(-s.V, s.N);
-    let F0 = mix(vec3<f32>(0.04), s.albedo, s.metalness);
-    let amb = ambient(s.N) * s.albedo * (1.0 - s.metalness) + ambient(R) * env_brdf_approx(F0, s.roughness, NV);
-    let color = (direct + amb) * (s.shadow * frame.light_gain) + s.emissive;
+    let F0 = mix(vec3<f32>(0.04), s.metal_color, s.metalness);
+    let env = env_brdf_approx(F0, s.roughness, NV);
+    let amb = ambient(s.N) * s.albedo * (1.0 - s.metalness) * (vec3<f32>(1.0) - env) + ambient(R) * env;
+    let color = (direct * frame.light_gain + amb * frame.light_factor) * s.shadow + s.emissive;
     return output(s, color);
 }
 

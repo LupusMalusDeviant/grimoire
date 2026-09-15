@@ -10,9 +10,9 @@ Post- und Bullet-Shader mit, weil die Engine noch keine Mesh- und Lichtpipeline 
 
 | Schlüssel | Shading | Trennung der Figuren vom Hintergrund |
 |---|---|---|
-| `toon` | Cel-Shading, 3 Bänder je Licht (0 / 0,45 / 1), kein Glanz | Screen-Space-Outlines aus Tiefe, Normale und Klasse |
-| `stylized` | weiches Licht: Wrap-Diffus mit kühler Schattentönung, schwacher normierter Blinn-Phong-Glanz | Fresnel-Rimlight nur an Figuren, keine Outlines |
-| `realistic` | Cook-Torrance (GGX, höhenkorreliertes Smith, Schlick), analytisches Ambient | nur Licht, kein Rim, keine Outlines |
+| `toon` | Cel-Shading: Lambert-Bestrahlung einmal in 3 Bänder quantisiert (Schatten / Mitte / hell), Schattenton, harter Glanzpunkt | Screen-Space-Outlines aus Tiefe, Normale und Klasse |
+| `stylized` | weiches Licht: Wrap-Diffus mit kühler Schattentönung, schwacher normierter Blinn-Phong-Glanz | Fresnel-Rimlight (neutral kühl) nur an Figuren, keine Outlines |
+| `realistic` | Cook-Torrance (GGX, höhenkorreliertes Smith, Schlick), analytisches Ambient, Specular-Anti-Aliasing | nur Licht, kein Rim, keine Outlines |
 
 Varianten: `calm` (24 Punktlichter, 180 feindliche Bullets, 12 eigene Bolts, Ritualkreis-Emission 0,35)
 und `busy` (232 Punktlichter, 2 000 Bullets, 40 Bolts, Emission 0,6).
@@ -25,9 +25,11 @@ Render-Targets (HDR-Farbe, Normale+Klasse, Tiefe) bei 2x SSAA und laufen durch d
 (Box-Downsample, Bloom, Khronos PBR Neutral) ohne Look-Parameter.
 
 **Kalibrierung.** Ein globaler Lichtintensitätsfaktor (für alle Looks gleich, `LIGHT_INTENSITY_FACTOR`)
-und je Look eine Lichtverstärkung multiplizieren nur die aus Lichtern abgeleiteten Terme (Diffus,
-Ambient, Glanz). Die Verstärkung wird so gewählt, dass der Boden-Median im calm-World-only-Bild 0,18
-(sRGB-kodiert) trifft, und für busy unverändert übernommen. Der globale Faktor ist so gesetzt, dass
+skaliert alle Lichtterme; je Look multipliziert zusätzlich eine Lichtverstärkung nur das direkte Licht
+(Punktlichter und Mond, Diffus und Glanz). Das Hemisphären-Ambient ist in allen Looks gleich. Die
+Verstärkung wird so gewählt, dass der Boden-Median im calm-World-only-Bild 0,18 (sRGB-kodiert) trifft,
+und für busy unverändert übernommen. Gleicher Median heißt nicht gleiche Spitzlichter: `metrics.md`
+nennt dazu p10 bis p99 der Boden-Luminanz je Look und Variante. Der globale Faktor ist so gesetzt, dass
 realistic eine Verstärkung von etwa 1,0 bekommt. Rimlight, Emissive-Meshes, Ritualkreis-Emission,
 eigene Bolts und Bullets skaliert nichts; ihre HDR-Multiplikatoren behalten ihre entworfene Bedeutung.
 
@@ -76,9 +78,11 @@ und `--floor-space linear` die lineare Lesart des Kalibrierziels.
 - `<look>_busy_1x_crop.png`: 640x360 **ohne** SSAA (Produktions-AA) um Spieler und nächsten Fackelkegel.
 - `bullets_only_busy.png`: Bullet-Pass und Spielermarker auf transparentem Schwarz.
 - `composite_side_by_side.png`: 1920x720, Spalten toon | stylized | realistic, calm oben, busy unten.
+  Die Zellen sind halbiert (Bullets nur 3–5 px): Lesbarkeit an den 1280x720-Frames und den Crops beurteilen.
   `composite_crops.png`: 1920x360, busy in nativer Auflösung (x 320–960, y 300–660).
-- `metrics.md`, `metrics.json`: Lichtfaktor und Verstärkungen, Bullet- und Figurenkontrast,
-  Palettenraum-Zähler, Bullet-Hashes, relative Kosten, alle Look-Parameter, Befunde.
+- `metrics.md`, `metrics.json`: Lichtfaktor und Verstärkungen, Boden-Luminanz (p10–p99), Bullet-Kontrast
+  (Körper und Doppelmetrik Körper oder Rand), Figurenkontrast (gesamt, Konturband, Kantenmaß),
+  Palettenraum-Zähler, Bullet-Hashes, relative Kosten, alle Look-Parameter, Korrekturprotokoll, Befunde.
 - `data/`: Laufprotokolle, Klassenmasken, Bullets-only je Look, Rohdaten der Zeitmessung. Eine optionale
   `data/notes.txt` (eine Zeile je Hinweis) übernimmt `--compose` als „Hinweise zu diesem Lauf“ in `metrics.md`.
 
@@ -90,10 +94,19 @@ PNGs und `data/` werden nicht versioniert, damit das Repository klein bleibt; `m
 - **Kalibrierziel 0,18** gilt als sRGB-kodierte relative Luminanz des Bodens (linear 0,0273).
 - **Kalibrierung als Lichtverstärkung** statt als Belichtungsskalar im Post-Stack: ein Belichtungsskalar
   hätte auch die gemeinsamen Emissives skaliert (Flammen in toon 1,65x heller, eigene Bolts weiß).
-- **Toon-Bänder (Fehlerbehebung):** die spezifizierten Schwellen 0,02 / 0,20 (Mindestkantenbreite
-  0,004) setzen voraus, dass `saturate(N·L)·atten` bis 1 reicht. Unter einer Säulenfackel in 3,8 Höhe
-  erreicht der Boden höchstens etwa 0,061, das obere Band war also unerreichbar. Alle drei Werte sind
-  mit demselben Faktor 0,2 skaliert: 0,004 / 0,04 / 0,0008.
+- **Toon-Lichtmodell (Polish-Runde):** die Spezifikation sah Bänder je Licht auf `saturate(N·L)·atten`
+  vor. Das ignoriert die Lichtstärke, liefert am Kegelrand ein Vielfaches der Energie der weichen Looks
+  und stapelt bei vielen Lichtern Ringe. toon summiert jetzt dieselbe Lambert-Bestrahlung wie die anderen
+  Looks und quantisiert sie einmal nach der Lichtschleife in absoluter Luminanz: Schwellen bei 25 % und
+  60 % der Bodenluminanz unter einer intakten Säulenfackel, Stufen 0 / Mittel / hell aus dem
+  flächengewichteten Mittel der weichen Antwort (`materials::toon_ramp`). Dazu Schattenton im
+  Schattenband und ein harter Glanzpunkt aus derselben Materialtabelle.
+- **Cluster-Lichter:** die Lichter über Bullet-Clustern haben einen entsättigten Glut-Farbton (#B07850)
+  bei der Luminanz der Bullet-Farbe, statt die Umgebung in Bullet-Farben zu tönen (PRD-0003).
+- **Rimlight:** neutral kühl #D8ECFF für alle Figuren statt farbgleich mit Umhang und Körpern. Der Rim
+  ist ein reiner Fresnel-Term der Blickrichtung und hängt von keinem Licht ab.
+- **Bronze:** eigene Metall-F0-Farbe #F2C28A; die Diffus-Albedo als F0 machte das Metall in realistic
+  fast schwarz.
 - **calm-Spiralarme** mit 12 statt 20 Reiskörnern, damit calm die entworfenen 180 Bullets hat
   (36 + 36 + 90 + 18).
 - **Umgestürzte Säule** bei (8,5, −4,0) statt (10, −6): an der Spezifikationsposition läuft sie durch
@@ -104,12 +117,12 @@ PNGs und `data/` werden nicht versioniert, damit das Repository klein bleibt; `m
 - **Gebrochene Säulen** tragen ihre Fackel unter der Bruchkante statt in 3,6 Höhe.
 - **busy:** Randkerzen, Runensteine und schwebende Glut bekommen sichtbare Emissive-Punkte.
 - **Hintergrund:** die Clear-Farbe ist durch den Tonemapper zurückgerechnet, damit #06070A ankommt.
-- **Toon-Bandkanten:** WGSL erlaubt nach dem Radius-Early-out der Lichtschleife keine Ableitungen;
-  `fwidth(x)` wird je Licht analytisch aus `dpdx`/`dpdy` von Position und Normale nachgebildet. Das
-  macht den Toon-Lichtterm im Spike teurer als entworfen.
+- **Toon-Bandkanten:** `fwidth(Y)` nach der Lichtschleife; der Radius-Early-out bleibt wie in den
+  anderen Looks.
 - **Zeitmessung** in kurzen Prozessen je Runde statt in einem Prozess: je Prozess ein ungemessener
   Frame pro Look, dann alle drei Looks in je Runde rotierter Reihenfolge.
-- **1x-Ausschnitte:** das Roberts-Kreuz der Outlines greift 2 px statt 3 SS-px weit.
+- **Outlines:** symmetrisches Kreuz mit kontinuierlicher Kantenstärke und absoluter Linienfarbe, 2 SS-px
+  bei 2x SSAA und 1 px in den 1x-Ausschnitten (gleiche Breite in Endpixeln).
 
 ## Grenzen
 
@@ -120,6 +133,10 @@ PNGs und `data/` werden nicht versioniert, damit das Repository klein bleibt; `m
 - Zeiten stammen vom CPU-Adapter: nur relativ und **kein GPU-Budget**; CPU-Rasterisierung verzerrt auch
   relative Kosten.
 - Standbilder und SSAA verbergen zeitliches Flimmern; dafür gibt es die 1x-Ausschnitte und `--sway`.
+- Das Normale+Klasse-MRT und das teure gemeinsame `surface()` laufen in allen Looks, obwohl nur toon das
+  MRT braucht; das staucht die Kostenabstände zusätzlich.
+- Keine Telegraph-Ebene: ob Telegraphen sich von der Umgebung abheben, zeigen die Bilder nicht.
+- Die Looks bündeln Shading-Modell und Trennmittel (Outline gegen Rim); Kreuzvarianten fehlen.
 
 ## Befunde (nicht getunt)
 
@@ -127,5 +144,5 @@ PNGs und `data/` werden nicht versioniert, damit das Repository klein bleibt; `m
   x < 0,08 zieht er `x − 6,25x²` von allen Kanälen ab; dunkle Töne werden gestaucht (Luminanz etwa
   quadratisch in der Verstärkung) und gesättigt, in allen Looks gleich.
 - **Kontrastgrenze von Hexenmagenta:** H0 (L 0,266) erreicht 4,5:1 überhaupt nur vor Hintergründen mit
-  L < 0,02. Magenta-Cluster-Lichter tönen den Boden unter dichten Bullet-Wolken zusätzlich zur
-  Bullet-Farbe hin; die Lesbarkeit trägt der dunkle Rand.
+  L < 0,02; die Lesbarkeit trägt der dunkle Rand (Doppelmetrik in `metrics.md`). Das ist eine Frage der
+  Palette, nicht des Looks.

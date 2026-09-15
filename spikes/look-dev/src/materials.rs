@@ -100,9 +100,15 @@ pub struct Material {
     // realistic
     pub roughness: f32,
     pub metalness: f32,
+    /// Metal base colour F0 (hex) for metallic rows, 0 = none (non-metals use the albedo). Used as
+    /// F0 in realistic and as the specular colour of `spec_albedo` rows in stylized and toon.
+    pub metal_hex: u32,
 }
 
 const STONE_TINT: u32 = 0x3A3F66;
+/// Base reflectance of bronze (sRGB). The albedo #6B4A2A was authored as a diffuse colour; used as F0
+/// it rendered the metal almost black in the realistic look (corrected in the polish round).
+pub const BRONZE_F0_HEX: u32 = 0xF2C28A;
 
 const fn lit(
     name: &'static str,
@@ -125,6 +131,7 @@ const fn lit(
         spec_albedo: false,
         roughness,
         metalness,
+        metal_hex: 0,
     }
 }
 
@@ -141,6 +148,7 @@ const fn emissive(name: &'static str, emissive_hex: u32, emissive_mult: f32, cor
         spec_albedo: false,
         roughness: 1.0,
         metalness: 0.0,
+        metal_hex: 0,
     }
 }
 
@@ -155,6 +163,7 @@ pub const MATERIALS: [Material; MATERIAL_COUNT] = [
     lit("altar basalt", 0x2A2528, 0x2A1830, 20.0, 0.10, 0.6, 0.0),
     Material {
         spec_albedo: true,
+        metal_hex: BRONZE_F0_HEX,
         ..lit("brazier bronze", 0x6B4A2A, 0x5A3A20, 32.0, 0.5, 0.35, 1.0)
     },
     lit("candle wax", 0xD8CDB4, STONE_TINT, 12.0, 0.06, 0.85, 0.0),
@@ -181,18 +190,86 @@ pub const MIN_ROUGHNESS: f32 = 0.25;
 /// the stylized rim, decal emission, friendly bolts and bullets are not scaled by it.
 pub const LIGHT_INTENSITY_FACTOR: f32 = 8.0;
 
-/// Toon band thresholds per point light on x = saturate(N.L) * atten (levels 0 / 0.45 / 1.0) and
-/// the minimum anti-aliasing half-width of a band edge. world.wgsl holds the same values.
-///
-/// Bug fix: the specification's 0.02 / 0.20 (minimum width 0.004) assumed x reaches 1, but under
-/// a pillar torch mounted at z 3.8 the floor response peaks at about 0.061, so the upper band was
-/// unreachable. All three constants are scaled by the same factor 0.2, which keeps their ratios and
-/// puts the upper threshold at two thirds of that peak.
-pub const TOON_BAND_LOW: f32 = 0.004;
-pub const TOON_BAND_HIGH: f32 = 0.04;
-pub const TOON_EDGE_MIN: f32 = 0.0008;
-/// Values of the specification before the bug fix (logged in metrics.md).
-pub const TOON_BANDS_SPEC: (f32, f32, f32) = (0.02, 0.20, 0.004);
+/// Toon ramp. The toon look accumulates the same Lambert irradiance as the other looks (moon plus
+/// point lights) and quantises it once, after the light loop, in absolute luminance at light gain 1.
+/// The reference luminance is the floor directly under an intact pillar torch (moon included); the
+/// two thresholds sit at these fractions of it. Band levels: 0 (shadow band, ambient only), and the
+/// area-weighted mean of the smooth response inside the mid and the top band of that torch pool.
+pub const TOON_THRESHOLD_FRACTIONS: (f32, f32) = (0.25, 0.60);
+/// Minimum anti-aliasing half-width of a ramp edge, as a fraction of the upper threshold. world.wgsl
+/// holds the same value.
+pub const TOON_EDGE_MIN: f32 = 0.01;
+/// Toon hard highlight: step of the Blinn-Phong lobe at this value, level = ks (g+8)/8 times the mean
+/// of the lobe above the step (about 0.72 for any gloss). world.wgsl holds the same values.
+pub const TOON_HIGHLIGHT_EDGE: f32 = 0.5;
+pub const TOON_HIGHLIGHT_LEVEL: f32 = 0.72;
+/// Per-light band thresholds before the polish round (logged in metrics.md).
+pub const TOON_BANDS_BEFORE_POLISH: (f32, f32) = (0.004, 0.04);
+
+/// Pillar torch light used as the ramp reference (scene.rs places torches with these values).
+pub const TORCH_INTENSITY: f32 = 6.0;
+pub const TORCH_RADIUS: f32 = 9.0;
+/// Height of an intact pillar torch light above the floor.
+pub const REFERENCE_TORCH_HEIGHT: f32 = 3.8;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToonRamp {
+    /// Luminance of the floor directly under the reference torch (moon plus torch, gain 1).
+    pub reference: f32,
+    pub threshold_low: f32,
+    pub threshold_high: f32,
+    pub level_mid: f32,
+    pub level_top: f32,
+}
+
+impl ToonRamp {
+    pub fn to_gpu(self) -> [f32; 4] {
+        [self.threshold_low, self.threshold_high, self.level_mid, self.level_top]
+    }
+}
+
+/// Moon irradiance luminance on the flat floor at light gain 1.
+pub fn moon_floor_luminance() -> f32 {
+    let d = MOON_DIRECTION;
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let n_dot_l = (-d[2] / len).max(0.0);
+    luminance(hex(MOON_HEX)) * MOON_INTENSITY * LIGHT_INTENSITY_FACTOR * n_dot_l
+}
+
+/// The toon ramp derived from the reference torch pool (no image-based tuning).
+pub fn toon_ramp() -> ToonRamp {
+    let moon = moon_floor_luminance();
+    let torch = luminance(hex(TORCH_LIGHT_HEX)) * TORCH_INTENSITY * LIGHT_INTENSITY_FACTOR;
+    let h = REFERENCE_TORCH_HEIGHT;
+    let response = |rho: f32| {
+        let d = (rho * rho + h * h).sqrt();
+        let x = d / TORCH_RADIUS;
+        let q = (1.0 - x * x * x * x).clamp(0.0, 1.0);
+        moon + torch * (h / d) * q * q / (1.0 + d * d)
+    };
+    let reference = response(0.0);
+    let threshold_low = TOON_THRESHOLD_FRACTIONS.0 * reference;
+    let threshold_high = TOON_THRESHOLD_FRACTIONS.1 * reference;
+    let (mut mid, mut top) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64));
+    let steps = 9000;
+    for i in 0..steps {
+        let rho = (i as f32 + 0.5) * TORCH_RADIUS / steps as f32;
+        let y = response(rho);
+        let weight = f64::from(rho);
+        if y >= threshold_high {
+            top = (top.0 + f64::from(y) * weight, top.1 + weight);
+        } else if y >= threshold_low {
+            mid = (mid.0 + f64::from(y) * weight, mid.1 + weight);
+        }
+    }
+    ToonRamp {
+        reference,
+        threshold_low,
+        threshold_high,
+        level_mid: (mid.0 / mid.1.max(1e-9)) as f32,
+        level_top: (top.0 / top.1.max(1e-9)) as f32,
+    }
+}
 
 pub fn material_table() -> [MaterialGpu; MATERIAL_SLOTS] {
     let mut table = [MaterialGpu::default(); MATERIAL_SLOTS];
@@ -219,17 +296,27 @@ pub fn material_table() -> [MaterialGpu; MATERIAL_SLOTS] {
                 material.metalness,
                 0.0,
             ],
+            metal: {
+                let f0 = if material.metal_hex != 0 { hex(material.metal_hex) } else { albedo };
+                [f0[0], f0[1], f0[2], 0.0]
+            },
         };
     }
     table
 }
 
+/// Neutral cold rim colour for every figure. Before the polish round the rim was hue-matched
+/// (player #A8E6FF on a cyan cloak, imps and brutes #FF9A6A on orange bodies under warm torches) and
+/// barely separated anything; strengths and powers are unchanged.
+pub const RIM_HEX: u32 = 0xD8ECFF;
+pub const RIM_HEXES_BEFORE_POLISH: (u32, u32) = (0xA8E6FF, 0xFF9A6A);
+
 /// Stylized rim light per rim kind: (power p, strength k, colour hex).
 pub const RIMS: [(f32, f32, u32); 4] = [
     (1.0, 0.0, 0x000000),
-    (3.0, 0.55, 0xA8E6FF),
-    (2.5, 0.35, 0xFF9A6A),
-    (2.5, 0.40, 0xFF9A6A),
+    (3.0, 0.55, RIM_HEX),
+    (2.5, 0.35, RIM_HEX),
+    (2.5, 0.40, RIM_HEX),
 ];
 
 pub fn rim_table() -> [RimGpu; 4] {
@@ -260,6 +347,10 @@ pub const ORB_LIGHT_HEX: u32 = 0x7FE3FF;
 pub const BRUTE_EYE_LIGHT_HEX: u32 = 0xFF6A2A;
 pub const EMBER_FLOAT_HEX: u32 = 0xFF7A3A;
 pub const EMBER_CRACK_HEX: u32 = 0xFF5A1F;
+/// Hue of the bullet-cluster lights (desaturated ember, outside both hostile bullet hues). Each
+/// cluster light keeps the luminance its bullet colour had, so only the hue changes. Before the polish
+/// round the clusters used the bullet body colours, which PRD-0003 forbids for the environment.
+pub const CLUSTER_LIGHT_HEX: u32 = 0xB07850;
 pub const DECAL_HEX: u32 = 0x7A4CFF;
 pub const DECAL_EMISSION_CALM: f32 = 0.35;
 pub const DECAL_EMISSION_BUSY: f32 = 0.6;
@@ -316,28 +407,29 @@ mod tests {
     }
 
     #[test]
-    fn toon_band_constants_match_the_shader_and_are_reachable() {
+    fn toon_constants_match_the_shader() {
         let shader = include_str!("shaders/world.wgsl");
-        assert!(shader.contains(&format!("const TOON_BAND_LOW: f32 = {TOON_BAND_LOW};")));
-        assert!(shader.contains(&format!("const TOON_BAND_HIGH: f32 = {TOON_BAND_HIGH};")));
         assert!(shader.contains(&format!("const TOON_EDGE_MIN: f32 = {TOON_EDGE_MIN};")));
-        // Same scale factor for all three, so the designed ratios survive the fix.
-        let k = TOON_BAND_HIGH / TOON_BANDS_SPEC.1;
-        assert!((TOON_BAND_LOW / TOON_BANDS_SPEC.0 - k).abs() < 1e-6);
-        assert!((TOON_EDGE_MIN / TOON_BANDS_SPEC.2 - k).abs() < 1e-6);
-        // Floor response x = saturate(N.L) * atten under an intact pillar torch (light at z 3.8,
-        // radius 9): both thresholds are crossed inside the pool, the upper one with margin.
-        let response = |rho: f32| {
-            let h = 3.8f32;
-            let d = (rho * rho + h * h).sqrt();
-            let q = (1.0 - (d / 9.0).powi(4)).clamp(0.0, 1.0);
-            (h / d) * q * q / (1.0 + d * d)
-        };
-        let peak = response(0.0);
-        assert!(peak > 1.4 * TOON_BAND_HIGH && peak < TOON_BANDS_SPEC.1, "peak {peak}");
-        let crossing = |t: f32| (0..=900).map(|i| i as f32 * 0.01).find(|&rho| response(rho) < t).unwrap_or(9.0);
-        let (inner, outer) = (crossing(TOON_BAND_HIGH), crossing(TOON_BAND_LOW));
-        assert!(inner > 1.5 && outer > inner + 2.0 && outer < 7.5, "inner {inner}, outer {outer}");
+        assert!(shader.contains(&format!("const TOON_HIGHLIGHT_EDGE: f32 = {TOON_HIGHLIGHT_EDGE};")));
+        assert!(shader.contains(&format!("const TOON_HIGHLIGHT_LEVEL: f32 = {TOON_HIGHLIGHT_LEVEL};")));
+    }
+
+    #[test]
+    fn toon_ramp_is_ordered_and_keeps_the_torch_pool_energy() {
+        let ramp = toon_ramp();
+        let moon = moon_floor_luminance();
+        assert!(ramp.threshold_low < moon && moon < ramp.threshold_high, "{ramp:?}, moon {moon}");
+        assert!(ramp.threshold_low < ramp.level_mid && ramp.level_mid < ramp.threshold_high, "{ramp:?}");
+        assert!(ramp.threshold_high < ramp.level_top && ramp.level_top < ramp.reference, "{ramp:?}");
+    }
+
+    #[test]
+    fn bronze_uses_a_bright_metal_base_colour() {
+        let table = material_table();
+        let bronze = table[BRONZE as usize];
+        assert!(luminance([bronze.metal[0], bronze.metal[1], bronze.metal[2]]) > 0.5);
+        let stone = table[FLOOR as usize];
+        assert_eq!(stone.metal[..3], stone.albedo[..3]);
     }
 
     #[test]

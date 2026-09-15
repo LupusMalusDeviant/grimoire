@@ -28,7 +28,7 @@ pub struct LightGpu {
 pub const MAX_LIGHTS: usize = 256;
 pub const MAX_BLOBS: usize = 9;
 
-/// Per-frame uniform (400 bytes), see `Frame` in world.wgsl.
+/// Per-frame uniform (432 bytes), see `Frame` in world.wgsl.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct FrameUniform {
@@ -54,9 +54,14 @@ pub struct FrameUniform {
     pub floor_salt: u32,
     /// x, y, radius, 0.
     pub blobs: [[f32; 4]; MAX_BLOBS],
-    /// Global light-intensity factor times the look's calibrated light gain (light-derived terms only).
+    /// Global light-intensity factor times the look's calibrated light gain (direct light only:
+    /// point lights and moon, diffuse and specular).
     pub light_gain: f32,
-    pub _pad: [f32; 3],
+    /// Global light-intensity factor alone (hemisphere ambient, and the toon ramp's reference scale).
+    pub light_factor: f32,
+    pub _pad: [f32; 2],
+    /// Toon ramp in absolute luminance at light gain 1: threshold 1, threshold 2, mid level, top level.
+    pub toon_ramp: [f32; 4],
 }
 
 #[repr(C)]
@@ -70,6 +75,8 @@ pub struct MaterialGpu {
     pub tint: [f32; 4],
     /// ks, roughness, metalness, unused.
     pub params: [f32; 4],
+    /// rgb metal base colour F0 (linear; equals the albedo for non-metals), a unused.
+    pub metal: [f32; 4],
 }
 
 #[repr(C)]
@@ -172,8 +179,8 @@ mod tests {
     fn layouts_match_wgsl() {
         assert_eq!(size_of::<Vertex>(), 32);
         assert_eq!(size_of::<LightGpu>(), 32);
-        assert_eq!(size_of::<FrameUniform>(), 416);
-        assert_eq!(size_of::<MaterialGpu>(), 64);
+        assert_eq!(size_of::<FrameUniform>(), 432);
+        assert_eq!(size_of::<MaterialGpu>(), 80);
         assert_eq!(size_of::<RimGpu>(), 32);
         assert_eq!(size_of::<BoltInstance>(), 48);
         assert_eq!(size_of::<BulletGpu>(), 32);

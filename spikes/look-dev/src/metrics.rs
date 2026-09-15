@@ -63,6 +63,8 @@ pub const WCAG_AA: f32 = 4.5;
 pub const BULLET_RING_PX: (f32, f32) = (3.0, 6.0);
 pub const FIGURE_RING_PX: (f32, f32) = (2.0, 6.0);
 pub const CONTOUR_PX: f32 = 3.0;
+/// Edge band of the outline-aware figure metric: silhouette pixels at most this far inside.
+pub const EDGE_PX: f32 = 1.5;
 
 pub fn wcag_contrast(a: f32, b: f32) -> f32 {
     let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
@@ -128,6 +130,50 @@ pub fn floor_median(world: &Image, mask: &ClassMask) -> Option<f32> {
     }
     values.sort_by(f32::total_cmp);
     Some(values[values.len() / 2])
+}
+
+/// Luminance distribution of the floor (class 0, outside decal and blob shadows) in a world-only frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FloorStats {
+    pub count: usize,
+    pub p10: f32,
+    pub p50: f32,
+    pub p90: f32,
+    pub p99: f32,
+    /// Share of floor pixels brighter than the luminance up to which H1 lime can still reach 4.5:1.
+    pub share_above_lime_limit: f32,
+}
+
+/// Background luminance below which a body of luminance `l` reaches 4.5:1.
+pub fn aa_background_limit(l: f32) -> f32 {
+    (l + 0.05) / WCAG_AA - 0.05
+}
+
+pub fn floor_stats(world: &Image, mask: &ClassMask) -> FloorStats {
+    let mut values = Vec::new();
+    for y in 0..mask.height {
+        for x in 0..mask.width {
+            let i = y as usize * mask.width as usize + x as usize;
+            if mask.class[i] == 0 && !mask.excluded[i] {
+                values.push(world.luminance(x, y));
+            }
+        }
+    }
+    if values.is_empty() {
+        return FloorStats::default();
+    }
+    values.sort_by(f32::total_cmp);
+    let n = values.len();
+    let pick = |q: f32| values[((q * (n - 1) as f32).round() as usize).min(n - 1)];
+    let limit = aa_background_limit(hex_luminance(m::HOSTILE_PALETTE[1].body_hex));
+    FloorStats {
+        count: n,
+        p10: pick(0.10),
+        p50: pick(0.50),
+        p90: pick(0.90),
+        p99: pick(0.99),
+        share_above_lime_limit: values.iter().filter(|v| **v > limit).count() as f32 / n as f32,
+    }
 }
 
 /// Result of the per-look calibration: the light gain on the light-derived terms (on top of the
@@ -224,6 +270,8 @@ pub struct BulletContrast {
     pub body: Distribution,
     pub body_by_palette: [Distribution; 2],
     pub rim: Distribution,
+    /// Per bullet the higher of body and rim contrast (the rim is part of the bullet design).
+    pub body_or_rim: Distribution,
     /// Bullets without any on-screen ring pixel.
     pub skipped: usize,
 }
@@ -240,6 +288,7 @@ pub fn bullet_contrast(world: &Image, bullets: &[BulletInstance], camera: &Camer
     let mut body = Vec::new();
     let mut by_palette = [Vec::new(), Vec::new()];
     let mut rim = Vec::new();
+    let mut body_or_rim = Vec::new();
     let mut skipped = 0;
     for b in bullets.iter().filter(|b| b.palette_space == BULLET_PASS_PALETTE_SPACE) {
         let centre = [b.position[0], b.position[1], renderer::BULLET_PLANE_Z];
@@ -273,13 +322,16 @@ pub fn bullet_contrast(world: &Image, bullets: &[BulletInstance], camera: &Camer
         let contrast = wcag_contrast(body_luminance[palette], background);
         body.push(contrast);
         by_palette[palette].push(contrast);
-        rim.push(wcag_contrast(rim_luminance, background));
+        let rim_contrast = wcag_contrast(rim_luminance, background);
+        rim.push(rim_contrast);
+        body_or_rim.push(contrast.max(rim_contrast));
     }
     let [p0, p1] = by_palette;
     BulletContrast {
         body: distribution(body),
         body_by_palette: [distribution(p0), distribution(p1)],
         rim: distribution(rim),
+        body_or_rim: distribution(body_or_rim),
         skipped,
     }
 }
@@ -293,6 +345,9 @@ pub struct FigureContrast {
     pub whole: f32,
     /// Mean luminance of the inner contour band (0-3 px inside) against the ring.
     pub contour: f32,
+    /// Outline-aware edge measure: median of the per-pixel contrast of the 0-1.5 px edge band against
+    /// the ring mean (a dark outline or a bright rim is not averaged away against the body).
+    pub edge: f32,
 }
 
 /// Figure-versus-background contrast from the shared class mask: ring 2-6 px outside each
@@ -347,6 +402,7 @@ pub fn figure_contrast(world: &Image, mask: &ClassMask, figures: &[Figure]) -> V
             }
         }
         let (mut whole_sum, mut whole_n, mut contour_sum, mut contour_n) = (0.0f32, 0usize, 0.0f32, 0usize);
+        let mut edge_luminances = Vec::new();
         for &(x, y) in &pixels {
             let class = mask.class[at(x, y)];
             if class != 2 && class != 3 {
@@ -355,15 +411,20 @@ pub fn figure_contrast(world: &Image, mask: &ClassMask, figures: &[Figure]) -> V
             let l = world.luminance(x as u32, y as u32);
             whole_sum += l;
             whole_n += 1;
-            if nearest(&outer_boundary, x, y) <= CONTOUR_PX {
+            let depth = nearest(&outer_boundary, x, y);
+            if depth <= CONTOUR_PX {
                 contour_sum += l;
                 contour_n += 1;
+            }
+            if depth <= EDGE_PX {
+                edge_luminances.push(l);
             }
         }
         if ring_n == 0 || whole_n == 0 {
             continue;
         }
         let ring = ring_sum / ring_n as f32;
+        let edge = distribution(edge_luminances.iter().map(|&l| wcag_contrast(l, ring)).collect());
         out.push(FigureContrast {
             kind: figure.kind,
             index,
@@ -374,6 +435,7 @@ pub fn figure_contrast(world: &Image, mask: &ClassMask, figures: &[Figure]) -> V
             } else {
                 f32::NAN
             },
+            edge: if edge.count > 0 { edge.median } else { f32::NAN },
         });
     }
     out
@@ -464,6 +526,7 @@ pub struct VariantResult {
     pub look: Look,
     pub variant: Variant,
     pub bullets: BulletContrast,
+    pub floor: FloorStats,
     pub figures: Vec<FigureContrast>,
     pub stats: BulletStats,
     pub lights: usize,
@@ -478,6 +541,12 @@ impl VariantResult {
         let whole = distribution(self.figures.iter().map(|f| f.whole).collect());
         let contour = distribution(self.figures.iter().map(|f| f.contour).filter(|c| c.is_finite()).collect());
         (whole.median, whole.min, contour.median, contour.min)
+    }
+
+    /// Median and minimum of the edge measure over all figures.
+    fn edge_summary(&self) -> (f32, f32) {
+        let edge = distribution(self.figures.iter().map(|f| f.edge).filter(|c| c.is_finite()).collect());
+        (edge.median, edge.min)
     }
 }
 
@@ -580,16 +649,28 @@ pub fn write_json(path: &Path, report: &Report) -> Result<(), String> {
                 .iter()
                 .map(|fc| {
                     format!(
-                        "{{\"figure\": {}, \"kind\": \"{}\", \"pixels\": {}, \"whole\": {}, \"contour\": {}}}",
+                        "{{\"figure\": {}, \"kind\": \"{}\", \"pixels\": {}, \"whole\": {}, \"contour\": {}, \"edge\": {}}}",
                         fc.index + 1,
                         figure_name(fc.kind),
                         fc.pixels,
                         json_num(f64::from(fc.whole)),
-                        json_num(f64::from(fc.contour))
+                        json_num(f64::from(fc.contour)),
+                        json_num(f64::from(fc.edge))
                     )
                 })
                 .collect();
             let (wm, wmin, cm, cmin) = r.figure_summary();
+            let (em, emin) = r.edge_summary();
+            let fl = r.floor;
+            let floor = format!(
+                "{{\"pixels\": {}, \"p10\": {}, \"p50\": {}, \"p90\": {}, \"p99\": {}, \"share_above_lime_aa_limit\": {}}}",
+                fl.count,
+                json_num(f64::from(fl.p10)),
+                json_num(f64::from(fl.p50)),
+                json_num(f64::from(fl.p90)),
+                json_num(f64::from(fl.p99)),
+                json_num(f64::from(fl.share_above_lime_limit))
+            );
             let rel = report.timing.get(&(r.variant, r.look)).copied();
             let base = report.timing.get(&(r.variant, Look::Toon)).copied();
             let timing = match (rel, base) {
@@ -604,7 +685,7 @@ pub fn write_json(path: &Path, report: &Report) -> Result<(), String> {
                 _ => "null".into(),
             };
             format!(
-                "    {{\"look\": \"{}\", \"variant\": \"{}\", \"light_gain\": {}, \"lights\": {}, \"hostile_bullets\": {}, \"friendly_bolts\": {}, \"stress_placements\": [{}, {}, {}, {}],\n      \"bullet_body_contrast\": {},\n      \"bullet_body_contrast_h0_magenta\": {},\n      \"bullet_body_contrast_h1_lime\": {},\n      \"bullet_rim_contrast\": {},\n      \"bullets_without_ring\": {},\n      \"figure_contrast\": {{\"whole_median\": {}, \"whole_min\": {}, \"contour_median\": {}, \"contour_min\": {}, \"figures\": [{}]}},\n      \"bullets_drawn\": {}, \"bullets_rejected_palette_space\": {}, \"bullets_rejected_invalid\": {},\n      \"timing\": {}}}",
+                "    {{\"look\": \"{}\", \"variant\": \"{}\", \"light_gain\": {}, \"lights\": {}, \"hostile_bullets\": {}, \"friendly_bolts\": {}, \"stress_placements\": [{}, {}, {}, {}],\n      \"bullet_body_contrast\": {},\n      \"bullet_body_contrast_h0_magenta\": {},\n      \"bullet_body_contrast_h1_lime\": {},\n      \"bullet_rim_contrast\": {},\n      \"bullet_body_or_rim_contrast\": {},\n      \"bullets_without_ring\": {},\n      \"floor_luminance\": {},\n      \"figure_contrast\": {{\"whole_median\": {}, \"whole_min\": {}, \"contour_median\": {}, \"contour_min\": {}, \"edge_median\": {}, \"edge_min\": {}, \"figures\": [{}]}},\n      \"bullets_drawn\": {}, \"bullets_rejected_palette_space\": {}, \"bullets_rejected_invalid\": {},\n      \"timing\": {}}}",
                 r.look.key(),
                 r.variant.key(),
                 json_num(f64::from(gain_of(report, r.look))),
@@ -619,11 +700,15 @@ pub fn write_json(path: &Path, report: &Report) -> Result<(), String> {
                 dist_json(&r.bullets.body_by_palette[0]),
                 dist_json(&r.bullets.body_by_palette[1]),
                 dist_json(&r.bullets.rim),
+                dist_json(&r.bullets.body_or_rim),
                 r.bullets.skipped,
+                floor,
                 json_num(f64::from(wm)),
                 json_num(f64::from(wmin)),
                 json_num(f64::from(cm)),
                 json_num(f64::from(cmin)),
+                json_num(f64::from(em)),
+                json_num(f64::from(emin)),
                 figures.join(", "),
                 r.stats.drawn,
                 r.stats.rejected_palette_space,
@@ -685,7 +770,8 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
     }
     s.push('\n');
     s.push_str("`composite_side_by_side.png` (1920x720): Spalten von links nach rechts **toon | stylized | realistic**, Zeilen **calm oben, busy unten**; ");
-    s.push_str("Zellen 640x360 (Frames linear halbiert), 4-px-Stege #000000 über den Zellkanten.\n\n");
+    s.push_str("Zellen 640x360 (Frames linear halbiert), 4-px-Stege #000000 über den Zellkanten. ");
+    s.push_str("**Lesbarkeit nicht am Composite beurteilen:** die Halbierung schrumpft Bullets auf 3–5 px; dafür die 1280x720-Frames und `composite_crops.png`.\n\n");
     let (cx, cy, cw, ch) = crate::composite::CROP_RECT;
     let _ = writeln!(
         s,
@@ -705,16 +791,17 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
     s.push_str("## Lichtkalibrierung\n\n");
     let _ = writeln!(
         s,
-        "Kein Belichtungsskalar im Post-Stack (Belichtung 1,0 für alle). Stattdessen multipliziert der Shader jedes Looks die aus Lichtern abgeleiteten Terme \
-         (Punktlichter, Mond, Hemisphären-Ambient; Diffus und Glanz) mit **globalem Lichtintensitätsfaktor {} × Lichtverstärkung des Looks**. \
-         Der Faktor ist für alle Looks gleich und so gesetzt, dass realistic eine Verstärkung von etwa 1,0 bekommt. \
+        "Kein Belichtungsskalar im Post-Stack (Belichtung 1,0 für alle). Der Shader jedes Looks multipliziert das **direkte Licht** (Punktlichter und Mond; Diffus und Glanz) \
+         mit **globalem Lichtintensitätsfaktor {} × Lichtverstärkung des Looks**, das **Hemisphären-Ambient nur mit dem Faktor** (für alle Looks gleich). \
+         Der Faktor ist so gesetzt, dass realistic eine Verstärkung von etwa 1,0 bekommt. \
          Nicht skaliert werden Rimlight (stylized), Emissive-Meshes (Flammen, Augen, Orb), Ritualkreis-Emission, eigene Bolts und Bullets: ihre HDR-Multiplikatoren behalten die entworfene Bedeutung.\n",
         report.light_factor
     );
     let _ = writeln!(
         s,
         "Die Verstärkung je Look ist so gewählt, dass der Median der Boden-Luminanz (Klasse 0, ohne Ritualkreis und Blob-Schatten) im calm-World-only-Bild {:.2} ±{:.0} % trifft, {} (linear {:.4}); \
-         Abbruch bei 1 % Abweichung. busy nutzt dieselbe Verstärkung unverändert.\n",
+         Abbruch bei 1 % Abweichung. busy nutzt dieselbe Verstärkung unverändert. Gleicher Median heißt nicht gleiche Lichter: \
+         die Verteilung der Boden-Luminanz (p10 bis p99) je Look und Variante steht unter „Boden-Luminanz“.\n",
         report.floor_target,
         FLOOR_TOLERANCE * 100.0,
         report.floor_space.describe_de(),
@@ -746,13 +833,14 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
         hex_luminance(m::HOSTILE_PALETTE[1].body_hex),
         (hex_luminance(m::HOSTILE_PALETTE[1].body_hex) + 0.05) / WCAG_AA - 0.05
     );
-    s.push_str("| Look | Variante | Bullets | min | 5. Perz. | Median | Anteil ≥ 4,5:1 | Median H0 Magenta | Median H1 Limette | Median Rand |\n");
-    s.push_str("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    s.push_str("Zusätzlich die Doppelmetrik aus dem Bullet-Design: je Bullet der höhere Kontrast von Körper und dunklem Rand (1,5 px) gegen den Hintergrund.\n\n");
+    s.push_str("| Look | Variante | Bullets | min | 5. Perz. | Median | Anteil ≥ 4,5:1 | Median H0 Magenta | Median H1 Limette | Median Rand | Anteil ≥ 4,5:1 Körper oder Rand |\n");
+    s.push_str("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for r in &report.results {
         let b = &r.bullets;
         let _ = writeln!(
             s,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             r.look.key(),
             r.variant.key(),
             b.body.count,
@@ -762,24 +850,61 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
             pct(b.body.share_aa),
             f(b.body_by_palette[0].median),
             f(b.body_by_palette[1].median),
-            f(b.rim.median)
+            f(b.rim.median),
+            pct(b.body_or_rim.share_aa)
+        );
+    }
+
+    s.push_str("\n## Boden-Luminanz\n\n");
+    let _ = writeln!(
+        s,
+        "Lineare relative Luminanz der Bodenpixel (Klasse 0, ohne Ritualkreis und Blob-Schatten) im World-only-Bild. \
+         Letzte Spalte: Anteil über L = {:.3}, bis zu dem H1 Limette noch 4,5:1 erreicht.\n",
+        aa_background_limit(hex_luminance(m::HOSTILE_PALETTE[1].body_hex))
+    );
+    s.push_str("| Look | Variante | p10 | p50 | p90 | p99 | Anteil über Limetten-Grenze |\n|---|---|---:|---:|---:|---:|---:|\n");
+    for r in &report.results {
+        let fl = r.floor;
+        let _ = writeln!(
+            s,
+            "| {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {} |",
+            r.look.key(),
+            r.variant.key(),
+            fl.p10,
+            fl.p50,
+            fl.p90,
+            fl.p99,
+            pct(fl.share_above_lime_limit)
         );
     }
 
     s.push_str("\n## Figur-gegen-Hintergrund-Kontrast\n\n");
     s.push_str("Aus der gemeinsamen Klassenmaske: Ring 2–6 px außerhalb der Silhouette (ohne Pixel anderer Figuren) gegen ");
-    s.push_str("(a) die mittlere Luminanz der beleuchteten Silhouette ohne Augen/Orb und (b) das innere Konturband 0–3 px. 9 Figuren.\n\n");
-    s.push_str("| Look | Variante | Median gesamt | min gesamt | Median Kontur | min Kontur |\n|---|---|---:|---:|---:|---:|\n");
+    s.push_str("(a) die mittlere Luminanz der beleuchteten Silhouette ohne Augen/Orb, (b) die mittlere Luminanz des inneren Konturbands 0–3 px und ");
+    s.push_str("(c) **Kante:** Median des Kontrasts je Pixel im Randband 0–1,5 px gegen den Ring. (b) mittelt eine dunkle Outline mit dem hellen Körper weg, (c) nicht. 9 Figuren.\n\n");
+    s.push_str("| Look | Variante | Median gesamt | min gesamt | Median Kontur | min Kontur | Median Kante | min Kante |\n|---|---|---:|---:|---:|---:|---:|---:|\n");
     for r in &report.results {
         let (wm, wmin, cm, cmin) = r.figure_summary();
-        let _ = writeln!(s, "| {} | {} | {} | {} | {} | {} |", r.look.key(), r.variant.key(), f(wm), f(wmin), f(cm), f(cmin));
+        let (em, emin) = r.edge_summary();
+        let _ = writeln!(
+            s,
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            r.look.key(),
+            r.variant.key(),
+            f(wm),
+            f(wmin),
+            f(cm),
+            f(cmin),
+            f(em),
+            f(emin)
+        );
     }
-    s.push_str("\nJe Figur (gesamt / Kontur), Reihenfolge: 1 Spieler, 2–7 Imps, 8–9 Brutes:\n\n");
+    s.push_str("\nJe Figur (gesamt / Kontur / Kante), Reihenfolge: 1 Spieler, 2–7 Imps, 8–9 Brutes:\n\n");
     s.push_str("| Look | Variante | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
     for r in &report.results {
         let mut cells = vec!["–".to_string(); 9];
         for fc in &r.figures {
-            cells[fc.index] = format!("{} / {}", f(fc.whole), f(fc.contour));
+            cells[fc.index] = format!("{} / {} / {}", f(fc.whole), f(fc.contour), f(fc.edge));
         }
         let _ = writeln!(s, "| {} | {} | {} |", r.look.key(), r.variant.key(), cells.join(" | "));
     }
@@ -835,8 +960,9 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
         timing_samples(report)
     );
     s.push_str("Die CPU-Rasterisierung verzerrt auch relative Kosten (SIMD-freundliche Mathematik gegen Verzweigungen und `pow`), ");
-    s.push_str("und die Schleife über alle Lichter ohne Clustering staucht die Abstände. Der Toon-Lichtterm ist im Spike schwerer als entworfen, ");
-    s.push_str("weil WGSL nach dem Radius-Early-out keine Ableitungen erlaubt und `fwidth(x)` je Licht analytisch nachgebildet wird.\n\n");
+    s.push_str("und die Schleife über alle Lichter ohne Clustering staucht die Abstände. Das Normale+Klasse-MRT (nur die toon-Outline braucht es) und das teure gemeinsame `surface()` ");
+    s.push_str("(Bodenrelief-Hashes, Ritualkreis-SDF, Blob-Schleife) laufen in allen Looks und stauchen die Verhältnisse weiter. ");
+    s.push_str("Seit der Polish-Runde quantisiert toon einmal nach der Lichtschleife (keine analytischen Ableitungen je Licht mehr), hat aber einen harten Glanzpunkt je Licht.\n\n");
     if report.timing.is_empty() {
         s.push_str("(Keine Zeitmessung in diesem Lauf.)\n");
     } else {
@@ -861,41 +987,84 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
     s.push_str("\n## Eingefrorene Look-Parameter\n\n");
     s.push_str("Gemeinsam: Albedo je Material (Tabelle unten), Licht-Falloff `saturate(1-(d/r)^4)^2/(1+d^2)`, Mond #9AB0D8 I 0,35 entlang (-0,35, 0,5, -0,8), ");
     s.push_str("Hemisphären-Ambient Himmel #1C2438 / Boden #110D0B I 0,35, Bloom Schwelle 1,0 / Knie 0,5 / 4 Stufen / 0,08, Khronos PBR Neutral, 2x SSAA.\n\n");
-    let _ = write!(
+    let ramp = m::toon_ramp();
+    let _ = writeln!(
         s,
-        "- **toon:** Bänder je Punktlicht bei x = {} und {} (Stufen 0 / 0,45 / 1,0; x = saturate(N·L)·atten), Beitrag `c·I·0,3·B(x)`, \
-         Kantenbreite `max(fwidth(x), {})` (analytisch propagiert); Mond bei 0,05 und 0,5 mit `max(fwidth(x), 0,004)`; ",
-        m::TOON_BAND_LOW,
-        m::TOON_BAND_HIGH,
-        m::TOON_EDGE_MIN
+        "- **toon:** Lambert-Bestrahlung (Mond + Punktlichter) wie in den anderen Looks aufsummiert und **einmal nach der Lichtschleife** in absoluter Luminanz Y (Lichtverstärkung 1) quantisiert: \
+         Schwellen {:.3} / {:.3} (25 % / 60 % der Bodenluminanz {:.3} unter einer intakten Säulenfackel, Mond eingeschlossen), Stufen 0 / {:.3} / {:.3} \
+         (flächengewichtetes Mittel der weichen Antwort im mittleren und oberen Band dieses Fackelkegels), Kantenbreite `max(fwidth(Y), {}·Schwelle 2)`, Farbe `E·R(Y)/Y`. \
+         Schattenband: nur Ambient mit Schattenton (wie stylized). Harter Glanzpunkt je Licht: Stufe von (N·H)^g bei {} (±0,05), Höhe `ks·(g+8)/8·{}`, Farbe wie stylized. \
+         Outline: symmetrisches Kreuz 2 SS-px (1x: 1 px), Tiefe `smoothstep(0,010, 0,020)` relativ, Normale 0,35 (Figur/Prop/Klassenwechsel) bzw. 0,6 (Boden–Boden) je ±0,05, \
+         Klassenkante an Figuren, Linie `mix(hdr, #0A090C, edge)`.",
+        ramp.threshold_low,
+        ramp.threshold_high,
+        ramp.reference,
+        ramp.level_mid,
+        ramp.level_top,
+        m::TOON_EDGE_MIN,
+        m::TOON_HIGHLIGHT_EDGE,
+        m::TOON_HIGHLIGHT_LEVEL
     );
-    s.push_str("Outline: Roberts-Kreuz 3 SS-px (1x: 2 px), Tiefe 0,015 relativ, Normale 0,35 (Figur/Prop/Klassenwechsel) bzw. 0,6 (Boden–Boden), Klassenkante an Figuren, `hdr *= 1 - 0,92·edge`.\n");
-    s.push_str("- **stylized:** Wrap 0,45, Terminator-Tönung `mix(S, 1, smoothstep(0, 0,6, d))`, normalisiertes Blinn-Phong; Rim `k·(1-N·V)^p·Farbe·(0,6+0,4·saturate(N.z+0,3))` ");
-    s.push_str("nur an Figuren: Spieler p 3,0 k 0,55 #A8E6FF, Imps p 2,5 k 0,35 #FF9A6A, Brutes p 2,5 k 0,40 #FF9A6A.\n");
-    s.push_str("- **realistic:** Cook-Torrance (GGX, höhenkorreliertes Smith, Schlick), Rauheit ≥ 0,25, Ambient `amb(N)·albedo·(1-m) + amb(R)·EnvBRDFApprox`.\n\n");
-    s.push_str("| Material | Albedo | Schattenton (stylized) | Glanz g | ks | Rauheit | Metall |\n|---|---|---|---:|---:|---:|---:|\n");
+    let _ = writeln!(
+        s,
+        "- **stylized:** Wrap 0,45, Terminator-Tönung `mix(S, 1, smoothstep(0, 0,6, d))`, normalisiertes Blinn-Phong; Rim `k·(1-N·V)^p·Farbe·(0,6+0,4·saturate(N.z+0,3))` \
+         nur an Figuren, Farbe #{:06X} für alle: Spieler p 3,0 k 0,55, Imps p 2,5 k 0,35, Brutes p 2,5 k 0,40. Der Rim ist ein reiner Fresnel-Term der Blickrichtung: \
+         er hängt von keinem Licht ab und leuchtet auch in dunklen Zonen.",
+        m::RIM_HEX
+    );
+    s.push_str("- **realistic:** Cook-Torrance (GGX, höhenkorreliertes Smith, Schlick), F0 = `mix(0,04, Metall-F0, m)`, Rauheit ≥ 0,25, geometrisches Specular-Anti-Aliasing ");
+    s.push_str("(`α² += min(2·(dN_x²+dN_y²)/(2π), 0,18)`), Ambient `amb(N)·albedo·(1-m)·(1-EnvBRDF) + amb(R)·EnvBRDF` (EnvBRDFApprox nach Karis).\n\n");
+    s.push_str("| Material | Albedo | Schattenton (stylized, toon) | Glanz g | ks | Rauheit | Metall | Metall-F0 |\n|---|---|---|---:|---:|---:|---:|---|\n");
     for mat in m::MATERIALS.iter().filter(|mat| mat.emissive_mult == 0.0) {
+        let f0 = if mat.metal_hex != 0 { format!("#{:06X}", mat.metal_hex) } else { "–".into() };
         let _ = writeln!(
             s,
-            "| {} | #{:06X} | #{:06X} | {} | {} | {} | {} |",
-            mat.name, mat.albedo_hex, mat.shadow_tint_hex, mat.gloss, mat.ks, mat.roughness, mat.metalness
+            "| {} | #{:06X} | #{:06X} | {} | {} | {} | {} | {} |",
+            mat.name, mat.albedo_hex, mat.shadow_tint_hex, mat.gloss, mat.ks, mat.roughness, mat.metalness, f0
         );
     }
 
-    s.push_str("\n## Tuning-Protokoll und Korrekturen vor dem ersten gültigen Rendern\n\n");
-    s.push_str("Keine Tuning-Runde nach dem Betrachten der Bilder. Vor dem ersten gültigen Rendern korrigiert:\n\n");
-    let (old_low, old_high, old_edge) = m::TOON_BANDS_SPEC;
+    s.push_str("\n## Korrekturprotokoll\n\n");
+    s.push_str("Keine Tuning-Runde nach dem Betrachten der Bilder: jede Einstellung unten folgt aus einem Review-Befund oder einer Herleitung, nicht aus einem Bildvergleich.\n\n");
+    s.push_str("### Polish-Runde nach zwei Reviews (Art und Technik), vor diesem Lauf\n\n");
+    let (old_low, old_high) = m::TOON_BANDS_BEFORE_POLISH;
+    let (old_player_rim, old_enemy_rim) = m::RIM_HEXES_BEFORE_POLISH;
     let _ = writeln!(
         s,
-        "- **Fehlerbehebung toon-Bänder:** alt {old_low} / {old_high} (Mindestkantenbreite {old_edge}), neu {} / {} (Mindestkantenbreite {}). \
-         Die alte obere Schwelle war unter den Säulenfackeln unerreichbar: der Boden unter einer Fackel in 3,8 Höhe (Radius 9) erreicht höchstens x ≈ 0,061. \
-         Alle drei Werte sind mit demselben Faktor {:.1} skaliert, damit ihre Verhältnisse bleiben; die obere Schwelle liegt bei zwei Dritteln dieses Maximums, \
-         die Bandkanten unter einer Säulenfackel bei etwa 2,0 und 6,0 Einheiten Abstand. Weiter 3 Bänder, Beitragsfaktor 0,3 unverändert.",
-        m::TOON_BAND_LOW,
-        m::TOON_BAND_HIGH,
-        m::TOON_EDGE_MIN,
-        m::TOON_BAND_HIGH / old_high
+        "- **Cluster-Lichter nicht mehr in Bullet-Farben (alle Looks):** die 6 calm- und 64 busy-Cluster-Lichter hatten die Körperfarbe ihrer Bullets (Magenta, Limette) und tönten den Boden im Palettenraum der Bullets, \
+         was PRD-0003 für die Umgebung ausschließt. Jetzt Farbton #{:06X} (entsättigte Glut) bei gleicher Luminanz wie zuvor.",
+        m::CLUSTER_LIGHT_HEX
     );
+    let _ = writeln!(
+        s,
+        "- **toon-Lichtmodell neu (Behinderung behoben):** vorher Bänder je Licht auf `saturate(N·L)·atten` bei {old_low} / {old_high} ohne Lichtintensität, Stufen 0,45 / 1,0 × 0,3 je Licht aufsummiert. \
+         Das machte Kegelgrößen unabhängig von der Lichtstärke, lieferte am Kegelrand bis 34-mal die Energie der weichen Looks und stapelte in busy Ringe. \
+         Jetzt wie oben unter „Eingefrorene Look-Parameter“: einmal quantisierte Lambert-Bestrahlung. Die analytische `fwidth`-Nachbildung je Licht entfällt."
+    );
+    s.push_str("- **Lichtverstärkung aufgeteilt (alle Looks):** vorher skalierte die Verstärkung auch das Ambient, toon bekam dadurch nur 41 % des Ambient von realistic und dunkle Figuren. ");
+    s.push_str("Jetzt skaliert sie nur das direkte Licht; das Ambient ist in allen Looks gleich.\n");
+    s.push_str("- **toon-Extras aus derselben Materialtabelle:** Schattenton im Schattenband und harter Glanzpunkt (stylized hatte Tönung und Glanz, toon nicht).\n");
+    s.push_str("- **toon-Outline:** vorher binäre `step()`-Kante, asymmetrische Taps −1/+2 (Linie nach rechts unten versetzt, fraß in kleine Imps), 3 SS-px gegen 2 px bei 1x, Multiplikation `hdr·(1−0,92·edge)`. ");
+    s.push_str("Jetzt kontinuierliche Kantenstärke, symmetrisches Kreuz, gleiche Linienbreite in Endpixeln bei 1x und 2x, absolute Linienfarbe.\n");
+    let _ = writeln!(
+        s,
+        "- **stylized-Rim:** vorher farbgleich mit den Figuren (Spieler #{old_player_rim:06X} auf cyanem Umhang, Imps und Brutes #{old_enemy_rim:06X} auf orangen Körpern unter warmem Fackellicht) und kaum sichtbar. \
+         Jetzt neutral kühles #{:06X} für alle Figuren; Stärke k und Exponent p unverändert (keine Stärken-Tuning-Runde).",
+        m::RIM_HEX
+    );
+    let _ = writeln!(
+        s,
+        "- **realistic:** Bronze nutzte die dunkle Diffus-Albedo #6B4A2A als F0 und wurde fast schwarz; jetzt eigene Metall-F0-Spalte (Bronze #{:06X}, auch Glanzfarbe in stylized und toon). \
+         Diffuses Ambient mit `(1−EnvBRDF)` gewichtet (vorher leicht doppelt gezählt), geometrisches Specular-Anti-Aliasing gegen Funkeln der Kachelnormalen.",
+        m::BRONZE_F0_HEX
+    );
+    s.push_str("- **Blob-Schatten (alle Looks):** 60 % statt 45 % Abdunklung in der Mitte, damit Figuren weniger schweben.\n");
+    s.push_str("- **Messwerte ergänzt:** Boden-Luminanz p10–p99, Bullet-Doppelmetrik Körper oder Rand, outline-taugliches Kantenmaß für Figuren.\n");
+    s.push_str("\nAus den Reviews **nicht** umgesetzt (offen): zweiter Rendersatz mit Kalibrierung auf busy-p90, Telegraph-Fixture (Telegraph-Ebene bleibt leer), ");
+    s.push_str("Kreuzvarianten toon+Rim und stylized+Outline, Fugen-Varianten des Bodens, zweites Stimmungsziel 0,12, andere Umhangfarbe, lichtabhängiger Rim, ");
+    s.push_str("Kostenschalter (MRT nur für toon, flaches `surface()`).\n");
+    s.push_str("\n### Vor dem ersten gültigen Rendern\n\n");
+    s.push_str("- **toon-Bänder (damals):** die spezifizierten Schwellen 0,02 / 0,20 waren unter den Säulenfackeln unerreichbar und wurden auf 0,004 / 0,04 skaliert. Durch die Polish-Runde überholt.\n");
     s.push_str("- **Kalibrierung:** Belichtungsskalar im Post-Stack ersetzt durch eine Lichtverstärkung auf die Lichtterme (siehe Lichtkalibrierung). \
                 Der Skalar hatte die gemeinsamen Emissives mitskaliert: Flammen waren in toon 1,65x heller, eigene Bolts liefen ins Weiße.\n");
     let _ = writeln!(
@@ -939,8 +1108,7 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
     let _ = writeln!(
         s,
         "- **Kontrastgrenze von H0 Hexenmagenta:** Körper-Luminanz L = {h0:.3}; 4,5:1 ist nur vor einem Hintergrund mit L < {:.3} möglich, also nur vor fast schwarzem Boden. \
-         Die magentafarbenen Cluster-Lichter tönen den Boden unter dichten Bullet-Wolken zusätzlich zur Bullet-Farbe hin. \
-         Die Lesbarkeit von H0 trägt der dunkle Rand #0A0510, nicht der Körper; das betrifft alle Looks, schadet kontrastarmen Looks aber mehr.",
+         Die Lesbarkeit von H0 trägt der dunkle Rand #0A0510, nicht der Körper (siehe Doppelmetrik); das ist eine Frage der Palette, nicht des Looks.",
         (h0 + 0.05) / WCAG_AA - 0.05
     );
 
@@ -949,6 +1117,9 @@ pub fn write_markdown(path: &Path, report: &Report) -> Result<(), String> {
     s.push_str("- Einfache konvexe Proxys schmeicheln dem **stylized**-Rimlight und geben **toon**-Outlines saubere Silhouetten; Blender-Modelle mit Konkaven und Stofffalten werden beides unruhiger machen.\n");
     s.push_str("- Kein Clustering: jedes Fragment läuft über alle Lichter mit gleichem Radius-Early-out; das staucht die Kostenabstände.\n");
     s.push_str("- Standbilder zeigen keine zeitliche Stabilität (Outline- und Specular-Flimmern); dafür die 1x-Ausschnitte.\n");
+    s.push_str("- Keine Telegraph-Ebene (Schritt 5 im Renderer ist reserviert und leer): ob Telegraphen sich von der Umgebung abheben, sagen die Bilder nicht. Der violette Ritualkreis sieht einem Telegraphen ähnlich.\n");
+    s.push_str("- Die Looks bündeln zwei Variablen: Shading-Modell (Bänder gegen weich) und Trennmittel (Outline gegen Rim). Kreuzvarianten gibt es nicht.\n");
+    s.push_str("- Keine Schattenkarten, nur Blob-Schatten; die kachelgleiche prozedurale Fuge erzeugt in allen Looks ein hochfrequentes Muster hinter Bullets.\n");
     let _ = writeln!(
         s,
         "- Engine-Grenzen gelten für alle Looks gleich: `Features::empty()` und WebGL2-Downlevel-Limits, Lichter in einem Uniform-Array (max. 256), keine Storage-Buffer. Boden {} Dreiecke.",

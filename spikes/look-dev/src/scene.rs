@@ -232,6 +232,18 @@ fn light(position: Vec3, hex_color: u32, intensity: f32, radius: f32) -> LightGp
     }
 }
 
+/// Bullet-cluster light: hue `CLUSTER_LIGHT_HEX`, luminance of the cluster's bullet body colour times
+/// `intensity`, so the environment is not lit in a bullet hue but keeps the same luminous power.
+fn cluster_light(position: Vec3, bullet_hex: u32, intensity: f32, radius: f32) -> LightGpu {
+    let scale = m::luminance(hex(bullet_hex)) * intensity;
+    LightGpu {
+        position,
+        radius,
+        color: mul(m::unit_luminance(hex(m::CLUSTER_LIGHT_HEX)), scale),
+        _pad: 0.0,
+    }
+}
+
 fn yaw_towards(from: [f32; 2], to: [f32; 2]) -> f32 {
     let dx = to[0] - from[0];
     let dy = to[1] - from[1];
@@ -275,7 +287,11 @@ impl Scene {
             groups.push(g);
         };
         for t in &torch_positions {
-            push(light([t[0], t[1], t[2] + 0.2], m::TORCH_LIGHT_HEX, 6.0, 9.0), LightGroup::Torch, &mut lights);
+            push(
+                light([t[0], t[1], t[2] + 0.2], m::TORCH_LIGHT_HEX, m::TORCH_INTENSITY, m::TORCH_RADIUS),
+                LightGroup::Torch,
+                &mut lights,
+            );
         }
         for k in 0..4 {
             let a = (45.0 + 90.0 * k as f32).to_radians();
@@ -333,7 +349,7 @@ impl Scene {
         let mut cluster_lights = Vec::new();
         for (centre, palette) in &calm_clusters {
             let body = m::HOSTILE_PALETTE[*palette as usize].body_hex;
-            cluster_lights.push(light([centre[0], centre[1], 0.5], body, 1.5, 5.0));
+            cluster_lights.push(cluster_light([centre[0], centre[1], 0.5], body, 1.5, 5.0));
         }
         for (offset, l) in cluster_lights.into_iter().enumerate() {
             lights.insert(calm_cluster_slot + offset, l);
@@ -344,7 +360,7 @@ impl Scene {
             let mut busy_lights = Vec::new();
             for (centre, palette) in &busy_clusters {
                 let body = m::HOSTILE_PALETTE[*palette as usize].body_hex;
-                busy_lights.push(light([centre[0], centre[1], 0.5], body, 1.0, 4.0));
+                busy_lights.push(cluster_light([centre[0], centre[1], 0.5], body, 1.0, 4.0));
             }
             // Keep the documented order: calm 24, then 64 cluster lights, then the rest.
             for (offset, l) in busy_lights.into_iter().enumerate() {
@@ -918,6 +934,19 @@ fn friendly_bolts(rng: &mut Rng, count: usize, figures: &[Figure]) -> Vec<BoltIn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cluster_lights_keep_the_bullet_luminance_but_not_the_bullet_hue() {
+        for entry in &m::HOSTILE_PALETTE {
+            let l = cluster_light([0.0; 3], entry.body_hex, 1.0, 4.0);
+            let expected = m::luminance(hex(entry.body_hex));
+            assert!((m::luminance(l.color) - expected).abs() < 1e-4, "{}", entry.name);
+            let unit = m::unit_luminance(l.color);
+            let bullet = m::unit_luminance(hex(entry.body_hex));
+            let distance: f32 = (0..3).map(|c| (unit[c] - bullet[c]).abs()).sum();
+            assert!(distance > 0.5, "{}: cluster light too close to the bullet hue", entry.name);
+        }
+    }
 
     #[test]
     fn variants_share_geometry_and_counts_match_the_spec() {

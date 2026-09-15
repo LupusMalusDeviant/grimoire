@@ -867,7 +867,8 @@ impl Renderer {
     }
 
     /// Step 1: world layer. `gain` is the look's calibrated light gain; the shader multiplies the
-    /// light-derived terms by `LIGHT_INTENSITY_FACTOR * gain`. The void clear colour is the tonemap
+    /// direct light (point lights and moon) by `LIGHT_INTENSITY_FACTOR * gain` and the hemisphere
+    /// ambient by `LIGHT_INTENSITY_FACTOR` alone. The void clear colour is the tonemap
     /// inverse of #06070A, so the background resolves to it in every look (before bloom).
     pub fn world_pass(&self, look: Look, scene: &SceneGpu, t: &Targets, gain: f32) -> Result<Duration, GpuError> {
         let mut frame = scene.frame;
@@ -927,8 +928,8 @@ impl Renderer {
 
     /// Step 2 (toon only): screen-space outlines on the supersampled targets.
     pub fn outline_pass(&self, t: &Targets) -> Result<Duration, GpuError> {
-        // 2x SSAA: taps -1/+2 = 3 SS px (about 1.5 px final). 1x: taps -1/+1 = 2 px.
-        let (tap_lo, tap_hi) = if t.ss >= 2 { (-1, 2) } else { (-1, 1) };
+        // Symmetric cross. 2x SSAA: taps -1/+1 = 2 SS px (about 1 px final); 1x: taps 0/+1 = 1 px.
+        let (tap_lo, tap_hi) = if t.ss >= 2 { (-1, 1) } else { (0, 1) };
         let params = OutlineUniform {
             near: camera::NEAR,
             far: camera::FAR,
@@ -1182,7 +1183,9 @@ fn frame_uniform(scene: &Scene, camera: &Camera) -> FrameUniform {
         blobs,
         // Replaced per look in `world_pass`.
         light_gain: m::LIGHT_INTENSITY_FACTOR,
-        _pad: [0.0; 3],
+        light_factor: m::LIGHT_INTENSITY_FACTOR,
+        _pad: [0.0; 2],
+        toon_ramp: m::toon_ramp().to_gpu(),
     }
 }
 

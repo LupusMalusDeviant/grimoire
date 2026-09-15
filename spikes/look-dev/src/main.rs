@@ -220,7 +220,7 @@ fn cpu_renderer() -> Result<Renderer, String> {
 }
 
 /// Light gain per look: the median floor luminance of the calm world-only frame hits `target`
-/// (linear relative luminance). The gain scales only light-derived terms, so every iteration
+/// (linear relative luminance). The gain scales only the direct light, so every iteration
 /// renders the world pass again. The update is a secant step in log-log space, because the
 /// tonemap toe makes the floor luminance grow faster than linearly with the gain.
 fn calibrate(r: &Renderer, look: Look, calm: &SceneGpu, t: &Targets, target: f32) -> Result<Calibration, String> {
@@ -571,6 +571,7 @@ fn compose(dir: &Path) -> Result<(), String> {
                 look,
                 variant,
                 bullets: metrics::bullet_contrast(&world, &scene.bullets, &camera),
+                floor: metrics::floor_stats(&world, &mask),
                 figures: metrics::figure_contrast(&world, &mask, &scene.figures),
                 stats: bullet_pass::accept(&scene.bullets).1,
                 lights: scene.lights.len(),
