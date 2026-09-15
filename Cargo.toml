@@ -29,6 +29,9 @@ grimoire_sigilc = { path = "crates/grimoire_sigilc" }
 grimoire_sim = { path = "crates/grimoire_sim" }
 grimoire_ui = { path = "crates/grimoire_ui" }
 
+# Tool crates (engine ADR-0008): never a dependency of a runtime crate.
+grimoire_bench = { path = "crates/grimoire_bench" }
+
 # Third party. Versions are pinned deliberately; upgrades are explicit commits.
 bytemuck = { version = "1.25.2", features = ["derive"] }
 env_logger = "0.11.11"
@@ -38,6 +41,8 @@ pollster = "1.0.1"
 proptest = "1.11.0"
 raw-window-handle = "0.6.2"
 rayon = "1.12.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
 thiserror = "2.0.20"
 wgpu = "30.0.1"
