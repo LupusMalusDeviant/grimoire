@@ -89,6 +89,12 @@ jobs:
       # rayon-core or grimoire_exec (normal, build or dev, all targets); the clippy.toml stay identical.
       - name: Determinism crates do not depend on rayon (engine ADR-0006)
         run: bash .github/scripts/check-thread-source.sh
+      # Contract §1 / engine ADR-0008: every grimoire_* edge (normal, build, dev) is on the crate map
+      # allowlist. The self-test runs synthetic edges first, so a broken check cannot pass silently.
+      - name: Self-test the crate map check
+        run: bash .github/scripts/check-crate-map.sh --self-test
+      - name: Crate dependencies follow the crate map (contract §1, engine ADR-0008)
+        run: bash .github/scripts/check-crate-map.sh
       - name: cargo doc
         run: cargo doc --workspace --no-deps --locked
 

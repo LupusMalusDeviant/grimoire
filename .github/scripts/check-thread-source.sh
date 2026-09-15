@@ -3,8 +3,9 @@
 #
 # Every crate with the determinism clippy.toml must not depend on rayon, rayon-core or
 # grimoire_exec, neither as a normal, build nor dev dependency, for any target and with every feature
-# enabled (an optional dependency behind a non-default feature counts). The six clippy.toml files
-# must be identical. A positive control on grimoire_exec proves the query itself works.
+# enabled (an optional dependency behind a non-default feature counts). The seven clippy.toml files
+# (grimoire_core, grimoire_ecs, grimoire_sim, grimoire_collide, grimoire_sigil, grimoire_sigilc and
+# the facade grimoire) must be identical. A positive control on grimoire_exec proves the query itself works.
 # Locally without network, `--target all` fails for the facade; the full check runs in CI.
 set -euo pipefail
 status=0
