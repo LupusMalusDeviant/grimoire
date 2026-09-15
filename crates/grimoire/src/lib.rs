@@ -1,8 +1,13 @@
 //! # grimoire
 //!
-//! Facade of the Grimoire engine. Games depend on this crate only: it owns the application
+//! Facade of the Grimoire engine. Games depend on this crate: it owns the application
 //! lifecycle ([`App`], [`GamePlugin`], the fixed-timestep main loop, [`InputMap`]) and re-exports
 //! what a game needs in [`prelude`] and the engine crates as modules.
+//!
+//! A game that runs the simulation on several threads also depends on `grimoire_exec` and passes
+//! its `ThreadPoolExecutor` to [`AppBuilder::executor`]. The facade itself creates no threads and
+//! does not depend on `grimoire_exec` (engine ADR-0006); every state hash is the same with any
+//! executor.
 //!
 //! ## Main loop
 //!
@@ -106,8 +111,13 @@ pub mod prelude {
     };
     pub use grimoire_core::math::dmath;
     pub use grimoire_core::{StableHash, StableHasher, Vec2, impl_stable_hash};
-    pub use grimoire_ecs::{CommandBuffer, Entity, Schedule, World, system_fn};
+    pub use grimoire_ecs::{
+        Access, CommandBuffer, Entity, Executor, ParallelSystem, QueryBlock, Schedule,
+        SequentialExecutor, World, parallel_system_fn, system_fn,
+    };
     pub use grimoire_platform::{KeyCode, MouseButton, PlatformWindow, WindowConfig};
     pub use grimoire_render::{Camera2D, RenderFrame, RendererConfig, SpriteInstance, shape};
-    pub use grimoire_sim::{InputFrame, SimRng, SimSeed, Simulation, Tick, TickInput, derive_rng};
+    pub use grimoire_sim::{
+        InputFrame, SimRng, SimSeed, Simulation, Tick, TickInput, derive_block_rng, derive_rng,
+    };
 }

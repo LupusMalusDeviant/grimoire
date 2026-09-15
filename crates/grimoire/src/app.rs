@@ -2,8 +2,10 @@
 
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
+use grimoire_ecs::Executor;
 use grimoire_platform::{
     KeyCode, PlatformError, PlatformEvent, WindowConfig, run_desktop, run_headless,
 };
@@ -54,6 +56,7 @@ impl App {
             plugins: Vec::new(),
             max_frames: None,
             exit_key: None,
+            executor: None,
         }
     }
 }
@@ -82,6 +85,8 @@ pub struct AppBuilder {
     plugins: Vec<Box<dyn GamePlugin>>,
     max_frames: Option<u64>,
     exit_key: Option<KeyCode>,
+    /// `None` keeps the world's default, the sequential executor.
+    executor: Option<Arc<dyn Executor>>,
 }
 
 impl fmt::Debug for AppBuilder {
@@ -98,6 +103,13 @@ impl fmt::Debug for AppBuilder {
             .field("plugins", &plugins)
             .field("max_frames", &self.max_frames)
             .field("exit_key", &self.exit_key)
+            .field(
+                "executor_threads",
+                &self
+                    .executor
+                    .as_ref()
+                    .map_or(1, |executor| executor.threads()),
+            )
             .finish()
     }
 }
@@ -175,6 +187,21 @@ impl AppBuilder {
         self
     }
 
+    /// Executor for parallel stages and data-parallel queries (default: the world's
+    /// [`grimoire_ecs::SequentialExecutor`]).
+    ///
+    /// It is set on the simulation's world right after `Simulation::new`, before any plugin's
+    /// `build`, in [`AppBuilder::run`], [`AppBuilder::run_headless`] and the headless frame
+    /// loops. The facade creates no threads itself: a game that simulates on several threads
+    /// depends on `grimoire_exec` and passes, for example,
+    /// `Arc::new(grimoire_exec::ThreadPoolExecutor::new(4)?)`. State hashes do not depend on the
+    /// executor (engine ADR-0006).
+    #[must_use]
+    pub fn executor(mut self, executor: Arc<dyn Executor>) -> Self {
+        self.executor = Some(executor);
+        self
+    }
+
     /// Opens the window and runs the main loop until the window closes, the exit key is pressed,
     /// the frame limit is reached or rendering fails.
     ///
@@ -218,6 +245,9 @@ impl AppBuilder {
         input: &mut dyn FnMut(u64) -> TickInput,
     ) -> HeadlessReport {
         let mut sim = Simulation::new(self.seed);
+        if let Some(executor) = &self.executor {
+            sim.world_mut().set_executor(Arc::clone(executor));
+        }
         for plugin in &mut self.plugins {
             plugin.build(&mut sim);
         }
@@ -302,6 +332,7 @@ impl AppBuilder {
             max_frames: self.max_frames,
             exit_key: self.exit_key,
             record_hashes,
+            executor: self.executor,
         };
         GameLoop::new(settings, self.plugins, factory, outcome)
     }
