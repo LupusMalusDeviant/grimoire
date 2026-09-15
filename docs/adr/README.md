@@ -16,5 +16,6 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 | [0005](0005-grimoire-core-als-blatt-crate.md) | `grimoire_core` als abhängigkeitsfreie Blatt-Crate |
 | [0006](0006-paralleler-scheduler-deterministische-zusammenfuehrung.md) | Paralleler Scheduler mit deterministischer Zusammenführung |
 | [0009](0009-lizenz-alle-rechte-vorbehalten.md) | Lizenz der Engine: Alle Rechte vorbehalten (Nummer vorläufig bis zum Merge der P1-Branches) |
+| [0010](0010-benchmark-strategie.md) | Benchmark-Strategie für das Regressions-Gate (OF-17.3; Nummer vorläufig bis zum Merge der P1-Branches) |
 
 Den aktuellen Status jeder Entscheidung nennt ihre Datei.
