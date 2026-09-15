@@ -133,10 +133,15 @@ jobs:
         run: rm -rf target/float-probe
       # --no-fail-fast: a red test binary must not stop the float probes and golden tests of the
       # binaries after it (engine ADR 0004).
+      # Piped through tee (not just run) so the "Report GPU adapter" step below can grep the
+      # grimoire-gpu-adapter:/grimoire-gpu-tests-skipped: lines back out (WP2.1); `defaults.run.shell:
+      # bash` runs with -o pipefail, so a red cargo test still fails this step.
       - name: Test
         env:
           GRIMOIRE_REQUIRE_GPU_ADAPTER: ${{ runner.os == 'macOS' && '0' || '1' }}
-        run: cargo test --workspace --locked --no-fail-fast
+        run: |
+          mkdir -p ci-logs
+          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci-logs/test.log
       # `cargo test --workspace` silently skips tests behind the non-default `fixtures` feature
       # (`tests/player_proxy.rs`, `required-features = ["fixtures"]`); contract §9.2 requires this
       # dedicated step so the player proxy (§9.5) is actually exercised in CI (Umsetzung WP1.3).
@@ -150,7 +155,15 @@ jobs:
         env:
           GRIMOIRE_GPU_ADAPTER: software
           GRIMOIRE_REQUIRE_GPU_ADAPTER: "1"
-        run: cargo test --workspace --test offscreen --locked
+        run: |
+          mkdir -p ci-logs
+          cargo test --workspace --test offscreen --locked 2>&1 | tee ci-logs/test-offscreen-cpu.log
+      # CI-Render-Ehrlichkeit (WP2.1, Vorstufe OF-18.2): adapter name/backend/device type per runner
+      # and the count of GPU tests skipped for lack of an adapter, into this job's summary. Runs
+      # even if a Test step above failed, so a red run still says what it rendered on.
+      - name: Report GPU adapter and skipped GPU tests
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/report-gpu-adapter.sh "${{ matrix.os }}" ci-logs/test.log ci-logs/test-offscreen-cpu.log
       # Examples open windows: build them, never run them in CI.
       - name: Build examples
         run: cargo build --workspace --examples --locked

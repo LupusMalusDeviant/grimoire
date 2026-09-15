@@ -84,6 +84,24 @@ impl Default for ContextOptions {
     }
 }
 
+/// Formats [`GpuContext::adapter_report_line`]; a free function so it is testable without a real
+/// adapter (WP2.1).
+fn format_adapter_line(
+    name: &str,
+    backend_name: &str,
+    device_type: wgpu::DeviceType,
+    driver_info: &str,
+) -> String {
+    let driver = if driver_info.is_empty() {
+        "unknown"
+    } else {
+        driver_info
+    };
+    format!(
+        "grimoire-gpu-adapter: name={name} backend={backend_name} device_type={device_type:?} driver={driver}"
+    )
+}
+
 /// `wgpu` requires `Debug` on the instance display handle; `dyn PlatformWindow` has none.
 struct WindowDisplay(Arc<dyn PlatformWindow>);
 
@@ -305,6 +323,21 @@ impl GpuContext {
         &self.backend_name
     }
 
+    /// Single greppable line identifying the selected adapter for CI logs (WP2.1, groundwork for
+    /// OF-18.2): name, backend, device type (`Cpu`, `IntegratedGpu`, `DiscreteGpu`, `VirtualGpu`
+    /// or `Other`) and driver info, if `wgpu` reports any. Every offscreen/GPU test binary is
+    /// expected to print this once per binary (not once per test), so CI can show, per runner,
+    /// exactly what each test run rendered on.
+    #[must_use]
+    pub fn adapter_report_line(&self) -> String {
+        format_adapter_line(
+            &self.info.name,
+            &self.backend_name,
+            self.info.device_type,
+            &self.info.driver_info,
+        )
+    }
+
     /// Runs `create` while capturing out-of-memory and validation errors, turning them into a
     /// [`GpuError`] instead of the logging uncaptured-error handler.
     ///
@@ -358,5 +391,28 @@ mod tests {
         let default_backends = descriptor.backends;
         AdapterOverride::Auto.restrict_backends(&mut descriptor);
         assert_eq!(descriptor.backends, default_backends);
+    }
+
+    #[test]
+    fn adapter_report_line_falls_back_to_unknown_driver() {
+        let line = format_adapter_line("llvmpipe", "Vulkan", wgpu::DeviceType::Cpu, "");
+        assert_eq!(
+            line,
+            "grimoire-gpu-adapter: name=llvmpipe backend=Vulkan device_type=Cpu driver=unknown"
+        );
+    }
+
+    #[test]
+    fn adapter_report_line_includes_driver_info_when_present() {
+        let line = format_adapter_line(
+            "Microsoft Basic Render Driver",
+            "Dx12",
+            wgpu::DeviceType::Cpu,
+            "10.0.26200",
+        );
+        assert_eq!(
+            line,
+            "grimoire-gpu-adapter: name=Microsoft Basic Render Driver backend=Dx12 device_type=Cpu driver=10.0.26200"
+        );
     }
 }
