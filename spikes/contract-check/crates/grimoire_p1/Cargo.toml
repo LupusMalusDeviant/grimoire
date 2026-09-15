@@ -1,0 +1,32 @@
+[package]
+name = "grimoire_p1"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+fixtures = []
+debug-link = ["grimoire_debug/tcp"]
+# sample_aim and the Camera25D prelude entry; the contract adds them with WP2.2 (§9.2).
+wp2-2-camera = ["grimoire_render_p1/wp2-2-camera"]
+
+[dependencies]
+grimoire.workspace = true
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+grimoire_ecs_p1.workspace = true
+grimoire_sim.workspace = true
+grimoire_sim_p1.workspace = true
+grimoire_platform.workspace = true
+grimoire_render.workspace = true
+grimoire_render_p1.workspace = true
+grimoire_collide.workspace = true
+grimoire_sigil.workspace = true
+grimoire_assets.workspace = true
+grimoire_debug.workspace = true
+
+[dev-dependencies]
+grimoire_ecs_p1 = { workspace = true, features = ["conformance"] }
+
+[lints]
+workspace = true

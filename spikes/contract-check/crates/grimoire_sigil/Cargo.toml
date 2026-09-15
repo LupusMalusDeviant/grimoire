@@ -1,0 +1,16 @@
+[package]
+name = "grimoire_sigil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+grimoire_core.workspace = true
+grimoire_ecs.workspace = true
+grimoire_ecs_p1.workspace = true
+grimoire_sim.workspace = true
+grimoire_sim_p1.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "grimoire_bench"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+grimoire.workspace = true
+grimoire_p1.workspace = true
+grimoire_core.workspace = true
+grimoire_exec.workspace = true
+grimoire_sim.workspace = true
+grimoire_sim_p1.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
