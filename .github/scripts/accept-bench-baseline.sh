@@ -16,6 +16,15 @@ SHA="${1:?commit sha to accept as the new basis}"
 TREND_FILE="trend/results.jsonl"
 BASIS_FILE="accepted-basis.jsonl"
 
+# Defense in depth: the calling workflow already validates this against the same pattern before
+# ever reaching this script, but this script must not trust that unconditionally — it is the one
+# place that actually builds accepted-basis.jsonl, and a future caller (or a manual invocation)
+# might skip that check.
+if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "::error title=Ungueltige SHA::erwartet genau 40 Kleinbuchstaben-Hex-Zeichen, erhalten: ${SHA}"
+  exit 1
+fi
+
 if [[ ! -f "$TREND_FILE" ]]; then
   echo "::error title=Keine Trenddaten::${TREND_FILE} existiert nicht auf bench-trends; noch kein main-Push mit dem Gate gelaufen?"
   exit 1

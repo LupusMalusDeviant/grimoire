@@ -31,15 +31,24 @@ jobs:
     # Only this job writes to bench-trends, and only for this one, explicitly dispatched action.
     permissions:
       contents: write
+    # `inputs.sha` is only ever read into an env var, never interpolated directly into a `run:`
+    # script (the GitHub Actions script-injection pattern: a `${{ ... }}` expression is a raw text
+    # substitution done *before* the shell parses the script, so an attacker-controlled string
+    # containing quotes/backticks/`$(...)` there can break out and run arbitrary commands — a
+    # workflow_dispatch input is exactly such an untrusted string, however implausible a hostile
+    # value seems for a manually triggered, write-access-gated action). Every step below reads
+    # `"$ACCEPT_SHA"` as an ordinary shell variable instead, which the shell treats as inert data
+    # no matter what it contains.
+    env:
+      ACCEPT_SHA: ${{ inputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           sparse-checkout: .github
       - name: Validate the input SHA
         run: |
-          sha="${{ inputs.sha }}"
-          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error title=Ungueltige SHA::erwartet genau 40 Kleinbuchstaben-Hex-Zeichen, erhalten: ${sha}"
+          if ! [[ "$ACCEPT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Ungueltige SHA::erwartet genau 40 Kleinbuchstaben-Hex-Zeichen, erhalten: ${ACCEPT_SHA}"
             exit 1
           fi
       - name: Checkout bench-trends
@@ -49,7 +58,7 @@ jobs:
           path: bench-trends
       - name: Write accepted-basis.jsonl
         working-directory: bench-trends
-        run: bash ../.github/scripts/accept-bench-baseline.sh "${{ inputs.sha }}"
+        run: bash ../.github/scripts/accept-bench-baseline.sh "$ACCEPT_SHA"
       - name: Commit and push
         working-directory: bench-trends
         env:
@@ -60,10 +69,10 @@ jobs:
         run: |
           git add accepted-basis.jsonl
           if git diff --cached --quiet; then
-            echo "accepted-basis.jsonl already matches commit ${{ inputs.sha }}; nothing to commit."
+            echo "accepted-basis.jsonl already matches commit ${ACCEPT_SHA}; nothing to commit."
             exit 0
           fi
-          git commit -m "chore(bench-trends): accept baseline at ${{ inputs.sha }}"
+          git commit -m "chore(bench-trends): accept baseline at ${ACCEPT_SHA}"
           # Deliberately not force-with-lease: this workflow has sole write access to
           # bench-trends and runs one at a time (no concurrency group needed for a manual,
           # infrequent action), so a plain push either succeeds or, on a genuine race, fails
