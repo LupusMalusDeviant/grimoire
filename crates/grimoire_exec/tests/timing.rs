@@ -102,11 +102,21 @@ fn movers(world: &mut World) {
     }
 }
 
+/// Fastest of `samples`, which is robust against one-off spikes of the machine.
+fn fastest(samples: &[Duration]) -> Duration {
+    samples.iter().copied().min().unwrap_or(Duration::ZERO)
+}
+
 #[test]
 #[ignore = "manual release timing"]
 fn stepping_with_the_default_executor_costs_no_more_than_a_direct_loop() {
     const MOVERS: usize = 500;
     const STEPS: u32 = 20_000;
+    /// Timed blocks per variant. One sample each was dominated by run-to-run noise above the
+    /// 5 % margin, so both variants are warmed up, alternate their order and compare their
+    /// fastest block.
+    const BLOCKS: usize = 11;
+
     let mut sim = Simulation::new(1);
     for i in 0..MOVERS {
         let f = i as f32 * 0.1;
@@ -114,22 +124,41 @@ fn stepping_with_the_default_executor_costs_no_more_than_a_direct_loop() {
             .spawn((Pos { x: f, y: -f }, Vel { x: 1.0, y: 0.5 }));
     }
     sim.schedule_mut().add_system(system_fn("movers", movers));
-    let stepped = time(STEPS, || sim.step(TickInput::default()));
+    let mut step = || time(STEPS, || sim.step(TickInput::default()));
 
     let mut direct_world = world(MOVERS);
     let mut systems: Vec<Box<dyn System>> = vec![Box::new(system_fn("movers", movers))];
-    let direct = time(STEPS, || {
-        direct_world.insert_resource(grimoire_sim::Tick(0));
-        direct_world.insert_resource(grimoire_sim::SimSeed(1));
-        direct_world.insert_resource(TickInput::default());
-        for system in &mut systems {
-            system.run(&mut direct_world);
+    let mut direct = || {
+        time(STEPS, || {
+            direct_world.insert_resource(grimoire_sim::Tick(0));
+            direct_world.insert_resource(grimoire_sim::SimSeed(1));
+            direct_world.insert_resource(TickInput::default());
+            for system in &mut systems {
+                system.run(&mut direct_world);
+            }
+        })
+    };
+
+    black_box(step());
+    black_box(direct());
+    let mut stepped = Vec::with_capacity(BLOCKS);
+    let mut direct_samples = Vec::with_capacity(BLOCKS);
+    for block in 0..BLOCKS {
+        if block % 2 == 0 {
+            stepped.push(step());
+            direct_samples.push(direct());
+        } else {
+            direct_samples.push(direct());
+            stepped.push(step());
         }
-    });
-    println!("Simulation::step {stepped:?}, direct loop {direct:?} for {STEPS} steps");
+    }
+    let (stepped, direct) = (fastest(&stepped), fastest(&direct_samples));
+    println!(
+        "Simulation::step {stepped:?}, direct loop {direct:?} for {STEPS} steps (fastest of {BLOCKS} blocks)"
+    );
     assert!(
         stepped.as_secs_f64() <= direct.as_secs_f64() * 1.05,
-        "step {stepped:?} exceeds 1.05 × direct loop {direct:?}"
+        "step {stepped:?} exceeds 1.05 × direct loop {direct:?} (fastest of {BLOCKS} blocks)"
     );
 }
 
