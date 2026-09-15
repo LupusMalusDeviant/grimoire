@@ -3,11 +3,12 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
-authors = ["LupusMalus"]
+authors = ["Lupus Malus Deviant"]
 repository = "https://github.com/LupusMalusDeviant/grimoire"
+license-file = "LICENSE"
 publish = false
 
 [workspace.dependencies]

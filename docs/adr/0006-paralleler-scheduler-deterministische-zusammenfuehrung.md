@@ -1,6 +1,6 @@
 # ADR-0006: Paralleler Scheduler mit deterministischer Zusammenführung
 
-- **Status:** Akzeptiert (2026-09-14; PO-Entscheidung per Befragung — freigegeben ist die Umsetzung erst mit dem Hash-Gate aus Baustein 7)
+- **Status:** Akzeptiert (2026-09-14; PO-Entscheidung per Befragung — freigegeben ist die Umsetzung erst mit dem Hash-Gate aus Baustein 7; Hash-Gate erfüllt: Engine-PR-CI 34970030661 grün auf Windows, Linux und macOS, veröffentlicht als `v0.1.1`, Spiel-Gate grün in Spiel-CI 34976845473)
 - **Datum:** 2026-09-14
 - **Autor:** Claude (Ausarbeitung) im Auftrag von Lupus Malus Deviant (PO)
 - **Konsultiert:** Lupus Malus Deviant (PO; sechs Einzelentscheidungen per Befragung am 2026-09-14)
@@ -205,7 +205,7 @@ Eine Aufteilung der Welt per `unsafe` (Option 2) ist nur über ein Folge-ADR mit
 
 ### Review
 
-**Reality-Check geplant für:** nach der Umsetzung (erster Alpha-Tag von P1), spätestens 2026-11-09
+**Reality-Check geplant für:** nach der Umsetzung (erstes P1-Release `v0.1.1`), spätestens 2026-11-09
 
 ## Weitere Informationen
 

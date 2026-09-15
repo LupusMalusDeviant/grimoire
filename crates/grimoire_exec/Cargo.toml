@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+license-file.workspace = true
 publish.workspace = true
 
 # Engine ADR-0006 building block 6: the only thread source of the simulation. No crate with the

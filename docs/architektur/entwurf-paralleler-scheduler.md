@@ -1,6 +1,6 @@
 # Entwurf: Paralleler Scheduler (Engine-ADR-0006, Plan 0002 WP1.0)
 
-Entwurf zu WP1.0 — Vertragsänderung, PO-Freigabe ausstehend
+Entwurf zu WP1.0 — Vertragsänderung, vom PO freigegeben; umgesetzt mit PR #1 (Merge `8eea39f` nach grüner 3-OS-CI) und veröffentlicht als `v0.1.1`
 
 Grundlage ist der Entwurf **minimal-api**, ergänzt um Teile aus **proof-first** (`set`, `catch_unwind` je
 Aufgabe, `StageMode::Isolated`, Prüfung der Befehle nach dem Systemlauf, `derive_block_rng` über
@@ -427,9 +427,9 @@ wird §11) und der CHANGELOG-Eintrag unter `[Unreleased]` sind Teil desselben En
 14. `tests/timing.rs` (`#[ignore]`, nur manuell im Release und in einer Messsitzung): Blöcke gegen
     `query_mut`, Schrittkosten, Verteilungsaufwand einer Zwei-System-Stufe.
 
-Spiel-Repo (nicht in WP1.0, erst nach PO-Freigabe, Alpha-Tag und Pin-Anhebung): `fnp_sim_harness` prüft
-`0x5270_20ae_cf76_4ca7` mit jedem Executor aus `gate_executors()`; `fnp_app` übergibt einen
-`ThreadPoolExecutor`.
+Spiel-Repo (nicht in WP1.0, erst nach Merge, Tag `v0.1.1` und Pin-Anhebung): `fnp_sim_harness` prüft
+`0x5270_20ae_cf76_4ca7` mit jedem Executor aus `gate_executors()` (erledigt mit Spiel-Commit `95ba4b3`);
+`fnp_app` übergibt einen `ThreadPoolExecutor` (noch offen).
 
 ## 9. Commit-Reihenfolge
 
@@ -450,10 +450,10 @@ Worktree `_wt/p1-scheduler`, Branch `p1/wp1.0-scheduler`, nur Entwurfs-PR.
 13. `chore(lint): point the thread-ban reasons to engine ADR-0006`
 14. `docs(architektur): specify the parallel scheduler contract`
 
-Vertragsänderungen bleiben bis zur PO-Freigabe unvermerged (WP1.7); kein Tag `v0.2.0-alpha.1` vor der
-Freigabe.
+Der PO hat die Vertragsänderung freigegeben: Merge erst nach grüner CI auf Windows, Linux und macOS, danach
+Tag `v0.1.1` (Patch-Version nach der P1-Regel in `CONTRIBUTING.md`).
 
-## 10. Vorläufige Entscheidungen (PO-Bestätigung ausstehend)
+## 10. Entscheidungen (vom PO mit WP1.0 bestätigt)
 
 | Thema | Entscheidung |
 |-------|--------------|
