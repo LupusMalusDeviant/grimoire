@@ -56,7 +56,7 @@ graph TD
 | `grimoire_debug` | Laufzeit | nein | `platform`, `core` | `ecs`, `sim`, `render`, `sigil`, `collide`, `assets`, Werkzeug-Crates |
 | `grimoire_audio`, `grimoire_ui` | Platzhalter (P2) | offen | keine bis zum P2-Crate-Map-ADR | — |
 | `grimoire` (Fassade) | Laufzeit | ja | `core`, `ecs`, `sim`, `platform`, `render`, `collide`, `sigil`, `assets`, `debug` | `exec`, `rayon`, Werkzeug-Crates |
-| `grimoire_exec` | Laufzeit-Zusatz (Engine-ADR-0006) | nein | `ecs`; Dev: `grimoire`, `sim`, `core` | Werkzeug-Crates; keine Crate der Determinismus-Menge hängt von ihr ab |
+| `grimoire_exec` | Laufzeit-Zusatz (Engine-ADR-0006) | nein | `ecs`; Dev: `grimoire`, `sim`, `core`, `sigil`, `collide` (die letzten beiden vorläufig, PO-Frage in §11.7) | Werkzeug-Crates; keine Crate der Determinismus-Menge hängt von ihr ab |
 | `grimoire_sigilc` | Werkzeug: Bibliothek + CLI `sigilc` | ja | `sigil`, `sim`, `ecs`, `core` (`sim`/`ecs` für `sigilc simulate`, Plan 0002 WP5.6; vorläufig) | `platform`, `render`, `assets`, `debug`, `exec`, `rayon`, andere Werkzeug-Crates |
 | `grimoire_link` | Werkzeug: CLI `grimoire-link` | nein | `debug` (Feature `tcp`), `sigilc`; weitere Laufzeit-Crates erlaubt | `bench` |
 | `grimoire_bench` | Werkzeug: Benchmarks, JSON-Schemata (§15) | nein | jede Laufzeit-Crate, `exec` | `sigilc`, `link` |
@@ -73,8 +73,9 @@ graph TD
   `grimoire_link → grimoire_sigilc`. `grimoire_link` und `grimoire_bench` dürfen weitere Laufzeit-Crates nutzen,
   ohne dass ein neues ADR nötig ist; `grimoire_sigilc` hängt nur an Crates der Determinismus-Menge.
 - **Dev-Kanten:** Crates außerhalb der Determinismus-Menge dürfen per Dev-Abhängigkeit nach oben zeigen
-  (Gate-Tests von `grimoire_exec` auf `grimoire`, `grimoire_sim`, `grimoire_core`). Dev-Kanten von Crates der
-  Determinismus-Menge zeigen nur auf Engine-Crates dieser Menge, nie auf `rayon`, `rayon-core`, `grimoire_exec`
+  (Gate-Tests von `grimoire_exec` auf `grimoire`, `grimoire_sim`, `grimoire_core`, `grimoire_sigil`, `grimoire_collide`).
+  Dev-Kanten von Crates der Determinismus-Menge zeigen nur auf Engine-Crates dieser Menge, nie auf `rayon`,
+  `rayon-core`, `grimoire_exec`
   (§3) oder Werkzeug-Crates. Tests der Laufzeit-Crates nutzen eingecheckte, von `sigilc` erzeugte Unit-Fixtures;
   ein Test in `grimoire_sigilc` prüft, dass die Fixtures aktuell sind.
 - `grimoire_exec` liegt außerhalb der Determinismus-Menge und ist die einzige Thread-Quelle der Simulation
@@ -155,6 +156,11 @@ graph TD
     (Statistiken, Konfigurationen, Kanal-Sammlungen), und neue Fehler-Enums sind ab ihrem ersten Release
     `#[non_exhaustive]` und bieten `Default` oder einen Konstruktor. Ausgenommen sind Instanz-Layouts mit festem
     `repr(C)` und Größen-Test (`SpriteInstance`, `BulletInstance`); deren Änderung ist immer inkompatibel.
+    Von der Konstruktor-Pflicht ausgenommen sind außerdem reine Ausgabetypen, die nur die besitzende Crate erzeugt
+    und Konsumenten nur lesen (P1: `StageInfo`, `SystemInfo`, `BulletColumns`, `SwapReport`, `ScopeTotal`). Sie sind
+    `#[non_exhaustive]` ohne `Default` und ohne Konstruktor und tragen im Vertrag den Vermerk „nur von
+    <Crate/Funktion> erzeugt“. Nicht darunter fallen Typen, die Implementierungen eines öffentlichen Traits außerhalb
+    der Crate liefern müssen (etwa `AssetEntry` für `AssetSource`, §12).
     Bestehende P0-Typen werden nicht nachträglich markiert, weil schon die Markierung inkompatibel wäre; sie
     wachsen nicht, sondern bekommen neue Nachbartypen (§6, `StageFrame`).
 14. **Cargo-Features** sind additiv und standardmäßig aus: `fixtures` (Fassade: Spieler-Proxy, §9.5),
@@ -202,6 +208,7 @@ Abweichungen gilt.
 // grimoire_collide (§14)
 pub trait CollisionQuery: Send + Sync {                   // objektsicher
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool { self.len() == 0 }       // bereitgestellt
     fn overlapping(&self, shape: &Shape, mask: LayerMask, out: &mut Vec<Hit>);
     fn graze_ring(&self, ring: &GrazeRing, mask: LayerMask, out: &mut Vec<Hit>);
 }
@@ -447,10 +454,12 @@ fn read_limited(&self, path: &Path, max_len: u64) -> io::Result<Vec<u8>>;   // b
 - Ist die Datei länger als `max_len`, liefert die Methode einen Fehler der Art `io::ErrorKind::FileTooLarge`.
 - Die Standard-Implementierung ruft `read` und prüft danach die Länge. Fremde Implementierungen bleiben so
   kompatibel, schützen den Speicher aber nicht.
-- `StdFileSystem` überschreibt sie: Datei öffnen, höchstens `max_len + 1` Byte lesen (`take(max_len + 1)`), bei mehr
-  Bytes ablehnen. Das deckt auch eine Datei ab, die zwischen Prüfen und Lesen wächst.
+- `StdFileSystem` überschreibt sie: Datei öffnen, höchstens `max_len.saturating_add(1)` Byte lesen
+  (`take(max_len.saturating_add(1))`, kein Überlauf bei `u64::MAX`), bei mehr Bytes ablehnen. Das deckt auch eine
+  Datei ab, die zwischen Prüfen und Lesen wächst.
 - `MemoryFileSystem` prüft die gespeicherte Länge vor dem Kopieren.
-- Tests in `fs.rs` für beide Implementierungen: genau `max_len` Byte gelingt, `max_len + 1` liefert `FileTooLarge`.
+- Tests in `fs.rs` für beide Implementierungen: genau `max_len` Byte gelingt, `max_len + 1` liefert `FileTooLarge`,
+  und `max_len = u64::MAX` liest die ganze Datei ohne Überlauf (Debug und Release).
 
 **Re-Export `raw_window_handle` (SemVer-Kopplung):** `grimoire_platform` re-exportiert `pub use raw_window_handle;`
 (Version 0.6), weil `PlatformWindow: HasWindowHandle + HasDisplayHandle` die Traits in der öffentlichen API verlangt.
@@ -808,8 +817,10 @@ pub fn run_blocks<B: Send, T: Send>(executor: &dyn Executor, blocks: Vec<B>, f: 
 ```rust
 pub struct StageInfo { pub index: usize, pub exclusive: bool, pub first_system: usize, pub len: usize }
                               // #[non_exhaustive]; Copy, Eq, Debug; first_system/len: Listenindizes der Stufe
+                              // nur von Schedule::run_observed erzeugt (§2 Regel 13)
 pub struct SystemInfo<'s> { pub index: usize, pub stage: usize, pub name: &'s str, pub parallel: bool }
                               // #[non_exhaustive]; Copy, Eq, Debug; index = Position in der Systemliste
+                              // nur von Schedule::run_observed erzeugt (§2 Regel 13)
 pub trait SystemObserver {    // kein Send/Sync: wird nur auf dem Thread von Schedule::run_observed gerufen
     fn stage_started(&mut self, stage: StageInfo) {}
     fn system_started(&mut self, system: SystemInfo<'_>) {}               // nur exklusive Systeme
@@ -853,6 +864,9 @@ pub struct NoopObserver;      // Default, Clone, Copy, Debug; impl SystemObserve
     transaktional.
 - **Leistung:** `run_observed` allokiert nicht zusätzlich. Ein Tick nur aus exklusiven Systemen bleibt
   allokationsfrei. `StageInfo` und `SystemInfo` sind `Copy` bzw. leihen den Namen.
+- **Tests fremder Beobachter:** `StageInfo` und `SystemInfo` haben keinen öffentlichen Konstruktor (§2 Regel 13).
+  Beobachter außerhalb von `grimoire_ecs` (Profiler der Fassade, hashende Beobachter) werden über einen echten
+  `Schedule` und `run_observed` getestet, nicht mit synthetischen Aufrufen.
 - **Konformanz-Suite `SystemObserver`** (§2 Regel 12): `grimoire_ecs::conformance` prüft für jedes
   `&mut dyn SystemObserver` die Aufrufreihenfolge je Stufenart (siehe oben) und dass der Zustands-Hash mit und ohne
   Beobachter identisch ist. Beide Panic-Fälle gehören dazu: eine panicende Aufgabe und eine panicende
@@ -1379,18 +1393,23 @@ pub struct PointerState;     // Clone, Copy, Default, PartialEq, Debug; apply(&R
                              // position() -> Option<[f32; 2]> (physische Pixel, Ursprung oben links, Y nach unten)
 pub const AIM_MIN_DISTANCE: f32 = 0.01;                                 // Welteinheiten, Chebyshev-Abstand
 pub fn quantize_aim(offset: Vec2) -> [i16; 2];
-pub fn sample_aim(camera: &Camera25D, cursor: [f32; 2], viewport: [f32; 2], focus: Vec2) -> Option<[i16; 2]>;
+pub fn sample_aim(camera: &Camera25D, cursor: [f32; 2], viewport: [f32; 2], focus: Vec2) -> Option<[i16; 2]>;   // ab WP2.2 (braucht Camera25D, §6)
 
 pub mod adapters;            // sigil_render, sigil_collide, assets, debug (Tabelle „Fassaden-Adapter“, §9.1)
 #[cfg(feature = "fixtures")]
 pub mod fixtures;            // Spieler-Proxy (§9.5)
 
 pub mod prelude;             // zusätzlich: StageFrame, Camera25D (render, Letzteres ab WP2.2), Collider, CollisionQuery,
-                             // LayerMask, Shape (collide), GrazeHits (adapters::sigil_collide) sowie die Sigil-Typen laut §11;
+                             // LayerMask, Shape (collide), GrazeHits (adapters::sigil_collide) sowie aus sigil: Emitter,
+                             // AimTarget, ClearRequest, ClearFilter, UnitId, SigilConfig (vorläufig, PO-Frage unten);
+                             // alle übrigen Sigil-Typen nur über grimoire::sigil::…;
                              // fixtures nie im Prelude
 pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, debug};
 ```
 
+- Das WP1.3-Skelett enthält `PointerState`, `AIM_MIN_DISTANCE` und `quantize_aim`. `sample_aim` und der Kamerazweig
+  von §9.3 Schritt 3 (samt §9.8) folgen mit WP2.2; bis dahin fehlt die Voraussetzung Kamera, und die Achsen 2/3
+  bleiben aus `sample`. WP1.2 legt weder den Typ `Camera25D` noch ein Kamerafeld in `StageFrame` fest.
 - `extract_stage` (Arbeitsname) füllt die Kanäle aus §6. `extract` erhält weiterhin `&mut RenderFrame`; in P1 ist
   das `stage.base` des Frames der Hauptschleife.
 - `PointerState` ist bewusst getrennt von `InputState`: `InputState` bleibt `Eq` (P0-Vertrag), eine `f32`-Position
@@ -1398,6 +1417,11 @@ pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, deb
 - `FrameStats` bleibt unverändert (öffentliche Felder, kein `#[non_exhaustive]`); `FrameStats::render` enthält
   `StageStats::base`. Die Zähler des Bullet-Kanals erreichen Plugins über `on_profile` (§9.7).
 - Die Prelude-Ergänzungen prüft der Integrations-PR vor dem Merge auf Namenskollisionen mit bestehenden Spiel-Crates.
+- **PO-Frage (Sigil-Typen im Prelude):** A — sparsame Liste `Emitter`, `AimTarget`, `ClearRequest`, `ClearFilter`,
+  `UnitId`, `SigilConfig` (was ein Spiel zum Aufsetzen und Steuern von Mustern nennt); B — keine Sigil-Typen im
+  Prelude (P1), alles über `grimoire::sigil::…`; C — alle öffentlichen Typen aus §11. Empfehlung: A (vorläufig
+  eingetragen). Die Liste deckt die häufigen Spielbezüge ab und hält die Fläche für Namenskollisionen klein; C
+  vergrößert diese Prüfung, B macht Beispiele und Spielcode länger.
 
 ### 9.3 Hauptschleife (Ergänzung P1)
 
@@ -1414,8 +1438,8 @@ pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, deb
   1. Delta aus `ctx.clock()`. Mit `debug-link` vor `FixedTimestep::advance`: `poll`, Nachrichten dekodieren,
      Handshake und Fehler nach §13 behandeln, `SwapSigilUnit` in die Warteschlange stellen (§9.7).
   2. `FixedTimestep::advance` und `InputMap::sample` wie in P0.
-  3. **Zielachsen:** Voraussetzungen sind eine Zeigerposition, ein Fokuspunkt aus dem vorigen Frame und eine
-     `Camera25D` im zuletzt gerenderten `StageFrame` (Kanal aus WP2.2, §6). Liegen alle drei vor, ersetzt die
+  3. **Zielachsen (ab WP2.2, §9.2):** Voraussetzungen sind eine Zeigerposition, ein Fokuspunkt aus dem vorigen
+     Frame und eine `Camera25D` im zuletzt gerenderten `StageFrame` (Kanal aus WP2.2, §6). Liegen alle drei vor, ersetzt die
      Schleife `axes[2]` und `axes[3]` von Slot 0 durch `sample_aim(kamera, zeiger, viewport, fokus)` (§9.4).
      Liefert `sample_aim` `None` oder fehlt eine Voraussetzung, bleiben die Werte aus `sample` (im Preset 0). Die
      Abtastung geschieht einmal pro Frame und gilt für alle Ticks dieses Frames.
@@ -1635,7 +1659,9 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
   - je Tick über einen fassadeninternen `SystemObserver`, der die Uhr leiht (`Simulation::step_observed`, §7.2,
     §8.4): je exklusivem System den Lauf, je paralleler Stufe die Aufgabenphase und je Puffer die Anwendung.
 - **Zuordnung zu Subsystemen** (vorläufig): Der Systemname vor dem ersten `.` bestimmt den Scope
-  (`sigil.update` → `sigil`, §9.1). Namen ohne Punkt zählen zu `app`.
+  (`sigil.update` → `sigil`, §9.1). Namen ohne Punkt zählen zu `app`. Die Fassade vergibt die `ScopeId`s aus einer
+  eigenen Tabelle, geschlüsselt nach diesem Präfix (ebenso für `sim`, `extract`, `render`, `frame`), in Reihenfolge
+  des ersten Auftretens, und übergibt das Präfix als Namen an `FrameProfile::record` (§13).
 - Die Zähler aus `StageStats` (`bullets_drawn`, `bullets_rejected_palette_space`, `bullets_rejected_invalid`) trägt
   die Fassade je Frame per `FrameProfile::add_counter` ein; so erreichen sie `on_profile` und `Stats`, ohne
   `FrameStats` zu ändern.
@@ -1665,7 +1691,8 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
   - Ein Frame ohne Tick lässt die Warteschlange stehen.
   - `run_headless` fragt vor jedem Tick ab und wendet an. `run_headless_frames*` verhält sich wie der Desktop-Lauf.
   - Zeichnet der Lauf ein Replay auf (in P1 nur headless, §8.1), ergibt jeder angewendete Swap einen `SwapRecord`.
-- **Nach `on_frame`:** `Stats` alle `stats_interval_frames` Frames senden.
+- **Nach `on_frame`:** `Stats` alle `stats_interval_frames` Frames senden, gebildet per
+  `FrameProfile::to_stats` mit einem `StatsFrame` aus `FrameStats` und der Content-Epoche (§13).
 - **Fehlerverhalten:** Transportfehler und `QueueFull` trennen nur den Link. Sie beenden nie den Lauf und erzeugen
   keinen `GrimoireError`. Scheitert `Message::to_frame` für eine Nachricht der Engine (`Stats`, `Log`, `SwapAck`,
   `Error`), protokolliert die Fassade den `ProtocolError`, überspringt nur diese Nachricht und behält den Link.
@@ -1678,8 +1705,8 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 (Mauszielen braucht die Kamera, kommt mit P1).“
 
 Das Preset belegt die Zielachsen 2 und 3 nicht; ohne eigene Bindung liefert `sample` dort 0. Die Hauptschleife
-ersetzt beide Achsen von Slot 0 durch das Mauszielen, sobald ein Plugin einen Fokuspunkt liefert und der gerenderte
-`StageFrame` eine `Camera25D` trägt (§9.3, §9.4): Achse 2 ist die x-Komponente, Achse 3 die y-Komponente der
+ersetzt beide Achsen von Slot 0 durch das Mauszielen (ab WP2.2, §9.2), sobald ein Plugin einen Fokuspunkt liefert
+und der gerenderte `StageFrame` eine `Camera25D` trägt (§9.3, §9.4): Achse 2 ist die x-Komponente, Achse 3 die y-Komponente der
 Zielrichtung als Einheitsvektor × 32767, gerundet. Sonst bleibt der Wert aus `sample`. `bind` mit Button-Bit `>= 32`
 oder Achse `>= 4` → Panic (unverändert).
 
@@ -1849,6 +1876,7 @@ pub struct BulletPool;                           // Resource: Clone, Debug, Defa
 pub struct BulletRef<'p>;                        // Copy; id, unit_index, bullet_type, flags, position, previous_position, velocity, age
 #[non_exhaustive]
 pub struct BulletColumns<'p> {                   // Slices über die Slots 0..slot_count, Hash-Reihenfolge = Feldreihenfolge
+                                                 // nur von BulletPool::columns und PoolBlock::columns erzeugt (§2 Regel 13)
     pub alive: &'p [bool], pub generation: &'p [u32], pub unit: &'p [u16], pub bullet_type: &'p [u16],
     pub program: &'p [u16], pub flags: &'p [BulletFlags], pub cascade: &'p [u8], pub position: &'p [Vec2],
     pub previous_position: &'p [Vec2], pub velocity: &'p [Vec2], pub angle: &'p [f32], pub speed: &'p [f32],
@@ -1941,7 +1969,7 @@ pub type BehaviorFn = fn(&BehaviorInput<'_>, &mut BulletMotion, &mut SimRng) -> 
 pub struct BehaviorRegistryBuilder;              // new(version: u32),
                                                  // register(&mut self, id: BehaviorId, name: &'static str, f: BehaviorFn) -> Result<&mut Self, SigilError>,
                                                  // build(self) -> Arc<BehaviorRegistry>
-pub struct BehaviorRegistry;                     // Debug, Send + Sync; version() -> u32, len(),
+pub struct BehaviorRegistry;                     // Debug, Send + Sync; version() -> u32, len(), is_empty(),
                                                  // ids() -> impl Iterator<Item = BehaviorId> + '_ (aufsteigend),
                                                  // name(BehaviorId) -> Option<&'static str>, get(BehaviorId) -> Option<BehaviorFn>,
                                                  // fingerprint() -> u64
@@ -2045,6 +2073,15 @@ pub mod stream {                                 // Einträge der Strom-Tabelle 
 - **Hash-Gate:** Ein Szenario mit mehr als drei Pool-Blöcken, Behaviors, Streuung und Clear läuft wie §8 mit
   `SequentialExecutor`, `PermutedExecutor` (Seeds 1 und 2, rückwärts) und in `grimoire_exec/tests/hash_gate.rs` mit
   1, 2 und N Threads; alle Checkpoints sind identisch.
+  - **PO-Frage (Dev-Kanten des Hash-Gates):** `hash_gate.rs` bindet Szenarien anderer Crates per `#[path]` ein und
+    braucht für jede Crate, die eine Szenario-Datei direkt nennt, eine Dev-Kante. Szenarien aus
+    `grimoire_sigil/tests` und `grimoire_collide/tests` (§14) nennen `grimoire_sigil::` bzw. `grimoire_collide::`.
+    A — Dev-Kanten `grimoire_exec → grimoire_sigil` und `grimoire_exec → grimoire_collide` (§1; zulässig, weil
+    `grimoire_exec` außerhalb der Determinismus-Menge liegt). B — keine neue Kante; mit `grimoire_exec` geteilte
+    Gate-Szenarien nennen Sigil und Kollision nur über die Fassaden-Re-Exporte `grimoire::sigil` und
+    `grimoire::collide`. Empfehlung: A (in §1 vorläufig eingetragen). Die Szenarien bleiben dann in der eigenen Crate
+    ohne Fassade lauffähig, und die bestehende `#[path]`-Einbindung ändert sich nicht. B verlangte in
+    `grimoire_sigil/tests` eine Dev-Kante zur Fassade, die ihrerseits von `grimoire_sigil` abhängt.
 
 ### 11.8 Hot-Swap und Content-Epoche
 
@@ -2138,6 +2175,8 @@ Byte-Layout exakt reproduzieren.
   (Null-Implementierung).
 - `AssetStore` ist ein konkreter Typ. Er ist kein Simulationszustand, keine ECS-Ressource und liegt außerhalb der
   Welt.
+- Fremde `AssetSource`-Implementierungen (Spiel, Werkzeuge, Testquellen) sind vorgesehen. Sie bauen ihre Einträge
+  mit `AssetEntry::new` und rufen `grimoire_assets::conformance` auf (§2 Regel 12).
 
 ```rust
 pub struct AssetId(pub u64);         // Copy, Eq, Ord, Hash, Debug, Display (16 Hex-Ziffern), StableHash
@@ -2148,7 +2187,8 @@ pub struct AssetKind(pub u16);       // Copy, Eq, Ord, Hash, Debug; SIGIL = 1; M
 pub struct Sha256(pub [u8; 32]);     // Copy, Eq, Ord, Hash, Debug (Hex)
 pub struct ContentHash(pub [u8; 32]);// Copy, Eq, Ord, Hash, Debug (Hex)
 pub struct AssetEntry { pub id: AssetId, pub kind: AssetKind, pub kind_version: u32, pub len: u64, pub sha256: Sha256 }
-                                     // #[non_exhaustive]; Copy, Eq, Debug
+                                     // #[non_exhaustive]; Copy, Eq, Debug;
+                                     // new(id: AssetId, kind: AssetKind, kind_version: u32, len: u64, sha256: Sha256) -> Self (§2 Regel 13)
 
 pub trait AssetSource: Send + Sync {
     fn name(&self) -> &str;                                               // Diagnose
@@ -2321,13 +2361,17 @@ pub const IO_POLL_INTERVAL: Duration = Duration::from_millis(10);         // TCP
 pub const IO_WRITE_TIMEOUT: Duration = Duration::from_millis(100);        // TCP: Schreib-Timeout des Sockets
 pub struct MessageId(pub u16);        // Copy, Eq, Ord, Hash, Debug; Konstanten siehe Katalog
 pub struct Frame { pub id: MessageId, pub seq: u32, pub payload: Vec<u8> }   // Clone, Eq, Debug
-pub struct FrameDecoder;              // new(), push(&[u8]), next_frame() -> Result<Option<Frame>, ProtocolError>; Debug
+pub struct FrameDecoder;              // new(), push(&[u8]), next_frame() -> Result<Option<Frame>, ProtocolError>; Default, Debug
 pub fn encode_frame(frame: &Frame, out: &mut Vec<u8>) -> Result<(), ProtocolError>;
 pub fn peek_hello_version(frame: &Frame) -> Option<u16>;   // Some nur bei id 0x0001 und Nutzlast ≥ 2 Byte; liest nur das eingefrorene erste Feld
 pub enum Message { Hello(Hello), Error(ErrorMsg), Log(LogMsg), Stats(Stats),
                    SwapSigilUnit(SwapSigilUnit), SwapAck(SwapAck), SigilPreview(SigilPreview) }
                                       // #[non_exhaustive]; Clone, PartialEq, Debug
 // Message: id() -> MessageId, to_frame(seq) -> Result<Frame, ProtocolError>, from_frame(&Frame) -> Result<Message, ProtocolError>
+pub struct Hello; pub struct ErrorMsg; pub struct LogMsg; pub struct SwapSigilUnit; pub struct SigilPreview; pub struct StatsCounter;
+                                      // Nutzlasttypen, Felder laut Katalog („Rust-Form der Nutzlasttypen“); Clone, PartialEq, Debug
+#[non_exhaustive] pub struct Stats; #[non_exhaustive] pub struct StatsScope; #[non_exhaustive] pub struct SwapAck;
+                                      // wie oben, zusätzlich Default; Aufbau außerhalb der Crate per Feldzuweisung (§2 Regel 13)
 pub enum PeerRole { Tool = 0, Engine = 1 }                                     // Copy, Eq, Debug
 pub enum ErrorCode { HandshakeRequired = 1, VersionMismatch = 2, Unauthorized = 3, Malformed = 4,
                      UnknownMessage = 5, TooLarge = 6, NotSupported = 7, Busy = 8, Internal = 9 }
@@ -2357,12 +2401,19 @@ pub enum TransportError;              // #[non_exhaustive], thiserror: NotConnec
                                       // NonLoopbackAddress(String), InvalidConfig(String), Protocol(#[from] ProtocolError),
                                       // Io { kind: io::ErrorKind, message: String }; Clone, Eq, Debug
 
-pub struct ScopeId(pub u16);          // Copy, Eq, Ord, Hash, Debug
-pub struct FrameProfile;              // begin(frame: u64), record(ScopeId, &'static str, Duration), add_counter(&'static str, u64),
-                                      // scopes() -> &[ScopeTotal], counters() -> &[(&'static str, u64)],
-                                      // to_stats(..) -> Stats (schlägt nie fehl, kürzt deterministisch); Default, Clone, Debug
-#[non_exhaustive] pub struct ScopeTotal { pub scope: ScopeId, pub name: &'static str, pub total: Duration, pub calls: u32 }
-                                      // Copy, Eq, Debug; Budget- und Schätzfelder ergänzt WP6.3 additiv
+pub struct ScopeId(pub u16);          // Copy, Eq, Ord, Hash, Debug; vergibt der Aufrufer (Fassade: §9.7)
+pub struct FrameProfile;              // begin(frame: u64), record(&mut self, scope: ScopeId, name: &str, duration: Duration),
+                                      // add_counter(&'static str, u64), scopes() -> &[ScopeTotal],
+                                      // scope_name(ScopeId) -> Option<&str>, counters() -> &[(&'static str, u64)],
+                                      // to_stats(&self, frame: &StatsFrame) -> Stats (schlägt nie fehl, kürzt deterministisch);
+                                      // Default, Clone, Debug
+#[non_exhaustive] pub struct ScopeTotal { pub scope: ScopeId, pub total: Duration, pub calls: u32 }
+                                      // Copy, Eq, Debug; nur von FrameProfile::record erzeugt (§2 Regel 13);
+                                      // Name über FrameProfile::scope_name; Budget- und Schätzfelder ergänzt WP6.3 additiv
+#[non_exhaustive] #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame: u32, pub alpha: f32, pub frame_time: Duration,
+                        pub fps: f32, pub dropped_time: Duration, pub content_swaps: u32, pub content_manifest: u64 }
+                                      // Frame-Werte für Stats, die FrameProfile nicht hält; Aufbau per Default und Feldzuweisung
 ```
 
 **Framing:**
@@ -2405,6 +2456,15 @@ pub struct FrameProfile;              // begin(frame: u64), record(ScopeId, &'st
 | `0x0200–0x02FF` | reserviert: Replay-Steuerung | | |
 | `0x0300–0x03FF` | reserviert: Asset-Hot-Swap (Nicht-Sigil, PRD-0002 FR-10) | | |
 | `0x8000–0xFFFF` | anwendungsdefiniert; in v1 ohne Empfänger-API: die Engine antwortet mit `Error(NotSupported)` und bleibt verbunden. Ein späterer Haken (etwa `Message::Application(Frame)` plus eine `GamePlugin`-Methode hinter `debug-link`) kommt additiv nach §2b | | |
+
+- **Rust-Form der Nutzlasttypen** (auch für den Generator nach Projekt-ADR-0011): Je Nachricht ein Struct mit dem
+  Namen der `Message`-Variante (`Hello`, `ErrorMsg`, `LogMsg`, `Stats`, `SwapSigilUnit`, `SwapAck`, `SigilPreview`)
+  und öffentlichen Feldern mit den Namen der Tabelle. `Str` wird `String`, `Bytes` wird `Vec<u8>`, `Vec≤N<{..}>`
+  wird `Vec` eines benannten Zeilen-Structs (`StatsScope` für `scopes`, `StatsCounter` für `counters`);
+  `[u8; 32]`, `Option<[f32; 2]>`, `PeerRole` und `ErrorCode` bleiben wie genannt, feste Zahlentypen ebenso. Alle
+  tragen `Clone, PartialEq, Debug`. `Stats`, `StatsScope` und `SwapAck` sind zusätzlich `#[non_exhaustive]` mit
+  `Default` (§2 Regel 13): Die Fassade baut sie außerhalb von `grimoire_debug` auf, und `Stats` wächst mit WP6.3.
+  Höchstlängen prüft `to_frame`, nicht der Typ.
 
 - **Versionierung:**
   - Neue Felder oder eine geänderte Kodierung erhöhen `PROTOCOL_VERSION`.
@@ -2525,12 +2585,19 @@ pub struct FrameProfile;              // begin(frame: u64), record(ScopeId, &'st
   - Stats-Kürzung: 65 Scopes, 65 Zähler und ein 65-Byte-Name mit Mehrbyte-Zeichen an der Schnittstelle ergeben je
     64 Einträge, einen an der Zeichengrenze gekürzten Namen und eine Rundreise über `from_frame`.
 - **Profiler-Datenmodell:** `FrameProfile` summiert Dauern, die die Fassade gemessen hat; das Datenmodell liest keine
-  Uhr (Zeitgrößen des TCP-Transports: siehe dort). Scope-Namen sind `&'static str`, die Reihenfolge von `scopes()` ist
-  die Reihenfolge der ersten Aufzeichnung im Frame. Scope-API, Budgets und CSV/JSON-Export ergänzt WP6.3 additiv.
+  Uhr (Zeitgrößen des TCP-Transports: siehe dort). `record` nimmt den Namen als `&str`, weil Systemnamen nur
+  geliehen vorliegen (§7.2). `FrameProfile` kopiert ihn nur, wenn eine `ScopeId` zum ersten Mal erscheint, in eine
+  eigene Namenstabelle, die `begin` nicht leert; spätere Aufrufe allokieren nicht. Für eine bekannte `ScopeId` gilt
+  der zuerst übergebene Name (`scope_name`). Die Reihenfolge von `scopes()` ist die Reihenfolge der ersten
+  Aufzeichnung im Frame. Scope-API, Budgets und CSV/JSON-Export ergänzt WP6.3 additiv.
   - `to_stats` schlägt nie fehl und kürzt deterministisch (vorläufig, PO-Bestätigung ausstehend): Es behält die
     ersten 64 Scopes und die ersten 64 Zähler in Reihenfolge der ersten Aufzeichnung und kürzt jeden Namen an einer
-    UTF-8-Zeichengrenze auf höchstens 64 Byte. `Message::Stats(profile.to_stats(..)).to_frame(seq)` scheitert
+    UTF-8-Zeichengrenze auf höchstens 64 Byte. `Message::Stats(profile.to_stats(&frame)).to_frame(seq)` scheitert
     deshalb nie an `FieldTooLong`.
+  - Die Frame-Werte (`frame` bis `content_manifest`) übergibt der Aufrufer als `StatsFrame`, weil `grimoire_debug`
+    keine Kante zu `grimoire` oder `grimoire_sim` hat (§1). `frame_time_ns` und `dropped_time_ns` sind die
+    Nanosekunden der `Duration`, bei Überlauf `u64::MAX`. `fps` ist wie im Katalog `f32`; die Fassade übernimmt
+    `FrameStats::fps` (`f64`, §9) mit `as f32`.
 
 ## 14. `grimoire_collide` — Kollision v0
 
@@ -2571,12 +2638,13 @@ pub const SOURCE_POOL: u8 = 1;   // Pool-Objekte ohne Entity (Sigil-Bullets per 
                                  // 2..=127 für Engine-Crates reserviert, 128..=255 für Spiele
 pub struct Collider { pub shape: Shape, pub layers: LayerMask }    // Component: Clone, Copy, PartialEq, Debug, StableHash; Form in Weltkoordinaten
 pub struct GridItem { pub key: ColliderKey, pub shape: Shape, pub layers: LayerMask }   // Copy, PartialEq, Debug, StableHash
-pub struct Hit { pub key: ColliderKey, pub layers: LayerMask }     // Copy, Eq, Ord (nach key), Debug, StableHash
+pub struct Hit { pub key: ColliderKey, pub layers: LayerMask }     // Copy, Eq, PartialOrd, Ord (key, dann layers), Debug, StableHash
 pub struct GrazeRing { pub center: Vec2, pub inner_radius: f32, pub outer_radius: f32 }  // Copy, Default, PartialEq, Debug, StableHash
 pub struct ShapeQuery { pub shape: Shape, pub mask: LayerMask }   // Copy, PartialEq, Debug
 
 pub trait CollisionQuery: Send + Sync {
     fn len(&self) -> usize;                                                       // Anzahl eingetragener Objekte
+    fn is_empty(&self) -> bool { self.len() == 0 }                                // bereitgestellt (Clippy, §2 Regel 3)
     fn overlapping(&self, shape: &Shape, mask: LayerMask, out: &mut Vec<Hit>);
     fn graze_ring(&self, ring: &GrazeRing, mask: LayerMask, out: &mut Vec<Hit>);
 }
@@ -2597,7 +2665,7 @@ impl SpatialGrid {
     pub fn rebuild_par(&mut self, executor: &dyn Executor, items: impl IntoIterator<Item = GridItem>);
     pub fn overlapping_batch(&self, executor: &dyn Executor, queries: &[ShapeQuery], out: &mut BatchHits);
 }
-pub struct BatchHits;            // Clone, Default, Debug; len() (Anzahl Anfragen), hits(i: usize) -> &[Hit], clear()
+pub struct BatchHits;            // Clone, Default, Debug; len() -> usize (Anzahl Anfragen), is_empty(), hits(i: usize) -> &[Hit], clear()
 pub enum CollideError;           // #[non_exhaustive], thiserror: InvalidGridConfig(&'static str)
 pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien gültiger Formen (vorläufig)
 ```
@@ -2674,7 +2742,7 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     `MAX_COORD` in gegenüberliegenden Randzellen (der Generator erzeugt nur gültige Formen); `rebuild_par` ist gleich `rebuild`
     mit `SequentialExecutor`, `PermutedExecutor::new(1..=3)` und `reversed()`.
   - Goldener Hash `GOLDEN_QUERY_HASH` über die Treffer einer festen Szene. In `grimoire_exec/tests/hash_gate.rs`
-    folgt dieselbe Szene mit 1, 2 und N Threads.
+    folgt dieselbe Szene mit 1, 2 und N Threads (Dev-Kante nach §1, PO-Frage in §11.7).
 - **Bench (WP6.5, PO-Entscheid P-3 A):** In `grimoire_bench` laufen die Szenarien `collide_uniform` und
   `collide_cluster`. Beide haben dieselbe Last: 10.000 Bullet-Kreise, 100 Dummy-Gegner mit `Collider`, je Tick
   `rebuild_par`, `overlapping_batch` der 100 Gegner und eine `graze_ring`-Abfrage. In `collide_cluster` liegen alle
@@ -2816,13 +2884,25 @@ pub struct GoldenMaster {
     pub recorded_with: RecordedWith,            // engine_version, engine_build (Hex oder "unknown"); nur Information
 }                                               // Clone, Eq, Debug; to_json() -> Result<String, SchemaError>,
                                                 // from_json(&str) -> Result<GoldenMaster, SchemaError>
+#[non_exhaustive]                               // §2 Regel 13: außerhalb der Crate über current() und Feldzuweisung
 pub struct AlgorithmVersions { pub stable_hasher: u32, pub sim_rng: u32 }            // Copy, Eq, Debug
+                                                // current() -> AlgorithmVersions
+                                                //   (StableHasher::ALGORITHM_VERSION, SimRng::ALGORITHM_VERSION)
 pub struct RecordedWith { pub engine_version: String, pub engine_build: String }    // Clone, Eq, Debug
 pub struct Checkpoint { pub tick: u64, pub state_hash: u64, pub subsystems: Vec<SubsystemHash> }   // Clone, Eq, Debug
 pub struct SubsystemHash { pub name: String, pub hash: u64 }                        // Clone, Eq, Debug
-pub struct GoldenRun { pub seed: u64, pub tick_rate_hz: u32, pub hash_every: u64, pub content_manifest: ContentManifestHash,
-                       pub algorithms: AlgorithmVersions,   // vom Lauf aus StableHasher::ALGORITHM_VERSION und SimRng::ALGORITHM_VERSION
-                       pub golden_eligible: bool, pub checkpoints: Vec<Checkpoint> }  // Ergebnis eines Laufs
+#[non_exhaustive]                               // §2 Regel 13: Aufbau über new, Abweichungen per Feldzuweisung
+pub struct GoldenRun {                          // Ergebnis eines Laufs
+    pub seed: u64,
+    pub tick_rate_hz: u32,
+    pub hash_every: u64,
+    pub content_manifest: ContentManifestHash,
+    pub algorithms: AlgorithmVersions,          // new setzt AlgorithmVersions::current()
+    pub golden_eligible: bool,
+    pub checkpoints: Vec<Checkpoint>,
+}
+// GoldenRun::new(seed: u64, tick_rate_hz: u32, hash_every: u64, content_manifest: ContentManifestHash,
+//                golden_eligible: bool, checkpoints: Vec<Checkpoint>) -> GoldenRun
 pub enum GoldenVerdict {                        // #[non_exhaustive]; Clone, Eq, Debug
     Match,
     NotEligible,                                // Lauf mit Hot-Swap
@@ -2870,7 +2950,8 @@ pub struct RenewalEntry { pub name: String, pub previous_final_hash: Option<u64>
   Konstanten; eine Migration ist in P1 nicht verlangt.
 - **Dokumentation:** `docs/formats/golden-master.md`.
 - **Vertragstests:**
-  - Jede Verdikt-Variante mit konstruierten Läufen, darunter `ShapeMismatch` allein durch abweichende `algorithms`.
+  - Jede Verdikt-Variante mit konstruierten Läufen, darunter `ShapeMismatch` allein durch abweichende `algorithms`
+    (Aufbau mit `GoldenRun::new`, danach Feldzuweisung, etwa `run.algorithms.sim_rng += 1`).
   - Rundreise und `compare` mit `hash_every == 0` (genau ein Checkpoint); eine Datei mit `hash_every: 0` und zwei
     Checkpoints liefert `Err`, nie einen Panic.
   - Kanonische Schreibung ist idempotent.
