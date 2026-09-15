@@ -1,6 +1,10 @@
-# Determinism lint (engine ADR 0004, PRD-0018 FR-09). Keep this file identical in grimoire_core,
-# grimoire_ecs, grimoire_sim, grimoire_collide, grimoire_sigil and the facade grimoire, whose main
-# loop, InputMap and examples feed TickInput and systems into the simulation.
+# Determinism lint (engine ADR 0004, engine ADR 0008, PRD-0018 FR-09). Keep this file identical
+# in grimoire_core, grimoire_ecs, grimoire_sim, grimoire_collide, grimoire_sigil, grimoire_sigilc
+# and the facade grimoire. The five simulation crates plus the facade feed TickInput and systems
+# into the simulation (main loop, InputMap and examples). grimoire_sigilc is a compiler, not a
+# runtime crate, but its output (compiled Sigil units) enters content hashes, golden masters and
+# replays and must be byte-identical on Windows, Linux and macOS, so the same float, thread and
+# hash-container rules apply to it (engine ADR-0008, contract §3).
 # Simulation-side crates must not depend on wall-clock time, unordered hash containers, threads of
 # their own (simulation threads come only from grimoire_exec, engine ADR-0006) or the platform
 # libm. Inherent float methods are written `f32::name` / `f64::name`; clippy silently
