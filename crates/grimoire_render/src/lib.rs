@@ -15,7 +15,12 @@
 use std::time::Duration;
 
 mod sprite_pass;
+mod stage;
 mod wgpu_renderer;
+
+pub use stage::{
+    BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, palette_space,
+};
 
 mod instance {
     // bytemuck's derive macros expand to `unsafe impl` blocks.
@@ -212,6 +217,33 @@ pub trait Renderer {
 
     /// Backend name for diagnostics, e.g. `"Vulkan"`, `"Metal"`, `"Dx12"` or `"Null"`.
     fn backend_name(&self) -> &str;
+
+    /// Whether this renderer has its own [`Renderer::render_stage`] behaviour (contract §6).
+    ///
+    /// The default is `false`, which is accurate for any renderer that has not been extended
+    /// beyond P0: its `render_stage` only ever draws [`StageFrame::base`] through
+    /// [`Renderer::render`] (see the default body below) and never the bullet, marker or debug
+    /// channels. That is not a failure; callers that care can check this flag and log it once.
+    fn supports_stage(&self) -> bool {
+        false
+    }
+
+    /// Draws a full [`StageFrame`] (contract §6: world, bullet, player-marker and debug-UI
+    /// layers in [`RenderLayer::ORDER`]).
+    ///
+    /// The provided default only draws [`StageFrame::base`], by forwarding it to
+    /// [`Renderer::render`]; every [`StageStats`] counter beyond `base` is `0`. Override this
+    /// together with [`Renderer::supports_stage`] to draw the additional channels.
+    ///
+    /// # Errors
+    /// Same as [`Renderer::render`], applied to `frame.base`.
+    fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
+        let base = self.render(&frame.base)?;
+        Ok(StageStats {
+            base,
+            ..StageStats::default()
+        })
+    }
 }
 
 /// Renderer that draws nothing — for headless runs and tests.
@@ -242,6 +274,24 @@ impl Renderer for NullRenderer {
 
     fn backend_name(&self) -> &str {
         "Null"
+    }
+
+    fn supports_stage(&self) -> bool {
+        true
+    }
+
+    /// Draws nothing, like [`Renderer::render`], but applies the full stage semantics of
+    /// contract §6: it extracts and counts the bullet, marker and debug channels exactly like
+    /// [`WgpuRenderer::render_stage`], so headless tests can exercise the extraction and
+    /// rejection rules without a GPU. `frames_rendered`, `last_sprite_count` (the length of
+    /// `frame.base.sprites`) and `last_size` keep being updated by the inner [`Renderer::render`]
+    /// call.
+    ///
+    /// # Errors
+    /// Same as [`Renderer::render`], applied to `frame.base`.
+    fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
+        let base = self.render(&frame.base)?;
+        Ok(stage::stage_stats_from_base(base, frame))
     }
 }
 
@@ -286,5 +336,84 @@ mod tests {
         renderer.render(&frame).expect("null renderer never fails");
         assert_eq!(renderer.frames_rendered, 1);
         assert_eq!(renderer.last_sprite_count, 1);
+    }
+
+    fn accepted_bullet() -> BulletInstance {
+        BulletInstance {
+            position: [0.0, 0.0],
+            radius: 1.0,
+            rotation: 0.0,
+            silhouette: 0,
+            palette: 0,
+            palette_space: BULLET_PASS_PALETTE_SPACE,
+            glow: 0,
+            flags: 0,
+        }
+    }
+
+    /// Minimal `Renderer` that only implements the required P0 methods, to exercise the
+    /// *provided* default of `render_stage` (contract §6): it must only draw `frame.base`.
+    struct BareRenderer;
+
+    impl Renderer for BareRenderer {
+        fn resize(&mut self, _width: u32, _height: u32) {}
+
+        fn render(&mut self, frame: &RenderFrame) -> Result<RenderStats, RenderError> {
+            Ok(RenderStats {
+                sprites_drawn: u32::try_from(frame.sprites.len()).unwrap_or(u32::MAX),
+                draw_calls: 1,
+                cpu_time: Duration::ZERO,
+            })
+        }
+
+        fn backend_name(&self) -> &str {
+            "Bare"
+        }
+    }
+
+    #[test]
+    fn default_render_stage_only_draws_base() {
+        let mut renderer = BareRenderer;
+        assert!(!renderer.supports_stage());
+
+        let mut frame = StageFrame::new();
+        frame.base.sprites.push(SpriteInstance::default());
+        frame.bullets.push(accepted_bullet());
+        frame.marker_sprites.push(SpriteInstance::default());
+        frame.debug_sprites.push(SpriteInstance::default());
+
+        let stats = renderer.render_stage(&frame).expect("render never fails");
+        assert_eq!(stats.base.sprites_drawn, 1, "only base.sprites is drawn");
+        assert_eq!(stats.base.draw_calls, 1);
+        assert_eq!(stats.bullets_drawn, 0);
+        assert_eq!(stats.bullets_rejected_palette_space, 0);
+        assert_eq!(stats.bullets_rejected_invalid, 0);
+    }
+
+    #[test]
+    fn null_renderer_supports_stage_and_counts_every_channel() {
+        let mut renderer = NullRenderer::default();
+        assert!(renderer.supports_stage());
+
+        let mut frame = StageFrame::new();
+        frame.base.sprites.push(SpriteInstance::default());
+        frame.marker_sprites.push(SpriteInstance::default());
+        frame.debug_sprites.push(SpriteInstance::default());
+        frame.bullets.push(accepted_bullet());
+
+        let stats = renderer
+            .render_stage(&frame)
+            .expect("null renderer never fails");
+        assert_eq!(
+            stats.base.sprites_drawn, 3,
+            "world + marker + debug sprites"
+        );
+        assert_eq!(stats.bullets_drawn, 1);
+        assert_eq!(stats.bullets_rejected_palette_space, 0);
+        assert_eq!(stats.bullets_rejected_invalid, 0);
+        assert_eq!(
+            renderer.last_sprite_count, 1,
+            "only base.sprites, P0 semantics"
+        );
     }
 }
