@@ -4,7 +4,9 @@
 //! While a parallel system runs, its context is on a thread-local stack. Data-parallel blocks
 //! capture the context of the calling thread and enter it on whichever thread runs the block, so
 //! reads inside blocks on pool workers are checked too. Without a context (exclusive systems,
-//! code outside a schedule) every hook is a no-op.
+//! code outside a schedule) every hook is a no-op. Exclusive systems enter the absence of a
+//! context, so a schedule run inside a parallel system (on a scratch world) is not checked
+//! against that system's declaration.
 //!
 //! Blocks enter the absence of a context as well. A pool worker that waits inside a parallel
 //! system may run a block of another caller, for example of a second world sharing the pool;

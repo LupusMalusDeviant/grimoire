@@ -2,8 +2,9 @@
 # Engine ADR-0006 block 6: simulation threads come only from grimoire_exec.
 #
 # Every crate with the determinism clippy.toml must not depend on rayon, rayon-core or
-# grimoire_exec, neither as a normal, build nor dev dependency, for any target. The six clippy.toml
-# files must be identical. A positive control on grimoire_exec proves the query itself works.
+# grimoire_exec, neither as a normal, build nor dev dependency, for any target and with every feature
+# enabled (an optional dependency behind a non-default feature counts). The six clippy.toml files
+# must be identical. A positive control on grimoire_exec proves the query itself works.
 # Locally without network, `--target all` fails for the facade; the full check runs in CI.
 set -euo pipefail
 status=0
@@ -12,7 +13,7 @@ if [ "$(sha256sum "${lints[@]}" | awk '{print $1}' | sort -u | wc -l)" -ne 1 ]; 
   echo "::error title=clippy.toml abweichend::Die clippy.toml der Determinismus-Crates sind nicht identisch."
   status=1
 fi
-tree() { cargo tree --locked -p "$1" -e "$2" --target all --prefix none --format '{p}'; }
+tree() { cargo tree --locked -p "$1" -e "$2" --target all --all-features --prefix none --format '{p}'; }
 for lint in "${lints[@]}"; do
   crate=$(basename "$(dirname "$lint")")
   deps=$(tree "$crate" normal,build,dev)   # errexit: a failing cargo tree fails the step, never a silent pass

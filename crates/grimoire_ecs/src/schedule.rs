@@ -478,6 +478,10 @@ impl Schedule {
             };
             if exclusive {
                 if let Entry::Exclusive(system) = &mut self.entries[start] {
+                    // Exclusive systems are never checked, also when this schedule runs inside a
+                    // parallel system (on a scratch world): hide that system's context.
+                    #[cfg(debug_assertions)]
+                    let _guard = crate::debug_access::enter(None);
                     system.run(world);
                 }
                 continue;
