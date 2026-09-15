@@ -5,6 +5,10 @@
 //! capture the context of the calling thread and enter it on whichever thread runs the block, so
 //! reads inside blocks on pool workers are checked too. Without a context (exclusive systems,
 //! code outside a schedule) every hook is a no-op.
+//!
+//! Blocks enter the absence of a context as well. A pool worker that waits inside a parallel
+//! system may run a block of another caller, for example of a second world sharing the pool;
+//! the pushed `None` hides the waiting system's context from that block.
 
 use std::any::{TypeId, type_name};
 use std::cell::RefCell;
@@ -23,7 +27,7 @@ pub(crate) struct AccessContext {
 }
 
 thread_local! {
-    static CONTEXTS: RefCell<Vec<Arc<AccessContext>>> = const { RefCell::new(Vec::new()) };
+    static CONTEXTS: RefCell<Vec<Option<Arc<AccessContext>>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Pops the context entered by [`enter`] when dropped, also while unwinding.
@@ -36,15 +40,16 @@ impl Drop for ContextGuard {
     }
 }
 
-/// Makes `context` the current context of this thread until the guard is dropped.
-pub(crate) fn enter(context: Arc<AccessContext>) -> ContextGuard {
+/// Makes `context` the current context of this thread until the guard is dropped; `None` hides
+/// any context entered earlier on this thread.
+pub(crate) fn enter(context: Option<Arc<AccessContext>>) -> ContextGuard {
     CONTEXTS.with(|contexts| contexts.borrow_mut().push(context));
     ContextGuard(())
 }
 
 /// The current context of this thread, if a parallel system or one of its blocks runs here.
 pub(crate) fn current() -> Option<Arc<AccessContext>> {
-    CONTEXTS.with(|contexts| contexts.borrow().last().cloned())
+    CONTEXTS.with(|contexts| contexts.borrow().last().cloned().flatten())
 }
 
 /// Every component element of query `Q` (`&T`, `Option<&T>`) must be declared with `read`.

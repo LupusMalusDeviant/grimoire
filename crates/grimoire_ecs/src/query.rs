@@ -900,7 +900,9 @@ where
     if blocks.len() <= 1 {
         return blocks.into_iter().map(f).collect();
     }
-    // The context of a parallel system follows its blocks onto every executing thread.
+    // The context of a parallel system follows its blocks onto every executing thread. Without a
+    // context the blocks enter `None`, so a worker waiting inside another system does not lend
+    // them its context.
     #[cfg(debug_assertions)]
     let context = crate::debug_access::current();
     let mut slots: Vec<BlockSlot<'w, Q, T>> = blocks
@@ -916,10 +918,10 @@ where
             .iter_mut()
             .map(|slot| {
                 #[cfg(debug_assertions)]
-                let mut context = context.clone();
+                let context = context.clone();
                 move || {
                     #[cfg(debug_assertions)]
-                    let _guard = context.take().map(crate::debug_access::enter);
+                    let _guard = crate::debug_access::enter(context.clone());
                     if let Some(block) = slot.block.take() {
                         match catch_unwind(AssertUnwindSafe(|| f(block))) {
                             Ok(output) => slot.output = Some(output),

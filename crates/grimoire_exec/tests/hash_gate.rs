@@ -7,7 +7,8 @@
 //! - (b) the parallel scenario against its isolated-stage run and `GOLDEN_PARALLEL_FINAL_HASH`;
 //! - (c) the facade scenarios through `run_headless` and the headless frame loop;
 //! - (d) random schedules on a 4-thread pool against isolated stages;
-//! - (e) in debug builds, an undeclared read on a pool worker panics with the system name.
+//! - (e) in debug builds, an undeclared read on a pool worker panics with the system name, and
+//!   context-free blocks of a second world on a shared pool are never checked.
 //!
 //! The scenarios are included from the other crates' test directories, so no determinism crate
 //! needs a dependency on this crate or on rayon.
@@ -256,4 +257,111 @@ fn undeclared_read_on_a_worker_panics() {
             },
         ));
     schedule.run(&mut world);
+}
+
+/// Two worlds share one pool. A pool worker waits inside a parallel system of the first world
+/// (its access context is on the worker's stack) and meanwhile runs a block of a `par_blocks`
+/// call that the second world issues outside any schedule. That block has no context and must
+/// not be checked against the waiting system's declaration.
+#[cfg(debug_assertions)]
+#[test]
+fn context_free_blocks_on_a_shared_pool_inherit_no_foreign_context() {
+    use std::sync::Barrier;
+    use std::sync::mpsc;
+
+    use random_schedule::{A, B};
+
+    const TIMEOUT: Duration = Duration::from_secs(30);
+
+    #[derive(Clone)]
+    struct Gravity {
+        value: u64,
+    }
+    grimoire_core::impl_stable_hash!(Gravity { value });
+
+    fn world(executor: &Arc<dyn Executor>) -> World {
+        let mut world = World::new();
+        for value in 0..(2 * grimoire_ecs::QUERY_BLOCK_SIZE as u64) {
+            world.spawn((A { value }, B { value }));
+        }
+        world.insert_resource(Gravity { value: 1 });
+        world.set_executor(Arc::clone(executor));
+        world
+    }
+
+    for _ in 0..3 {
+        let pool: Arc<dyn Executor> = Arc::new(ThreadPoolExecutor::new(2).expect("2-thread pool"));
+        let mut first = world(&pool);
+        let second = world(&pool);
+
+        // Both blocks of `waiting` meet at the barrier, so they run on the two workers at once.
+        // Block 0 then returns and its worker waits in the join for block 1, which blocks until
+        // the second world is done. The only free worker is the one waiting inside `waiting`.
+        let barrier = Barrier::new(2);
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let go_tx = Mutex::new(go_tx);
+        let done_rx = Mutex::new(done_rx);
+
+        let mut schedule = Schedule::new();
+        schedule
+            .add_parallel_system(parallel_system_fn(
+                "waiting",
+                Access::new().read::<A>(),
+                move |world, _| {
+                    let _ = world.par_blocks::<&A, _>(|block| {
+                        barrier.wait();
+                        if block.index() == 0 {
+                            go_tx
+                                .lock()
+                                .expect("unpoisoned")
+                                .send(())
+                                .expect("receiver");
+                        } else {
+                            let _ = done_rx.lock().expect("unpoisoned").recv_timeout(TIMEOUT);
+                        }
+                        block.len()
+                    });
+                },
+            ))
+            .add_parallel_system(parallel_system_fn(
+                "idle",
+                Access::new().read::<A>(),
+                |_, _| {},
+            ));
+        assert_eq!(schedule.stages().len(), 1);
+
+        let second = &second;
+        let outcome = std::thread::scope(|scope| {
+            let other = scope.spawn(move || {
+                go_rx
+                    .recv_timeout(TIMEOUT)
+                    .expect("block 0 of `waiting` ran");
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    second.par_blocks::<(Entity, &A), _>(|block| {
+                        let gravity = second.resource::<Gravity>().map_or(0, |g| g.value);
+                        let with_b = block
+                            .filter(|(entity, _)| second.get::<B>(*entity).is_some())
+                            .count();
+                        gravity * with_b as u64
+                    })
+                }));
+                done_tx.send(()).expect("receiver");
+                outcome
+            });
+            schedule.run(&mut first);
+            other.join().expect("second thread")
+        });
+        match outcome {
+            Ok(rows) => assert_eq!(rows, vec![grimoire_ecs::QUERY_BLOCK_SIZE as u64; 2]),
+            Err(payload) => {
+                let text = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                    .unwrap_or_default();
+                panic!("context-free blocks were checked against a foreign system: {text}");
+            }
+        }
+    }
 }

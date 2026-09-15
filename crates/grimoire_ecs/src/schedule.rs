@@ -563,7 +563,7 @@ fn run_task(entry: &mut ParallelEntry, world: &World) {
         ..
     } = entry;
     #[cfg(debug_assertions)]
-    let _guard = crate::debug_access::enter(Arc::clone(context));
+    let _guard = crate::debug_access::enter(Some(Arc::clone(context)));
     let result = catch_unwind(AssertUnwindSafe(|| {
         system.run(world, commands);
         #[cfg(debug_assertions)]
