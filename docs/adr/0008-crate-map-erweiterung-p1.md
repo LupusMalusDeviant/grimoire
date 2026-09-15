@@ -266,7 +266,7 @@ Determinismus-Menge und für das Verhältnis von `tools/` zum Workspace. Nicht e
 
 ## Nachtrag (2026-09-16, WP8.1): `grimoire_schemagen`
 
-*Additiv — PO-Freigabe ausstehend (§2b Stufe A, V-20).* Dieser Nachtrag ergänzt die Crate-Map um eine
+*Additiv — vom PO freigegeben am 2026-09-16 (§2b Stufe A, V-20).* Dieser Nachtrag ergänzt die Crate-Map um eine
 Werkzeug-Crate, ohne einen bestehenden Abschnitt dieses ADR umzuschreiben; die Entscheidung oben (Option 2,
 2026-09-15) bleibt unverändert.
 
