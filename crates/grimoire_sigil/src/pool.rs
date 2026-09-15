@@ -319,6 +319,13 @@ pub struct BulletPool {
     capacity: u32,
     slot_count: u32,
     alive_count: u32,
+    /// Simulation bounds (contract §11.3, §11.6 `SigilConfig`). Read by the not-yet-implemented
+    /// `sigil.update` bounds check (§11.6); WP1.3 has no writer for these fields yet (`install`
+    /// is out of scope here), so they stay at their `Default` (`Vec2::ZERO`) for every pool built
+    /// in this crate today. They are still real fields, not placeholders: the contract freezes
+    /// them into the hash layout regardless of whether anything currently changes them.
+    bounds_min: Vec2,
+    bounds_max: Vec2,
     dropped_spawns: u64,
     free_list: VecDeque<u32>,
     alive: Vec<bool>,
@@ -367,6 +374,8 @@ impl BulletPool {
             capacity,
             slot_count: 0,
             alive_count: 0,
+            bounds_min: Vec2::ZERO,
+            bounds_max: Vec2::ZERO,
             dropped_spawns: 0,
             free_list: VecDeque::new(),
             alive: vec![false; len],
@@ -668,18 +677,15 @@ impl BulletPool {
 }
 
 impl StableHash for BulletPool {
-    /// Feeds, in order (contract §11.3): `capacity`, `slot_count`, `dropped_spawns`; per slot the
-    /// generation and alive flag; the free list's length then its indices in reuse order; per live
-    /// slot the [`BulletColumns`] fields from `unit` onward; then `events_tick`, the event count
-    /// and the events.
-    ///
-    /// Deviation/contract-change candidate (WP1.3): the contract's hash order also lists
-    /// `bounds_min`/`bounds_max` right after `slot_count`. WP1.3's `BulletPool` has no bounds
-    /// concept (bounds enforcement is `sigil.update`, out of scope), so there is nothing meaningful
-    /// to hash yet; both fields are omitted here rather than hashing placeholder zeros.
+    /// Feeds, in order (contract §11.3): `capacity`, `slot_count`, `bounds_min`, `bounds_max`,
+    /// `dropped_spawns`; per slot the generation and alive flag; the free list's length then its
+    /// indices in reuse order; per live slot the [`BulletColumns`] fields from `unit` onward; then
+    /// `events_tick`, the event count and the events.
     fn stable_hash(&self, hasher: &mut StableHasher) {
         hasher.write_u32(self.capacity);
         hasher.write_u32(self.slot_count);
+        self.bounds_min.stable_hash(hasher);
+        self.bounds_max.stable_hash(hasher);
         hasher.write_u64(self.dropped_spawns);
 
         for i in 0..self.slot_count as usize {
@@ -767,6 +773,25 @@ mod tests {
             }
         );
         assert_eq!(id.to_string(), "7v3");
+    }
+
+    #[test]
+    fn bounds_are_part_of_the_pool_hash() {
+        // Contract §11.3 freezes `bounds_min`/`bounds_max` right after `slot_count` in the hash
+        // order. There is no public setter yet (`install`, the only intended writer, is out of
+        // scope until WP4/WP5), so this reaches the private fields directly from the same crate
+        // module to prove the layout, not the not-yet-implemented bounds *behaviour*.
+        let mut pool = BulletPool::with_capacity(4);
+        let before = hash_of(&pool);
+
+        pool.bounds_min = Vec2::new(-10.0, -20.0);
+        pool.bounds_max = Vec2::new(10.0, 20.0);
+
+        assert_ne!(
+            hash_of(&pool),
+            before,
+            "bounds_min/bounds_max must be fed into the pool hash (contract §11.3)"
+        );
     }
 
     #[test]
@@ -1179,7 +1204,11 @@ mod tests {
     /// Frozen reference hash for the exact `StableHash` field order documented on
     /// `impl StableHash for BulletPool`. If this fails after an *intentional* change to that
     /// order, recompute it (the assertion prints the actual value) and update this constant.
-    const GOLDEN_POOL_HASH: u64 = 0x0733_8e7e_2316_04b7;
+    ///
+    /// Updated for the `bounds_min`/`bounds_max` fix (review finding on PR #3): the previous
+    /// value (`0x0733_8e7e_2316_04b7`) was computed from a hash order that omitted those two
+    /// fields entirely, so it never actually matched the frozen contract §11.3 layout.
+    const GOLDEN_POOL_HASH: u64 = 0x9672_671e_4036_f68c;
 
     #[test]
     fn golden_pool_hash() {
