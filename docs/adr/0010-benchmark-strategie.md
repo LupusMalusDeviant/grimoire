@@ -416,3 +416,47 @@ Steigung ist bench- und hostabhängig (siehe oben, `sim_step_600` driftete zwisc
   `src/bin/ir_probe.rs` (`calibrated`-Modus), `src/bin/calibration_check.rs`,
   `scripts/calibrate_injection.sh`, `benches/gungraun_bench.rs`, CI-Jobs `calibration` und
   `gungraun-vs-raw`
+
+## Nachtrag (WP6.2-Umsetzung)
+
+Beantwortet den oben angekündigten Reality-Check ("sobald WP6.2 `grimoire_bench` mit kalibrierter
+Einspeisung und dem Warnmodus auf `main` scharf schaltet") mit den Umsetzungsentscheidungen, die
+selbst keine neue Grundsatzfrage aufwerfen (Metrik, Gate-Formel und akzeptierte Basis bleiben wie
+oben entschieden), aber hier festgehalten gehören, weil sie dieses ADR direkt umsetzen:
+
+- **Kein Wiederholungs-Bündel in Produktion.** Die zehn Wiederholungen der Spike-Messung (oben,
+  Option 2) dienten dem Rausch-Nachweis selbst; da dieser mit exakt 0,0 % in zwei unabhängigen
+  Läufen erbracht ist, misst der produktive `gate`-Job (`.github/workflows/bench-gate.yml`) je
+  Push/PR nur einmal. Ein erneuter Anstieg des Rauschbands (andere Runner-Generation, anderes
+  Callgrind) wäre ein eigener Befund, der diese Annahme neu prüfen müsste, nicht mit stillschweigend
+  zurückgebauter Wiederholung.
+- **Kalibrierungs-Zielwerte 5/15/20 % statt 5/12/20 %.** WP6.2 (dieser Task) verlangt den
+  Negativnachweis ausdrücklich bei **+15 %**, nicht bei +12 % wie im Spike; `calibration-proof`
+  (`scripts/calibrate_injection.sh`, `src/bin/calibration_check.rs`) kalibriert deshalb auf
+  5/15/20 %. Die Einheitenzahlen selbst sind je CI-Lauf frisch gemessen (oben, "Offen für WP6.2
+  selbst"), nie aus der Spike-Tabelle übernommen.
+- **Eigener Workflow, WARN MODE per Schalter.** Das Gate läuft in `.github/workflows/bench-gate.yml`
+  (nicht in `ci.yml`), damit sein Callgrind-Bedarf und sein Zeitbudget von der 3-OS-Testmatrix
+  getrennt bleiben. `env.BENCH_GATE_MODE: warn` ist der einzige Schalter für M1/M2 (Plan 0002): ein
+  rotes Urteil wird kommentiert (`::warning::`), nie den Job scheitern lassen, solange der Wert
+  `warn` ist. Ein Messfehler (Exitcode 2 von `compare`, z. B. ein Nullwert) lässt den Job dagegen
+  immer scheitern, unabhängig vom Schalter — das ist kein abgestuftes Urteil, sondern ein Zeichen,
+  dass die Messung selbst kaputt ist.
+- **`bench-trends` als verwaister Zweig, Basis nur per `workflow_dispatch`.** P-12s Datenzweig wird
+  vom `publish-trend`-Job bei Bedarf als `--orphan`-Branch angelegt (kein gemeinsamer Verlauf mit
+  `main`), nie force-gepusht; ein Push-Wettlauf löst sich über Fetch + Neuaufsatz + bis zu fünf
+  Wiederholungen (`.github/scripts/append-bench-trend.sh`). `accepted-basis.jsonl` ändert sich
+  ausschließlich über den Workflow `bench-accept-baseline` (`workflow_dispatch`, Eingabe: die zu
+  akzeptierende Commit-SHA); kein automatischer Schritt schreibt diese Datei.
+- **`grimoire_bench` hängt direkt an `grimoire_ecs`/`grimoire_sim`/`grimoire_core`, nicht an der
+  Fassade.** Engine-ADR-0008 erlaubt beides ("jede Laufzeit-Crate"); die beiden P0-Benches
+  brauchen weder Render noch Platform noch die übrigen Fassaden-Abhängigkeiten, und ein schlankerer
+  Abhängigkeitsbaum hält die CI-Zeit dieses zusätzlichen Jobs klein (OP-5).
+
+### Referenzen (WP6.2-Umsetzung)
+
+- Plan 0002 WP6.2 (dieser Task); Crate-Verträge §15.1; `docs/formats/bench-result.md`
+- `crates/grimoire_bench/` (`src/schema.rs`, `src/gate.rs`, `src/scenarios.rs`, `src/bin/*.rs`,
+  `scripts/*.sh`, `README.md`)
+- `.github/workflows/bench-gate.yml`, `.github/workflows/bench-accept-baseline.yml`,
+  `.github/scripts/append-bench-trend.sh`, `.github/scripts/accept-bench-baseline.sh`

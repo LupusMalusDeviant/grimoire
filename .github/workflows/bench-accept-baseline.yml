@@ -1,0 +1,80 @@
+# Accepts a new benchmark basis (Plan-0002 WP6.2 scope item 5; engine ADR-0010 §4.2: the gate
+# compares against an *accepted* basis, never the last push). This is the one, explicit,
+# documented way `bench-trends:accepted-basis.jsonl` ever changes — never automatically from a
+# push to main (`.github/workflows/bench-gate.yml`'s `publish-trend` job only ever *appends* to
+# the separate trend history, `trend/results.jsonl`, and never touches the basis file).
+#
+# Run this manually (Actions tab -> "Accept benchmark baseline" -> "Run workflow") after checking
+# the commit's `gate` job summary looks right (no unexplained jump, both benches present).
+#
+# Every push that triggers a workflow in this repo is watched until it finishes; a manually
+# dispatched run is watched the same way:
+#   gh run watch --exit-status        (red run: gh run view --log-failed)
+name: Accept benchmark baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA to accept as the new basis (must already be on bench-trends:trend/results.jsonl, i.e. its bench-gate run on main must have completed)."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  accept:
+    name: accept baseline (bench-trends)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Only this job writes to bench-trends, and only for this one, explicitly dispatched action.
+    permissions:
+      contents: write
+    # `inputs.sha` is only ever read into an env var, never interpolated directly into a `run:`
+    # script (the GitHub Actions script-injection pattern: a `${{ ... }}` expression is a raw text
+    # substitution done *before* the shell parses the script, so an attacker-controlled string
+    # containing quotes/backticks/`$(...)` there can break out and run arbitrary commands — a
+    # workflow_dispatch input is exactly such an untrusted string, however implausible a hostile
+    # value seems for a manually triggered, write-access-gated action). Every step below reads
+    # `"$ACCEPT_SHA"` as an ordinary shell variable instead, which the shell treats as inert data
+    # no matter what it contains.
+    env:
+      ACCEPT_SHA: ${{ inputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+      - name: Validate the input SHA
+        run: |
+          if ! [[ "$ACCEPT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Ungueltige SHA::erwartet genau 40 Kleinbuchstaben-Hex-Zeichen, erhalten: ${ACCEPT_SHA}"
+            exit 1
+          fi
+      - name: Checkout bench-trends
+        uses: actions/checkout@v7
+        with:
+          ref: bench-trends
+          path: bench-trends
+      - name: Write accepted-basis.jsonl
+        working-directory: bench-trends
+        run: bash ../.github/scripts/accept-bench-baseline.sh "$ACCEPT_SHA"
+      - name: Commit and push
+        working-directory: bench-trends
+        env:
+          GIT_AUTHOR_NAME: grimoire-bench-gate
+          GIT_AUTHOR_EMAIL: bench-gate@users.noreply.github.com
+          GIT_COMMITTER_NAME: grimoire-bench-gate
+          GIT_COMMITTER_EMAIL: bench-gate@users.noreply.github.com
+        run: |
+          git add accepted-basis.jsonl
+          if git diff --cached --quiet; then
+            echo "accepted-basis.jsonl already matches commit ${ACCEPT_SHA}; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(bench-trends): accept baseline at ${ACCEPT_SHA}"
+          # Deliberately not force-with-lease: this workflow has sole write access to
+          # bench-trends and runs one at a time (no concurrency group needed for a manual,
+          # infrequent action), so a plain push either succeeds or, on a genuine race, fails
+          # loudly for a re-run rather than silently overwriting.
+          git push origin HEAD:refs/heads/bench-trends
