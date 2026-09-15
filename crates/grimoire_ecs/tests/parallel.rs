@@ -433,3 +433,171 @@ fn parallel_stages_see_the_world_before_the_stage() {
     schedule.run(&mut world);
     assert_eq!(world.resource::<Counter>().map(|c| c.value), Some(111));
 }
+
+// ------------------------------------------------------------------ recovery after an unwind
+
+/// Arms the panicking `Drop` of [`Fragile`] for exactly one drop.
+static FRAGILE_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Resource whose replaced value panics on drop while armed, i.e. while a buffer is applied.
+#[derive(Clone)]
+struct Fragile {
+    value: u32,
+}
+impl_stable_hash!(Fragile { value });
+
+impl Drop for Fragile {
+    fn drop(&mut self) {
+        if self.value == 1 && FRAGILE_ARMED.swap(false, Ordering::SeqCst) {
+            panic!("dropping the replaced resource panics");
+        }
+    }
+}
+
+/// Stage `[replace, spawn]`: a panic while `replace`'s buffer is applied skips `spawn`'s buffer.
+fn fragile_stage() -> Schedule {
+    let mut schedule = Schedule::new();
+    schedule
+        .add_parallel_system(parallel_system_fn(
+            "replace",
+            Access::new().write_resource::<Fragile>(),
+            |_, commands| commands.insert_resource(Fragile { value: 2 }),
+        ))
+        .add_parallel_system(parallel_system_fn(
+            "spawn",
+            Access::new().structural(),
+            spawn_vel,
+        ));
+    schedule
+}
+
+#[test]
+fn a_panic_while_applying_leaves_no_commands_for_the_run_after_restore() {
+    let mut schedule = fragile_stage();
+    assert_eq!(schedule.stages().len(), 1);
+    let mut world = World::new();
+    world.insert_resource(Fragile { value: 1 });
+    let snapshot = world.snapshot();
+
+    FRAGILE_ARMED.store(true, Ordering::SeqCst);
+    let payload = catch_unwind(AssertUnwindSafe(|| schedule.run(&mut world)))
+        .expect_err("applying the stage panics");
+    FRAGILE_ARMED.store(false, Ordering::SeqCst);
+    assert_eq!(
+        payload_text(payload.as_ref()),
+        "dropping the replaced resource panics"
+    );
+
+    // Documented recovery: restore, then run the same schedule again.
+    world.restore(&snapshot);
+    schedule.run(&mut world);
+
+    let mut reference = World::new();
+    reference.restore(&snapshot);
+    fragile_stage().run(&mut reference);
+    assert_eq!(reference.entity_count(), 1);
+    assert_eq!(world.entity_count(), 1, "a stale spawn was applied late");
+    assert_eq!(hash(&world), hash(&reference));
+}
+
+/// Runs every task, then unwinds once while armed, like an executor that breaks its contract.
+struct UnwindingExecutor {
+    armed: AtomicBool,
+}
+
+impl Executor for UnwindingExecutor {
+    fn threads(&self) -> usize {
+        1
+    }
+
+    fn run(&self, tasks: &mut [&mut (dyn FnMut() + Send)]) {
+        for task in tasks.iter_mut() {
+            task();
+        }
+        if self.armed.swap(false, Ordering::SeqCst) {
+            panic!("executor unwinds after its tasks");
+        }
+    }
+}
+
+#[test]
+fn an_unwinding_executor_leaves_no_commands_for_the_run_after_restore() {
+    let build = || {
+        let mut schedule = Schedule::new();
+        schedule
+            .add_parallel_system(parallel_system_fn(
+                "double",
+                Access::new().read::<Pos>().write::<Pos>(),
+                double,
+            ))
+            .add_parallel_system(parallel_system_fn(
+                "spawn_vel",
+                Access::new().structural(),
+                spawn_vel,
+            ));
+        schedule
+    };
+    let mut schedule = build();
+    assert_eq!(schedule.stages().len(), 1);
+    let mut world = populated();
+    world.set_executor(Arc::new(UnwindingExecutor {
+        armed: AtomicBool::new(true),
+    }));
+    let snapshot = world.snapshot();
+
+    let payload = catch_unwind(AssertUnwindSafe(|| schedule.run(&mut world)))
+        .expect_err("the executor unwinds");
+    assert_eq!(
+        payload_text(payload.as_ref()),
+        "executor unwinds after its tasks"
+    );
+
+    world.restore(&snapshot);
+    schedule.run(&mut world);
+
+    let mut reference = populated();
+    build().run(&mut reference);
+    assert_eq!(
+        world.query::<&Vel>().count(),
+        1,
+        "a stale spawn was applied late"
+    );
+    assert_eq!(hash(&world), hash(&reference));
+}
+
+#[test]
+fn an_unwinding_executor_leaves_no_stale_system_panic_behind() {
+    let armed = Arc::new(AtomicBool::new(true));
+    let trigger = Arc::clone(&armed);
+    let mut schedule = Schedule::new();
+    schedule
+        .add_parallel_system(parallel_system_fn("boom", Access::new(), move |_, _| {
+            if trigger.swap(false, Ordering::SeqCst) {
+                panic!("boom");
+            }
+        }))
+        .add_parallel_system(parallel_system_fn(
+            "spawn_vel",
+            Access::new().structural(),
+            spawn_vel,
+        ));
+    let mut world = World::new();
+    world.set_executor(Arc::new(UnwindingExecutor {
+        armed: AtomicBool::new(true),
+    }));
+    let snapshot = world.snapshot();
+
+    // The executor's own unwind wins; the system's stored panic is never taken.
+    let payload = catch_unwind(AssertUnwindSafe(|| schedule.run(&mut world)))
+        .expect_err("the executor unwinds");
+    assert_eq!(
+        payload_text(payload.as_ref()),
+        "executor unwinds after its tasks"
+    );
+    assert!(!armed.load(Ordering::SeqCst));
+
+    // No system panics now, so the run must neither resume the old payload nor spawn twice.
+    world.restore(&snapshot);
+    schedule.run(&mut world);
+    assert_eq!(world.query::<&Vel>().count(), 1);
+}

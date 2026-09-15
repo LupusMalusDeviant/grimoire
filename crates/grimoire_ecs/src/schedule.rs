@@ -468,7 +468,8 @@ impl Schedule {
     /// tasks of the stage finish, every buffer of the stage is discarded and the payload of the
     /// system with the lowest list index is resumed: no command of the stage is applied, earlier
     /// stages of the call stay applied. Panics of exclusive systems and while applying commands
-    /// are not transactional.
+    /// are not transactional. The schedule itself stays usable: every parallel stage starts from
+    /// empty buffers, so after restoring the world a run applies nothing of a failed run.
     pub fn run(&mut self, world: &mut World) {
         for stage in 0..self.stages.len() {
             let (start, end, exclusive) = {
@@ -562,6 +563,11 @@ fn run_task(entry: &mut ParallelEntry, world: &World) {
         context,
         ..
     } = entry;
+    // Every stage starts from an empty buffer and no stored panic. A stage that unwound after its
+    // tasks ran (a panic while applying commands, or an executor that unwinds) leaves both
+    // behind, and neither `World::restore` nor `Simulation::restore` touches the schedule.
+    commands.clear();
+    *panic = None;
     #[cfg(debug_assertions)]
     let _guard = crate::debug_access::enter(Some(Arc::clone(context)));
     let result = catch_unwind(AssertUnwindSafe(|| {

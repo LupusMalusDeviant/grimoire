@@ -1,7 +1,10 @@
 //! `Simulation` semantics: initial resources, step order, state hash, snapshots and `replay`.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use grimoire_core::impl_stable_hash;
-use grimoire_ecs::system_fn;
+use grimoire_ecs::{Access, parallel_system_fn, system_fn};
 use grimoire_sim::{InputFrame, InputLog, SimSeed, Simulation, Tick, TickInput, replay};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -253,4 +256,58 @@ fn replay_of_an_empty_log_records_the_current_state() {
     let mut sim = traced(3);
     let hash = sim.state_hash();
     assert_eq!(replay(&mut sim, &log_of([]), 10), vec![(0, hash)]);
+}
+
+/// Arms the panicking `Drop` of [`Fragile`] for exactly one drop.
+static FRAGILE_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Resource whose replaced value panics on drop while armed, i.e. while a buffer is applied.
+#[derive(Clone)]
+struct Fragile {
+    value: u32,
+}
+impl_stable_hash!(Fragile { value });
+
+impl Drop for Fragile {
+    fn drop(&mut self) {
+        if self.value == 1 && FRAGILE_ARMED.swap(false, Ordering::SeqCst) {
+            panic!("dropping the replaced resource panics");
+        }
+    }
+}
+
+/// Simulation with one parallel stage `[replace, spawn]`.
+fn fragile(seed: u64) -> Simulation {
+    let mut sim = Simulation::new(seed);
+    sim.world_mut().insert_resource(Fragile { value: 1 });
+    sim.schedule_mut()
+        .add_parallel_system(parallel_system_fn(
+            "replace",
+            Access::new().write_resource::<Fragile>(),
+            |_, commands| commands.insert_resource(Fragile { value: 2 }),
+        ))
+        .add_parallel_system(parallel_system_fn(
+            "spawn",
+            Access::new().structural(),
+            |_, commands| commands.spawn((Counter { value: 7 },)),
+        ));
+    sim
+}
+
+#[test]
+fn restore_after_a_panicking_step_continues_like_a_fresh_simulation() {
+    let mut sim = fragile(42);
+    let snapshot = sim.snapshot();
+    FRAGILE_ARMED.store(true, Ordering::SeqCst);
+    let result = catch_unwind(AssertUnwindSafe(|| sim.step(TickInput::default())));
+    FRAGILE_ARMED.store(false, Ordering::SeqCst);
+    assert!(result.is_err(), "applying the stage panics");
+
+    sim.restore(&snapshot);
+    sim.step(TickInput::default());
+
+    let mut fresh = fragile(42);
+    fresh.step(TickInput::default());
+    assert_eq!(sim.world().entity_count(), fresh.world().entity_count());
+    assert_eq!(sim.state_hash(), fresh.state_hash());
 }
