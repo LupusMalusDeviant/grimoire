@@ -676,8 +676,10 @@ pub enum RenderLayer { World, Vfx, PostFxResolve, Telegraphy, Bullets, PlayerMar
 
 **Kamera-, Mesh-, Material- und Licht-Kanäle: Render-Vertrag v1 (Ergänzung P1, WP2.2)**
 
-*Entwurf, wartet auf adversariales Review und PO-Freigabe (Stufe A, PO-Entscheid V-20, nächste
-Sammelsitzung, §2b).*
+*Freigegeben (PO, 2026-09-15; Stufe A nach PO-Entscheid V-20, §2b), einschließlich `ground_to_screen` und der
+Lesart, dass WP2.2 nur Lichtwerte prüft und die Licht-Anzahl (Low 32 / High 256) erst WP3.4 begrenzt. Das
+adversariale Review fand keine Blocker; offen vor WP3.4/WP3.5 bleibt, wie verbindlich `PointLight::is_bullet_light`
+aus dem Bullet-Kanal abgeleitet wird (PO-Entscheid ausstehend).*
 
 Additiv zu den P0-Typen (`Camera2D`, `SpriteInstance`, `RenderFrame` bleiben unverändert) und zum Bullet-Kanal
 oben. Realistischer PBR-Look statt Toon/Cel-Shading (Spiel-ADR-0014); Materialien sind glTF-Metallic-Roughness-
@@ -724,9 +726,9 @@ pub struct PbrMaterial {                 // Debug, Clone, Copy, PartialEq; glTF 
     pub roughness_factor: f32,           // 0.0..=1.0, glTF-Default 1.0
     pub emissive_factor: [f32; 3],       // je Kanal 0.0..=1.0 (glTF-Kern, keine HDR-Erweiterung in P1)
     pub alpha_mode: AlphaMode,
-    pub base_color_texture: Option<TextureHandle>,
-    pub normal_texture: Option<TextureHandle>,
-    pub occlusion_roughness_metallic_texture: Option<TextureHandle>,   // R=Occlusion, G=Roughness, B=Metallic
+    pub base_color_texture: Option<TextureHandle>,                     // sRGB-kodiert, beim Abtasten linearisiert
+    pub normal_texture: Option<TextureHandle>,                         // linear, Tangentenraum, OpenGL-Konvention (+Y)
+    pub occlusion_roughness_metallic_texture: Option<TextureHandle>,   // linear; R=Occlusion, G=Roughness, B=Metallic
 }
 pub enum AlphaMode { Opaque, Mask { cutoff: f32 }, Blend }             // cutoff 0.0..=1.0; kein `#[non_exhaustive]` (§2 Regel 13 gilt nur für Structs mit öffentlichen Feldern und Fehler-Enums)
 

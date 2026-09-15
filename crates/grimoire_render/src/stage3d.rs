@@ -293,13 +293,16 @@ pub struct PbrMaterial {
     pub emissive_factor: [f32; 3],
     /// Alpha coverage mode (glTF `alphaMode`).
     pub alpha_mode: AlphaMode,
-    /// Base colour (albedo) texture, glTF `baseColorTexture`.
+    /// Base colour (albedo) texture, glTF `baseColorTexture`. Its pixels are sRGB-encoded and are
+    /// linearised on sampling (an sRGB texture format), unlike the two data textures below.
     pub base_color_texture: Option<TextureHandle>,
-    /// Tangent-space normal map, glTF `normalTexture`.
+    /// Tangent-space normal map, glTF `normalTexture` (OpenGL convention, +Y up). Linear data, never
+    /// sRGB-decoded.
     pub normal_texture: Option<TextureHandle>,
     /// Combined occlusion/roughness/metallic texture in glTF channel order (R = occlusion,
     /// G = roughness, B = metallic), glTF `occlusionTexture` + `metallicRoughnessTexture` packed
-    /// into one image as the Blender-Skript-Pipeline (PRD-0016) produces it.
+    /// into one image as the Blender-Skript-Pipeline (PRD-0016) produces it. Linear data, never
+    /// sRGB-decoded.
     pub occlusion_roughness_metallic_texture: Option<TextureHandle>,
 }
 
