@@ -44,7 +44,13 @@ graph TD
     SIGC[grimoire_sigilc<br/>Compiler + CLI sigilc] --> SIG & SIM & ECS & CORE
     LINK[grimoire_link<br/>CLI grimoire-link] --> DBG & SIGC
     BENCH[grimoire_bench] --> FAC & EXE
+    SCHEMAGEN[grimoire_schemagen<br/>Build-Zeit-Compiler, CLI grimoire-schemagen]
 ```
+
+`grimoire_schemagen` steht ohne Pfeil im Diagramm: Es hat keine `grimoire_*`-Kante (nicht einmal
+eine Dev-Kante), sondern liest nur `schema/*.gschema` und schreibt in die besitzenden Crates
+`grimoire_debug` und `grimoire_assets` (als eingecheckten, generierten Quelltext, keine
+Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nachtrag).
 
 | Crate | Art | Determinismus-Menge (`clippy.toml`) | Erlaubte Engine-Kanten (normal, Build) | Ausdrücklich verboten (jede Kantenart) |
 |-------|-----|-------------------------------------|----------------------------------------|----------------------------------------|
@@ -64,6 +70,7 @@ graph TD
 | `grimoire_sigilc` | Werkzeug: Bibliothek + CLI `sigilc` | ja | `sigil`, `sim`, `ecs`, `core` (`sim`/`ecs` für `sigilc simulate`, Plan 0002 WP5.6) | `platform`, `render`, `assets`, `debug`, `exec`, `rayon`, andere Werkzeug-Crates |
 | `grimoire_link` | Werkzeug: CLI `grimoire-link` | nein | `debug` (Feature `tcp`), `sigilc`; weitere Laufzeit-Crates erlaubt | `bench` |
 | `grimoire_bench` | Werkzeug: Benchmarks, JSON-Schemata (§15) | nein | jede Laufzeit-Crate, `exec` | `sigilc`, `link` |
+| `grimoire_schemagen` | Werkzeug: Build-Zeit-Schema-Compiler, CLI `grimoire-schemagen` (Projekt-ADR-0011) | nein, keine `clippy.toml` | keine (dependency-frei, auch keine Dev-Kante) | jede Engine-Crate (Laufzeit- wie Werkzeug-Crates) |
 
 - Normale und Build-Kanten zeigen nur nach unten. Kein Crate kennt ein Spiel; das Standalone-Gate prüft
   `Cargo.toml`, `crates/**` und — sobald die C#-Suite dort liegt (P-1) — `tools/**`.
@@ -106,6 +113,12 @@ graph TD
   Subsystem-Hashes. Ihre Bibliothek enthält die JSON-Schema-Typen für Bench-Ergebnisse und Golden Master (§15).
 - **`grimoire_link`** aktiviert das Feature `tcp` von `grimoire_debug` fest und nutzt `sigilc` als Bibliothek.
   In P1 ist es kein Release-Artefakt (P-14); gebaut wird aus dem Tag.
+- **`grimoire_schemagen`** (additiv, *Nachtrag WP8.1 zu Engine-ADR-0008 — PO-Freigabe ausstehend, V-20*):
+  Build-Zeit-Schema-Compiler (Projekt-ADR-0011, Option 2e), der `schema/*.gschema` liest und Rust-Codec
+  sowie `docs/formats/*.md`-Feldtabellen für `grimoire_debug` und `grimoire_assets` erzeugt. Er ist
+  bewusst dependency-frei (keine `grimoire_*`-Kante, auch keine Dev-Kante) und trägt keine `clippy.toml`,
+  weil nichts, was er erzeugt, zur Laufzeit läuft. Sein Ausgang landet als eingecheckter, generierter
+  Quelltext in den besitzenden Crates, nicht über eine Cargo-Kante.
 - **`tools/`** (C#-Suite, P-1): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
   Formatdokumente (`docs/formats/`), Golden-Fixtures und die JSON-Ausgaben von `sigilc` an der Engine.
 - Abbildungen zwischen `grimoire_sigil`, `grimoire_collide`, `grimoire_render`, `grimoire_assets` und

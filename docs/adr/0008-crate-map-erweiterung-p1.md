@@ -263,3 +263,36 @@ Determinismus-Menge und für das Verhältnis von `tools/` zum Workspace. Nicht e
 - [Crate-Verträge](../architektur/crate-vertraege.md) §1, §2 (Regeln 12–15), §2a, §3, §15
 - Spiel-Repo: PRD-0002 (FR-01, FR-02, FR-03, FR-15), PRD-0004, PRD-0016 (FR-10), PRD-0017 (NFR), PRD-0018 (FR-09); Plan 0002 (WP1.2, WP1.3, WP1.5, WP4.3, WP4.4, WP6.2, WP8.5, OP-5, R4, R20, P-1, P-2, P-14); Projekt-ADR-0007 (Offline-Kompilierung)
 - `.github/scripts/check-thread-source.sh`, `.github/workflows/ci.yml` (Standalone-Gate, Job `docs`)
+
+## Nachtrag (2026-09-16, WP8.1): `grimoire_schemagen`
+
+*Additiv — PO-Freigabe ausstehend (§2b Stufe A, V-20).* Dieser Nachtrag ergänzt die Crate-Map um eine
+Werkzeug-Crate, ohne einen bestehenden Abschnitt dieses ADR umzuschreiben; die Entscheidung oben (Option 2,
+2026-09-15) bleibt unverändert.
+
+Projekt-ADR-0011 (Schema-Codegen aus einer Quelle, angenommen, Option 2e) sieht einen Generator als
+Werkzeug-Crate im Engine-Workspace vor ("Vorschlag" Punkt 4: "Die Crate-Map … muss sie per Nachtrag
+aufnehmen") und benennt ihn beispielhaft `grimoire_schemagen`. Diese Engine-PR führt die Crate ein und trägt
+sie hiermit in die Crate-Map nach, zusammen mit der gleichzeitigen Änderung der Tabelle in Crate-Verträge §1
+(§2 Regel 15).
+
+**Einordnung:**
+
+- `grimoire_schemagen` ist eine Werkzeug-Crate (Build-Zeit-Compiler plus CLI `grimoire-schemagen`), analog zu
+  `grimoire_sigilc`, `grimoire_bench` und `grimoire_link`, aber ohne deren Kanten: Sie hat **keine**
+  `grimoire_*`-Abhängigkeit, auch keine Dev-Abhängigkeit (Projekt-ADR-0011 "Vorschlag" Punkt 4: "ohne Kanten zu
+  Engine-Crates"). Sie liest `schema/*.gschema` und schreibt generierten Rust-Code in die besitzenden Crates
+  `grimoire_debug` und `grimoire_assets` sowie Feldtabellen nach `docs/formats/` — als eingecheckten
+  Quelltext, nicht über eine Cargo-Kante.
+- Sie liegt außerhalb der Determinismus-Menge (§3) und trägt keine `clippy.toml`, aus demselben Grund wie
+  `grimoire_bench`: Nichts, was sie erzeugt, läuft zur Laufzeit der Simulation; nur der bereits eingecheckte
+  generierte Code tut das, als Teil von `grimoire_debug`/`grimoire_assets` selbst.
+- Keine Engine-Crate hängt von ihr ab (auch nicht als Dev-Abhängigkeit), wie bei jeder anderen Werkzeug-Crate.
+- `.github/scripts/check-crate-map.sh` führt sie in einer eigenen Liste dependency-freier Werkzeug-Crates
+  (`NO_ENGINE_EDGE_TOOL_CRATES`), da der bestehende Kanten-Check ein Mitglied ohne jede `grimoire_*`-Kante
+  sonst nie zu Gesicht bekäme; dieselbe PR schließt diese Lücke mit einer vollständigen
+  Workspace-Mitgliederprüfung.
+
+**Status:** Additive Ergänzung der Crate-Map ohne Schichtverletzung und ohne neue Kante zu einer
+Laufzeit-Crate; nach §2b Stufe A dennoch mit PO-Freigabe zu bestätigen (V-20). Bis zur Freigabe gilt dieser
+Nachtrag als Entwurf, wie die Vertragstexte selbst es für einen ungemergten Vertrags-PR vorsehen (§2b).

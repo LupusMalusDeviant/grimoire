@@ -23,11 +23,12 @@
 //!   if that changes any checked-in file — the "generated code is current" gate Plan-0002 WP8.1
 //!   requires.
 //! - This crate itself has no `grimoire_*` dependency (not even a dev one) and is not part of the
-//!   determinism set (no `clippy.toml`): nothing it emits runs at game time, so it needs neither
-//!   an entry in `.github/scripts/check-crate-map.sh`'s allowlist nor an Engine-ADR-0008 crate-map
-//!   amendment to keep that check green. Recording it in the contract's §1 table is still a
-//!   standing follow-up (see the crate's own `Cargo.toml` comment and the PR that introduced it);
-//!   it was left out of that PR specifically because that PR touches only contract §12/§13.
+//!   determinism set (no `clippy.toml`): nothing it emits runs at game time. It is recorded in
+//!   contract §1's table and in engine ADR-0008's crate-map addendum (Nachtrag, WP8.1) as a
+//!   dependency-free tool crate;
+//!   `.github/scripts/check-crate-map.sh`'s `NO_ENGINE_EDGE_TOOL_CRATES` lists it explicitly so
+//!   the crate-map check's full-workspace-membership pass still accounts for it even though it
+//!   has no `grimoire_*` edge for that check's edge-based pass to ever see.
 //!
 //! # What this crate does *not* generate
 //!
