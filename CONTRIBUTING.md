@@ -5,6 +5,13 @@ Verbindliche Arbeitsregeln für Menschen und Coding-Agenten. Architektur: [READM
 Architekturentscheidungen liegen im Spiel-Repo (ADR-0002 Engine im eigenen Repo, PRD-0017 CI,
 PRD-0018 Teststrategie).
 
+## Beiträge von außen
+
+Pull Requests von außen werden **derzeit nicht angenommen**. Das Repo steht unter „Alle Rechte
+vorbehalten“ ([LICENSE](LICENSE), [Engine-ADR-0009](docs/adr/0009-lizenz-alle-rechte-vorbehalten.md));
+ohne eine Beitragsvereinbarung können keine Rechte eingeräumt werden. Issues bleiben offen: Hinweise
+und Fehlerberichte sind willkommen.
+
 ## Grundsätze
 
 - **Eigenständig:** Kein Crate, kein Test, kein Beispiel referenziert Spiel-Code (`fnp_*`). Die CI
@@ -107,8 +114,13 @@ nachgeprüft). Vor den Pflichtprüfungen den Patch auskommentieren; ein Lockfile
   `core-<os>-<arch>.txt`. `float-compare` stellt die `std_trig_hash`-Werte nebeneinander. Eine
   Abweichung zwischen Systemen ist ein **Hinweis** (Eingabe für OF-2.1), kein roter Lauf; rot werden
   die Golden-Assertions in den Tests selbst.
-- **Kosten:** In privaten Repos zählen Linux-Minuten einfach, Windows doppelt, macOS zehnfach. Teure
-  Zusatzjobs gehören in die Nightly, nicht in `ci.yml`.
+- **Kosten:** Das Repo ist öffentlich; die gehosteten Standard-Runner (Linux, Windows, macOS)
+  verbrauchen keine Actions-Minuten. Größere Runner sind kostenpflichtig und werden nicht genutzt.
+  Teure Zusatzjobs gehören trotzdem in die Nightly, nicht in `ci.yml`, damit ein Standard-Push schnell
+  bleibt.
+- **Pull Requests aus Forks** starten Workflows erst, nachdem ein Maintainer sie freigegeben hat
+  (Repository-Einstellung). Pull Requests von außen werden derzeit ohnehin nicht angenommen (siehe
+  „Beiträge von außen“).
 
 ## CI-Überwachung (Pflicht)
 
