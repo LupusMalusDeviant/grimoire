@@ -1,0 +1,36 @@
+# Pack v1 manifest body (engine contract §12 "Manifest"). Project ADR-0011 (accepted, option 2e),
+# Plan-0002 WP8.1.
+#
+# This schema covers only the manifest's own field layout (the part of pack v1 that ends exactly
+# at the file's end and looks nothing like the fixed-size header/TOC records around it). The
+# 64-byte header, the 64-byte TOC records, payload placement/alignment and the cross-check between
+# a manifest path's derived `AssetId` and its TOC entry (`PackError::ManifestMismatch`) all stay
+# hand-written in crates/grimoire_assets/src/pack.rs: they are either fixed-size records with no
+# variable-length fields (nothing this schema language would help describe) or a cross-structure
+# validation that depends on data this manifest-only type never sees.
+#
+# `error_type` is `"self"`: the generated `PackManifestV1Error` is a standalone codec used by this
+# schema's own round-trip and golden-fixture tests, not (yet) `grimoire_assets`'s existing
+# `PackError`. `PackReader`/`PackWriter` keep their hand-written manifest code for now (Plan-0002
+# WP8.1 scope note): swapping them to call this generated codec is deferred to WP8.3, once it is
+# clear the swap can be made byte-for-byte and error-for-error identical to the existing,
+# already-tested behaviour without forcing `PackError` to grow rule-9-generic variants
+# (`FieldTooLong`, `InvalidUtf8`) it does not otherwise need.
+
+schema "pack_manifest_v1"
+version 1
+error_type "self"
+"The pack v1 manifest body (engine contract §12), standalone from `grimoire_assets::PackError`"
+"until Plan-0002 WP8.3 (see this file's header comment)."
+
+doc "The manifest section of a pack v1 file: compiler provenance, one path per TOC entry (in TOC"
+doc "order), and an opaque application-defined block. Ends exactly at the end of the file; no"
+doc "timestamp anywhere, so identical inputs produce byte-identical manifests."
+struct PackManifestBody {
+    manifest_version: u32 "Manifest format version; `1` in this version of the format."
+    compiler: str16(64) "Name of the tool that produced the pack (e.g. `sigilc`)."
+    compiler_version: str16(64) "Version string of that tool."
+    entry_count: u32 "Number of entries; must equal the pack's TOC entry count."
+    paths: vec_using(entry_count, 65536) str16(255) "One path per TOC entry, in TOC order (`AssetPath`, at most 255 bytes each); count is `entry_count` above, not a separate wire count."
+    application: bytes(65536) "Opaque application-defined block (e.g. a game version string), at most 64 KiB."
+}

@@ -874,6 +874,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "grimoire_schemagen"
+version = "0.1.1"
+
+[[package]]
 name = "grimoire_sigil"
 version = "0.1.1"
 dependencies = [

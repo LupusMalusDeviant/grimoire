@@ -34,11 +34,15 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
-/// Errors from decoding or encoding the byte-level frame envelope (contract §13).
+/// Errors from decoding or encoding the debug protocol (contract §13, §2 rule 9).
 ///
-/// `#[non_exhaustive]`: message-layer errors (`InvalidUtf8`, `FieldTooLong`, `InvalidEnum`,
-/// `UnknownMessage`) belong to the WP8.2 message catalog and are deliberately not declared
-/// here; a later PR adds them additively (§2b).
+/// `#[non_exhaustive]`: the message-layer variant `UnknownMessage` (dispatch by message id)
+/// belongs to the WP8.2 message catalog and is deliberately not declared here yet; a later PR
+/// adds it additively (§2b). The other five variants below are shared by the frame envelope
+/// (this module) and by every payload type's generated `encode`/`decode` (project ADR-0011,
+/// `crates/grimoire_debug/src/generated/debug_protocol.rs`, Plan-0002 WP8.1): the generated code
+/// assumes exactly these variant names and field shapes, so changing one here is a schema-codec
+/// contract change, not just a frame-envelope one.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProtocolError {
@@ -55,6 +59,52 @@ pub enum ProtocolError {
     /// sync (§13).
     #[error("frame flags {0:#06x} are non-zero, which is invalid in protocol v1")]
     NonZeroFlags(u16),
+    /// A payload decode needed more bytes than remained (contract §2 rule 9: checked before any
+    /// allocation for the field in question).
+    #[error(
+        "unexpected end of payload at offset {offset}: needed {needed} bytes, {available} available"
+    )]
+    UnexpectedEnd {
+        /// Byte offset (within the payload) the read started at.
+        offset: usize,
+        /// Bytes needed to complete the read.
+        needed: usize,
+        /// Bytes actually remaining in the payload.
+        available: usize,
+    },
+    /// Bytes remained in a payload after decoding a complete message (contract §13 "keine
+    /// Rest-Bytes").
+    #[error("{extra} trailing byte(s) after a complete payload")]
+    TrailingBytes {
+        /// Number of bytes left over.
+        extra: usize,
+    },
+    /// A `Str`/`Str16` field's bytes were not valid UTF-8.
+    #[error("field {field:?} is not valid UTF-8")]
+    InvalidUtf8 {
+        /// Name of the offending field.
+        field: &'static str,
+    },
+    /// A `Str`/`Str16`/`Bytes`/`Vec` field's declared length or count exceeded its documented
+    /// maximum (contract §13 "Höchstlängen prüft `to_frame`, nicht der Typ"): checked before any
+    /// allocation for that field.
+    #[error("field {field:?} has length {len}, exceeding the {max}-byte/element limit")]
+    FieldTooLong {
+        /// Name of the offending field.
+        field: &'static str,
+        /// The declared length or element count.
+        len: usize,
+        /// The field's documented maximum.
+        max: usize,
+    },
+    /// A `bool`, `Option` tag, or enum field carried a byte that matches no valid value.
+    #[error("field {field:?} has invalid value {value}")]
+    InvalidEnum {
+        /// Name of the offending field.
+        field: &'static str,
+        /// The raw wire value that did not match any known variant.
+        value: u32,
+    },
 }
 
 /// Streaming decoder for the frame envelope (contract §13 "Framing").

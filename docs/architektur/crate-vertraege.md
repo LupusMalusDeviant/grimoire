@@ -2361,9 +2361,13 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
 
 *Freigegeben (WP1.2).*
 
-Format-Dokumentation: `docs/formats/pack.md` (WP8.3). Dieser Abschnitt ist die verbindliche Kurzfassung. Der
-Manifest-Code wird nach Projekt-ADR-0011 (Vorschlag) aus einer Schema-Quelle erzeugt und muss das hier festgelegte
-Byte-Layout exakt reproduzieren.
+Format-Dokumentation: `docs/formats/pack.md` (Manifest-Feldtabelle generiert, WP8.1; Header/TOC/Ausrichtung bleiben
+Ablauflogik und stehen nur hier). Dieser Abschnitt ist die verbindliche Kurzfassung. Nach Projekt-ADR-0011
+(angenommen, Option 2e) erzeugt `grimoire_schemagen` aus `schema/pack_manifest_v1.gschema` einen Manifest-Codec
+(`crates/grimoire_assets/src/generated/pack_manifest.rs`, Typ `PackManifestBody`) und die Feldtabelle oben; er muss
+das hier festgelegte Byte-Layout exakt reproduzieren. WP8.1 lässt `PackManifestBody` bewusst noch unverdrahtet
+neben dem handgeschriebenen `PackReader`/`PackWriter`-Code (Begründung im Schema-Kommentar); die Verdrahtung ist
+WP8.3.
 
 **Trait-Entscheid (PRD-0002 FR-02, §2a):**
 
@@ -2535,10 +2539,14 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
 
 *Freigegeben (WP1.2).*
 
-Format-Dokumentation: `docs/formats/debug-protocol.md` (WP8.2). Transportdetails (TCP gegen Named Pipe/UDS,
-Token-Ausgabe, Thread-Modell) legt das Engine-ADR „Debug-Link v1“ (WP8.2) fest. Es darf diesen Abschnitt nur per
-Vertrags-PR ändern (§2b). Nachrichtentypen werden nach Projekt-ADR-0011 (Vorschlag) generiert und müssen das Layout
-exakt treffen.
+Format-Dokumentation: `docs/formats/debug-protocol.md` (Nutzlast-Feldtabellen und Nachrichtenkatalog generiert,
+WP8.1; Framing/Handshake bleiben Ablauflogik und stehen nur hier, WP8.2). Transportdetails (TCP gegen Named
+Pipe/UDS, Token-Ausgabe, Thread-Modell) legt das Engine-ADR „Debug-Link v1“ (WP8.2) fest. Es darf diesen Abschnitt
+nur per Vertrags-PR ändern (§2b). Nach Projekt-ADR-0011 (angenommen, Option 2e) erzeugt `grimoire_schemagen` aus
+`schema/debug_protocol_v1.gschema` die Nutzlasttypen (`crates/grimoire_debug/src/generated/debug_protocol.rs`),
+`PeerRole`, `ErrorCode` und die Katalog-IDs unten (`catalogue`-Modul); sie müssen das Layout exakt treffen. Der
+`Message`-Enum, dessen `to_frame`/`from_frame`-Dispatch und der Handshake bleiben handgeschrieben (WP8.2) und
+nutzen die generierten Typen nur als Bausteine.
 
 **Trait-Entscheid (§2a):** `DebugTransport` ist ein Trait mit den Implementierungen `InProcessTransport` (Paar),
 `TcpServerTransport` (Feature `tcp`) und `NullTransport`. Protokoll-Codec und Profiler-Datenmodell sind konkrete
