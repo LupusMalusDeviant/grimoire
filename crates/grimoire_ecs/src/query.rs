@@ -14,13 +14,21 @@
 //!
 //! Iteration visits archetypes in creation order and rows in dense order. Per archetype the
 //! columns are downcast once; per entity only slice iterators advance, nothing is allocated.
+//!
+//! [`World::par_blocks`](crate::World::par_blocks) and
+//! [`World::par_blocks_mut`](crate::World::par_blocks_mut) split a query into [`QueryBlock`]s of
+//! at most [`QUERY_BLOCK_SIZE`] rows that run through the world's executor (engine ADR-0006,
+//! building block 4).
 
+use std::any::Any;
 use std::marker::PhantomData;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::slice;
 
 use crate::archetype::Archetype;
 use crate::component::{Component, ComponentId, ComponentRegistry};
 use crate::entity::Entity;
+use crate::executor::Executor;
 
 use internal::{
     Element, QueryInternal, ReadOnlyElement, check_conflicts, exclusive_slots, shared_slots,
@@ -90,7 +98,7 @@ pub(crate) mod internal {
     /// One element of a query tuple; sealed.
     pub trait Element {
         type State;
-        type Fetch<'w>;
+        type Fetch<'w>: Send;
         type Item<'w>;
         fn access() -> Option<ComponentAccess>;
         fn init_state(registry: &ComponentRegistry) -> Self::State;
@@ -103,6 +111,9 @@ pub(crate) mod internal {
             entities: &'w [Entity],
         ) -> Option<Self::Fetch<'w>>;
         fn next<'w>(fetch: &mut Self::Fetch<'w>) -> Option<Self::Item<'w>>;
+        /// Splits a fetch into its first `at` rows and the rest (data-parallel blocks).
+        fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize)
+        -> (Self::Fetch<'w>, Self::Fetch<'w>);
     }
 
     /// Elements that never write.
@@ -111,7 +122,7 @@ pub(crate) mod internal {
     /// Per-query machinery behind [`Query`](super::Query); sealed.
     pub trait QueryInternal {
         type State;
-        type Fetch<'w>;
+        type Fetch<'w>: Send;
         fn check_access();
         fn init_state(registry: &ComponentRegistry) -> Self::State;
         fn matches(state: &Self::State, components: &[ComponentId]) -> bool;
@@ -123,6 +134,9 @@ pub(crate) mod internal {
             state: &Self::State,
             archetype: &'w mut Archetype,
         ) -> Option<Self::Fetch<'w>>;
+        /// Splits a fetch into its first `at` rows and the rest, element by element.
+        fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize)
+        -> (Self::Fetch<'w>, Self::Fetch<'w>);
     }
 
     pub fn check_conflicts<Q: ?Sized>(accesses: &[Option<ComponentAccess>]) {
@@ -269,6 +283,11 @@ impl Element for Entity {
     fn next<'w>(fetch: &mut Self::Fetch<'w>) -> Option<Self::Item<'w>> {
         fetch.next().copied()
     }
+
+    fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        let (head, tail) = fetch.as_slice().split_at(at);
+        (head.iter(), tail.iter())
+    }
 }
 
 impl ReadOnlyElement for Entity {}
@@ -305,6 +324,11 @@ impl<T: Component> Element for &T {
     #[inline]
     fn next<'w>(fetch: &mut Self::Fetch<'w>) -> Option<Self::Item<'w>> {
         fetch.next()
+    }
+
+    fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        let (head, tail) = fetch.as_slice().split_at(at);
+        (head.iter(), tail.iter())
     }
 }
 
@@ -343,6 +367,11 @@ impl<T: Component> Element for &mut T {
     fn next<'w>(fetch: &mut Self::Fetch<'w>) -> Option<Self::Item<'w>> {
         fetch.next()
     }
+
+    fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        let (head, tail) = fetch.into_slice().split_at_mut(at);
+        (head.iter_mut(), tail.iter_mut())
+    }
 }
 
 impl<T: Component> Element for Option<&T> {
@@ -379,6 +408,16 @@ impl<T: Component> Element for Option<&T> {
         match fetch {
             Some(iter) => iter.next().map(Some),
             None => Some(None),
+        }
+    }
+
+    fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        match fetch {
+            Some(iter) => {
+                let (head, tail) = iter.as_slice().split_at(at);
+                (Some(head.iter()), Some(tail.iter()))
+            }
+            None => (None, None),
         }
     }
 }
@@ -424,6 +463,16 @@ impl<T: Component> Element for Option<&mut T> {
             None => Some(None),
         }
     }
+
+    fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        match fetch {
+            Some(iter) => {
+                let (head, tail) = iter.into_slice().split_at_mut(at);
+                (Some(head.iter_mut()), Some(tail.iter_mut()))
+            }
+            None => (None, None),
+        }
+    }
 }
 
 impl<T: Component> Element for With<T> {
@@ -458,6 +507,10 @@ impl<T: Component> Element for With<T> {
     #[inline]
     fn next<'w>(_fetch: &mut Self::Fetch<'w>) -> Option<Self::Item<'w>> {
         Some(())
+    }
+
+    fn split_fetch<'w>(_fetch: Self::Fetch<'w>, _at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        ((), ())
     }
 }
 
@@ -496,6 +549,10 @@ impl<T: Component> Element for Without<T> {
     fn next<'w>(_fetch: &mut Self::Fetch<'w>) -> Option<Self::Item<'w>> {
         Some(())
     }
+
+    fn split_fetch<'w>(_fetch: Self::Fetch<'w>, _at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        ((), ())
+    }
 }
 
 impl<T: Component> ReadOnlyElement for Without<T> {}
@@ -525,6 +582,10 @@ impl<E: Element> QueryInternal for E {
     ) -> Option<Self::Fetch<'w>> {
         let ([slot], entities) = exclusive_slots(archetype, [<E as Element>::column(state)]);
         <E as Element>::fetch(state, slot, entities)
+    }
+
+    fn split_fetch<'w>(fetch: Self::Fetch<'w>, at: usize) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+        <E as Element>::split_fetch(fetch, at)
     }
 }
 
@@ -585,6 +646,14 @@ macro_rules! impl_query_tuple {
                         entities,
                     )?,
                 )+))
+            }
+
+            fn split_fetch<'w>(
+                fetch: Self::Fetch<'w>,
+                at: usize,
+            ) -> (Self::Fetch<'w>, Self::Fetch<'w>) {
+                let parts = ($(<$E as Element>::split_fetch(fetch.$index, at),)+);
+                (($(parts.$index.0,)+), ($(parts.$index.1,)+))
             }
         }
 
@@ -708,4 +777,156 @@ impl<'w, Q: Query> Iterator for QueryIterMut<'w, Q> {
             self.remaining = if self.current.is_some() { len } else { 0 };
         }
     }
+}
+
+/// Rows per data-parallel query block (engine ADR-0006, building block 4).
+///
+/// Part of the contract: block boundaries, block indices and therefore every reduction folded in
+/// block order and every block random stream depend on it. Changing it renews the golden hashes
+/// that depend on reductions or block randomness. The value is provisional until the P1 bench.
+pub const QUERY_BLOCK_SIZE: usize = 1024;
+
+/// One block of a data-parallel query: consecutive rows of one archetype.
+///
+/// Blocks are formed from the matching, non-empty archetypes in creation order; inside each
+/// archetype consecutive runs of [`QUERY_BLOCK_SIZE`] rows from row 0 in dense order (the last
+/// run of an archetype is shorter). A block never spans two archetypes. Block indices count from
+/// 0 without gaps in this order and never depend on the executor or thread count.
+///
+/// The block iterates its rows like [`QueryIter`] and yields the same items.
+pub struct QueryBlock<'w, Q: Query> {
+    index: usize,
+    len: usize,
+    remaining: usize,
+    fetch: Q::Fetch<'w>,
+}
+
+impl<'w, Q: Query> QueryBlock<'w, Q> {
+    /// Position of the block in the global block order, counting from 0.
+    ///
+    /// Use it to derive per-block random streams (`grimoire_sim::derive_block_rng`).
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Number of rows of the block, independent of how many were already iterated.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the block has no rows; blocks handed to a closure always have at least one.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl<'w, Q: Query> Iterator for QueryBlock<'w, Q> {
+    type Item = Q::Item<'w>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        Q::next_item(&mut self.fetch)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+/// Splits the fetch of one archetype with `rows` rows into blocks appended to `blocks`.
+pub(crate) fn push_blocks<'w, Q: Query>(
+    blocks: &mut Vec<QueryBlock<'w, Q>>,
+    mut fetch: Q::Fetch<'w>,
+    rows: usize,
+) {
+    let mut left = rows;
+    while left > 0 {
+        let len = left.min(QUERY_BLOCK_SIZE);
+        let (head, tail) = Q::split_fetch(fetch, len);
+        blocks.push(QueryBlock {
+            index: blocks.len(),
+            len,
+            remaining: len,
+            fetch: head,
+        });
+        fetch = tail;
+        left -= len;
+    }
+}
+
+/// Result slot of one block task, owned by the calling thread.
+struct BlockSlot<'w, Q: Query, T> {
+    block: Option<QueryBlock<'w, Q>>,
+    output: Option<T>,
+    panic: Option<Box<dyn Any + Send>>,
+}
+
+/// Runs `f` over every block through `executor` and returns the results in block order.
+///
+/// With at most one block, `f` runs inline without the executor. Otherwise every block is a task
+/// that catches its own panic; after all tasks have finished the panic with the lowest block
+/// index is resumed.
+pub(crate) fn run_blocks<'w, Q, T, F>(
+    executor: &dyn Executor,
+    blocks: Vec<QueryBlock<'w, Q>>,
+    f: &F,
+) -> Vec<T>
+where
+    Q: Query,
+    T: Send,
+    F: Fn(QueryBlock<'_, Q>) -> T + Sync,
+{
+    if blocks.len() <= 1 {
+        return blocks.into_iter().map(f).collect();
+    }
+    let mut slots: Vec<BlockSlot<'w, Q, T>> = blocks
+        .into_iter()
+        .map(|block| BlockSlot {
+            block: Some(block),
+            output: None,
+            panic: None,
+        })
+        .collect();
+    {
+        let mut tasks: Vec<_> = slots
+            .iter_mut()
+            .map(|slot| {
+                move || {
+                    if let Some(block) = slot.block.take() {
+                        match catch_unwind(AssertUnwindSafe(|| f(block))) {
+                            Ok(output) => slot.output = Some(output),
+                            Err(payload) => slot.panic = Some(payload),
+                        }
+                    }
+                }
+            })
+            .collect();
+        let mut refs: Vec<&mut (dyn FnMut() + Send)> = tasks
+            .iter_mut()
+            .map(|task| task as &mut (dyn FnMut() + Send))
+            .collect();
+        executor.run(&mut refs);
+    }
+    let mut outputs = Vec::with_capacity(slots.len());
+    let mut first_panic = None;
+    for (index, slot) in slots.into_iter().enumerate() {
+        if let Some(payload) = slot.panic {
+            first_panic.get_or_insert(payload);
+        } else if let Some(output) = slot.output {
+            outputs.push(output);
+        } else if first_panic.is_none() {
+            panic!("executor did not run block task {index}");
+        }
+    }
+    if let Some(payload) = first_panic {
+        resume_unwind(payload);
+    }
+    outputs
 }

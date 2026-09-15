@@ -1,12 +1,13 @@
 //! Contract check (section 7): iterating queries over 10,000 entities performs no heap
-//! allocation per entity. Lives in its own test binary because it installs a global allocator.
+//! allocation per entity; schedule ticks and data-parallel blocks stay within their allocation
+//! bounds. Lives in its own test binary because it installs a global allocator.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::hint::black_box;
 
 use grimoire_core::impl_stable_hash;
-use grimoire_ecs::{Entity, World};
+use grimoire_ecs::{Access, Entity, Schedule, World, parallel_system_fn, system_fn};
 
 thread_local! {
     // Per thread, so allocations of the test harness on other threads are not counted.
@@ -129,4 +130,78 @@ fn queries_do_not_allocate_per_entity() {
     black_box(sum);
     assert_eq!((written, read, tagged), (ENTITIES, ENTITIES, ENTITIES / 2));
     assert_eq!(during, 0, "query iteration allocated {during} times");
+}
+
+fn populated() -> World {
+    let mut world = World::new();
+    for i in 0..ENTITIES {
+        let f = i as f32;
+        world.spawn((Pos { x: f, y: -f }, Vel { x: 1.0, y: 0.5 }));
+    }
+    world
+}
+
+#[test]
+fn a_tick_of_exclusive_systems_does_not_allocate() {
+    let mut world = populated();
+    let mut schedule = Schedule::new();
+    schedule
+        .add_system(system_fn("integrate", |world| {
+            for (pos, vel) in world.query_mut::<(&mut Pos, &Vel)>() {
+                pos.x += vel.x;
+            }
+        }))
+        .add_system(system_fn("drift", |world| {
+            for pos in world.query_mut::<&mut Pos>() {
+                pos.y -= 0.25;
+            }
+        }));
+    schedule.run(&mut world);
+
+    let before = allocations();
+    schedule.run(&mut world);
+    let during = allocations() - before;
+    assert_eq!(during, 0, "an exclusive-only tick allocated {during} times");
+}
+
+#[test]
+fn a_parallel_stage_without_commands_allocates_at_most_twice() {
+    let mut world = populated();
+    let mut schedule = Schedule::new();
+    for name in ["first", "second", "third"] {
+        schedule.add_parallel_system(parallel_system_fn(
+            name,
+            Access::new().read::<Pos>().read::<Vel>(),
+            |world, _commands| {
+                let mut sum = 0.0f32;
+                for (pos, vel) in world.query::<(&Pos, &Vel)>() {
+                    sum += pos.x * vel.x;
+                }
+                black_box(sum);
+            },
+        ));
+    }
+    assert_eq!(schedule.stages().len(), 1);
+    schedule.run(&mut world);
+
+    let before = allocations();
+    schedule.run(&mut world);
+    let during = allocations() - before;
+    assert!(during <= 2, "a three-system stage allocated {during} times");
+}
+
+#[test]
+fn blocks_allocate_per_block_not_per_entity() {
+    let mut world = populated();
+    let before = allocations();
+    let rows = world.par_blocks_mut::<(&mut Pos, &Vel), _>(|block| {
+        let len = block.len();
+        for (pos, vel) in block {
+            pos.x += vel.x;
+        }
+        len
+    });
+    let during = allocations() - before;
+    assert_eq!(rows.iter().sum::<usize>(), ENTITIES);
+    assert!(during <= 32, "par_blocks_mut allocated {during} times");
 }

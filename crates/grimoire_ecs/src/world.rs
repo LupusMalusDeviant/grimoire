@@ -12,7 +12,9 @@ use crate::component::{Component, ComponentId, ComponentRegistry};
 use crate::entity::{Entities, Entity, EntityLocation};
 use crate::error::EcsError;
 use crate::executor::{Executor, SequentialExecutor};
-use crate::query::{Query, QueryIter, QueryIterMut, ReadOnlyQuery};
+use crate::query::{
+    Query, QueryBlock, QueryIter, QueryIterMut, ReadOnlyQuery, push_blocks, run_blocks,
+};
 use crate::resource::{Resource, Resources};
 
 /// Archetype index of the component-less archetype, created by [`World::new`].
@@ -205,6 +207,74 @@ impl World {
     /// shared at the same time (e.g. `(&mut Pos, &Pos)`).
     pub fn query_mut<Q: Query>(&mut self) -> QueryIterMut<'_, Q> {
         QueryIterMut::new(&self.components, &mut self.archetypes)
+    }
+
+    /// Read-only query in data-parallel blocks: runs `f` once per [`QueryBlock`] through
+    /// [`World::executor`] and returns the results in block order (result `i` belongs to block
+    /// `i`).
+    ///
+    /// Blocks are formed from matching, non-empty archetypes in creation order, each split from
+    /// row 0 into runs of [`QUERY_BLOCK_SIZE`](crate::QUERY_BLOCK_SIZE) rows; they never span
+    /// archetypes and never depend on the executor. Fold the returned `Vec` in order for
+    /// reductions (engine ADR-0004). A query with at most one block runs `f` inline without the
+    /// executor. Allocates per call depending on the block count, never per entity.
+    ///
+    /// # Panics
+    ///
+    /// Like [`World::query`] for aliasing queries. If `f` panics for some blocks, the remaining
+    /// blocks finish first; then the panic with the lowest block index is resumed.
+    pub fn par_blocks<Q: ReadOnlyQuery, T: Send>(
+        &self,
+        f: impl Fn(QueryBlock<'_, Q>) -> T + Sync,
+    ) -> Vec<T> {
+        Q::check_access();
+        let state = Q::init_state(&self.components);
+        let mut blocks = Vec::new();
+        for archetype in &self.archetypes {
+            if archetype.entities.is_empty() || !Q::matches(&state, &archetype.components) {
+                continue;
+            }
+            if let Some(fetch) = Q::fetch_shared(&state, archetype) {
+                push_blocks::<Q>(&mut blocks, fetch, archetype.len());
+            }
+        }
+        run_blocks(executor_of(&self.executor), blocks, &f)
+    }
+
+    /// Query with mutable access in data-parallel blocks, typically in an exclusive system:
+    /// `world.par_blocks_mut::<(&mut Pos, &Vel), _>(|block| ...)`.
+    ///
+    /// Same block rule, result order and allocation behaviour as [`World::par_blocks`]. Mutable
+    /// blocks are disjoint sub-slices of the columns.
+    ///
+    /// # Panics
+    ///
+    /// Like [`World::query_mut`] for aliasing queries. If `f` panics for some blocks, the
+    /// remaining blocks finish first (and may already have changed their rows); then the panic
+    /// with the lowest block index is resumed.
+    pub fn par_blocks_mut<Q: Query, T: Send>(
+        &mut self,
+        f: impl Fn(QueryBlock<'_, Q>) -> T + Sync,
+    ) -> Vec<T> {
+        let World {
+            components,
+            archetypes,
+            executor,
+            ..
+        } = self;
+        Q::check_access();
+        let state = Q::init_state(components);
+        let mut blocks = Vec::new();
+        for archetype in archetypes.iter_mut() {
+            if archetype.entities.is_empty() || !Q::matches(&state, &archetype.components) {
+                continue;
+            }
+            let rows = archetype.len();
+            if let Some(fetch) = Q::fetch_exclusive(&state, archetype) {
+                push_blocks::<Q>(&mut blocks, fetch, rows);
+            }
+        }
+        run_blocks(executor_of(executor), blocks, &f)
     }
 
     /// Inserts or replaces resource `R`. Replacing keeps the registration position.

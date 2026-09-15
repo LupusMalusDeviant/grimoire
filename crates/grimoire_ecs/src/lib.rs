@@ -52,7 +52,9 @@ pub use component::Component;
 pub use entity::Entity;
 pub use error::EcsError;
 pub use executor::{Executor, PermutedExecutor, SequentialExecutor};
-pub use query::{Query, QueryIter, QueryIterMut, ReadOnlyQuery, With, Without};
+pub use query::{
+    QUERY_BLOCK_SIZE, Query, QueryBlock, QueryIter, QueryIterMut, ReadOnlyQuery, With, Without,
+};
 pub use resource::Resource;
 pub use schedule::{
     ParallelSystem, Schedule, Stage, StageMode, System, parallel_system_fn, system_fn,
