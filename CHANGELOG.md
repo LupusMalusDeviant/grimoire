@@ -5,12 +5,23 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-15
+
+Erster P1-Schritt (WP1.0): paralleler Scheduler. Rein additiv, alle P0-Goldens unverändert; nach der
+P1-Versionsregel (PO-Entscheidung P-7) eine Patch-Version.
+
 ### Added
-- Paralleler Scheduler nach Engine-ADR-0006 (Vertragsänderung, vom PO freigegeben; Release als `v0.1.1`): Zugriffsdeklaration `Access`, parallele Systeme (`ParallelSystem`, `parallel_system_fn`, `Schedule::add_parallel_system`) mit Stufenbildung, Diagnose `Schedule::stages` und Referenzmodus `StageMode::Isolated`; `CommandBuffer::set`, `insert_resource`, `remove_resource` und `append`; Trait `Executor` mit `SequentialExecutor` und dem Test-Executor `PermutedExecutor`, Executor an der `World`; datenparallele Queries `World::par_blocks`/`par_blocks_mut` mit `QUERY_BLOCK_SIZE = 1024`; Debug-Prüfung der deklarierten Zugriffe; `derive_block_rng`; `AppBuilder::executor`; neue Crate `grimoire_exec` mit `ThreadPoolExecutor` (rayon 1.12.0) und `gate_executors`; Hash-Gate mit 1, 2 und N Threads (`grimoire_exec/tests/hash_gate.rs`) samt neuem Parallelszenario und goldenem Endhash; CI-Prüfung, dass keine Determinismus-Crate von rayon abhängt. Entwurf: `docs/architektur/entwurf-paralleler-scheduler.md`.
+- Paralleler Scheduler nach Engine-ADR-0006 (Vertragsänderung, vom PO freigegeben): Zugriffsdeklaration `Access`, parallele Systeme (`ParallelSystem`, `parallel_system_fn`, `Schedule::add_parallel_system`) mit Stufenbildung, Diagnose `Schedule::stages` und Referenzmodus `StageMode::Isolated`; `CommandBuffer::set`, `insert_resource`, `remove_resource` und `append`; Trait `Executor` mit `SequentialExecutor` und dem Test-Executor `PermutedExecutor`, Executor an der `World`; datenparallele Queries `World::par_blocks`/`par_blocks_mut` mit `QUERY_BLOCK_SIZE = 1024`; Debug-Prüfung der deklarierten Zugriffe; `derive_block_rng`; `AppBuilder::executor`; neue Crate `grimoire_exec` mit `ThreadPoolExecutor` (rayon 1.12.0) und `gate_executors`; Hash-Gate mit 1, 2 und N Threads (`grimoire_exec/tests/hash_gate.rs`) samt neuem Parallelszenario und goldenem Endhash; CI-Prüfung, dass keine Determinismus-Crate von rayon abhängt. Entwurf: `docs/architektur/entwurf-paralleler-scheduler.md`.
 
 ### Changed
 - Determinismus-Lint: Die Begründung der Thread-Sperren in den sechs `clippy.toml` verweist auf Engine-ADR-0006 (einzige Thread-Quelle `grimoire_exec`); die gesperrten Pfade sind unverändert.
 - `grimoire_sim`: Das P0-Determinismusszenario liegt in `tests/scenario/mod.rs` und wird zusätzlich in paralleler Form geprüft; `GOLDEN_FINAL_HASH` ist unverändert.
+- Lizenz: `LICENSE` („Alle Rechte vorbehalten“, Rechteinhaber Lupus Malus Deviant, Engine-ADR-0009) und `license-file` in allen Crates; Autor in den Manifesten ist „Lupus Malus Deviant“.
+- Das Repository ist öffentlich. Die Historie wurde bei der Veröffentlichung neu geschrieben; frühere Commit-IDs ordnet `docs/commit-zuordnung.md` zu. Der Tag `v0.1.0` zeigt auf den neu geschriebenen Commit mit unverändertem Inhalt.
+
+### Dokumentation
+- Engine-ADR-0006 (paralleler Scheduler) akzeptiert, ADR-0003 (single-threaded) abgelehnt.
+- `CONTRIBUTING.md`: Beiträge von außen werden derzeit nicht angenommen; P1-Versionsregel `0.1.x`; `main` ist per Ruleset gegen Force-Push und Löschen geschützt.
 
 ## [0.1.0] - 2026-09-14
 
