@@ -9,7 +9,7 @@ use grimoire_ecs::Executor;
 use grimoire_platform::{
     KeyCode, PlatformError, PlatformEvent, WindowConfig, run_desktop, run_headless,
 };
-use grimoire_render::{NullRenderer, RendererConfig, WgpuRenderer};
+use grimoire_render::{Camera25D, NullRenderer, RendererConfig, WgpuRenderer};
 use grimoire_sim::{Simulation, TickInput};
 
 use crate::error::GrimoireError;
@@ -57,6 +57,7 @@ impl App {
             max_frames: None,
             exit_key: None,
             executor: None,
+            camera_25d: None,
         }
     }
 }
@@ -87,6 +88,9 @@ pub struct AppBuilder {
     exit_key: Option<KeyCode>,
     /// `None` keeps the world's default, the sequential executor.
     executor: Option<Arc<dyn Executor>>,
+    /// `None` disables the WP2.4 render-side camera follow entirely: `extract_stage` implementations
+    /// are free to set `StageFrame::camera_25d` themselves, and the main loop leaves it untouched.
+    camera_25d: Option<Camera25D>,
 }
 
 impl fmt::Debug for AppBuilder {
@@ -103,6 +107,7 @@ impl fmt::Debug for AppBuilder {
             .field("plugins", &plugins)
             .field("max_frames", &self.max_frames)
             .field("exit_key", &self.exit_key)
+            .field("camera_25d", &self.camera_25d)
             .field(
                 "executor_threads",
                 &self
@@ -184,6 +189,25 @@ impl AppBuilder {
     #[must_use]
     pub fn exit_key(mut self, key: KeyCode) -> Self {
         self.exit_key = Some(key);
+        self
+    }
+
+    /// Enables the render-side camera follow (plan 0002 WP2.4): a template [`Camera25D`] whose
+    /// `target` the main loop overwrites every frame with the output of a critically damped
+    /// spring plus look-ahead ([`grimoire_render::CameraFollow`]), driven by the first plugin
+    /// whose [`GamePlugin::focus`] returns `Some` (default: disabled, `None`).
+    ///
+    /// Every other field of `camera` (`tilt_degrees`, `fov_y_degrees`, `distance`,
+    /// `look_ahead_max`, `look_ahead_smoothing`) is used as configured and never touched by the
+    /// loop; only `target` is replaced. While no plugin has produced a focus point yet (for
+    /// example before the `fixtures` feature's player proxy has run its first tick), the stage's
+    /// camera keeps `camera`'s own `target` unchanged.
+    ///
+    /// Without this call, `extract_stage` implementations remain free to set
+    /// `StageFrame::camera_25d` themselves (or not at all); the loop never overwrites it.
+    #[must_use]
+    pub fn camera25d(mut self, camera: Camera25D) -> Self {
+        self.camera_25d = Some(camera);
         self
     }
 
@@ -333,6 +357,11 @@ impl AppBuilder {
             exit_key: self.exit_key,
             record_hashes,
             executor: self.executor,
+            camera_25d: self.camera_25d,
+            // Physical pixels; a real `Resized` event overwrites this once the window exists
+            // (contract §9.3), but `run_headless_frames*` never resizes, so the configured
+            // `WindowConfig` size is what mouse-aim sampling sees throughout those runs.
+            initial_viewport: (self.window.width as f32, self.window.height as f32),
         };
         GameLoop::new(settings, self.plugins, factory, outcome)
     }

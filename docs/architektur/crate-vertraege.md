@@ -376,6 +376,8 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-15 | §6 (Kamera-, Mesh-, Material- und Licht-Kanäle) | #6 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
 | 2026-09-16 | §6 (Zähler `meshes_rejected_unregistered`) | #9 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
 | 2026-09-16 | §6 (Registrierung bleibt renderer-spezifisch) | #9 | K | — | nein |
+| 2026-09-16 | §6 (Vorausschau: Fokus-Geschwindigkeit mal 1 s, begrenzt) | #11 | A (PO-Entscheid V-20) | Render-A (WP2.5 ff.) | nein |
+| 2026-09-16 | §6, §9.5 (Kamera nur nach Anmeldung; Marker-Werte vorlaeufig) | #11 | K | — | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -848,6 +850,7 @@ pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-00
   (WP2.4, siehe dort); PBR-Shading (GGX), Schatten, Spekular-Antialiasing (WP2.5/WP2.6); Clustered Forward+, das
   Lichtbudget in `RendererConfig` (Low 32/High 256) und die tatsächliche Anwendung von `bullet_light_cap` in der
   Shading-Gleichung (WP3.4/WP3.5).
+- **Kamera-Following und Vorausschau (WP2.4, PO-Entscheide 2026-09-16):** Die Fassade fuehrt die Kamera nur, wenn das Spiel sie ausdruecklich anmeldet; ohne Anmeldung bleibt der Frame unveraendert, damit bestehende Spiele und Tests bitgleich bleiben (Klarstellung). Die Vorausschau ist die Fokus-Geschwindigkeit mal einer Sekunde, begrenzt durch `look_ahead_max` (freigegebener Startwert; Feinabstimmung im Spielgefuehl-Test in P2).
 
 ## 7. `grimoire_ecs`
 
@@ -1783,7 +1786,8 @@ pub mod fixtures {
 - **Präsentation:** `focus(world, alpha)` liefert `ProxyPreviousPosition.lerp(ProxyPosition, alpha)` der
   Proxy-Entity, sonst `None`. Das ist Folgeziel der Kamera und Anker des Mauszielens. Das Graze-Zentrum nutzt dagegen
   immer die nicht interpolierte Tick-Position. `extract_stage` zeichnet einen Marker an der interpolierten Position
-  als `SpriteInstance` mit `shape::CIRCLE` in `StageFrame::marker_sprites` (Ebene 7, §6).
+  als `SpriteInstance` mit `shape::CIRCLE` in `StageFrame::marker_sprites` (Ebene 7, §6). Radius und Farbe des
+  Markers sind Platzhalter, bis die Stilbibel (WP2.7) sie festlegt.
 - **Tests** (`tests/player_proxy.rs`, `required-features = ["fixtures"]`):
   - Bewegungstabelle (Achsen 0, ±32767, −32768, Diagonale), Begrenzung auf `bounds`;
   - `AimTarget` und `GrazeProbe` im selben Tick geschrieben;

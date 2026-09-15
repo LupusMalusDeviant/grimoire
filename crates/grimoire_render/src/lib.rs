@@ -32,8 +32,8 @@ pub use stage::{
     BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, palette_space,
 };
 pub use stage3d::{
-    AlphaMode, AmbientLight, BulletLightCap, Camera25D, DirectionalLight, MaterialHandle,
-    MeshHandle, MeshInstance, PbrMaterial, PointLight, TextureHandle,
+    AlphaMode, AmbientLight, BulletLightCap, Camera25D, CameraFollow, DirectionalLight,
+    MaterialHandle, MeshHandle, MeshInstance, PbrMaterial, PointLight, TextureHandle,
 };
 
 mod instance {

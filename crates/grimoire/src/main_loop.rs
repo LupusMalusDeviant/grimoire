@@ -5,13 +5,15 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use grimoire_core::Vec2;
 use grimoire_ecs::Executor;
 use grimoire_platform::{
     AppHandler, AppResult, KeyCode, PlatformContext, PlatformEvent, RawInputEvent,
 };
-use grimoire_render::{RenderError, RenderFrame, RenderStats, Renderer};
+use grimoire_render::{Camera25D, CameraFollow, RenderError, Renderer, StageFrame, StageStats};
 use grimoire_sim::{FixedTimestep, Simulation, TickInput};
 
+use crate::aim::{PointerState, sample_aim};
 use crate::error::GrimoireError;
 use crate::input::{InputMap, InputState};
 use crate::plugin::{FrameStats, GamePlugin};
@@ -38,6 +40,11 @@ pub(crate) struct LoopSettings {
     pub record_hashes: bool,
     /// Set on the world right after `Simulation::new`; `None` keeps the sequential default.
     pub executor: Option<Arc<dyn Executor>>,
+    /// `None` disables the WP2.4 render-side camera follow (see [`crate::AppBuilder::camera25d`]).
+    pub camera_25d: Option<Camera25D>,
+    /// Viewport size (physical pixels) mouse-aim sampling uses before the first
+    /// [`PlatformEvent::Resized`] (contract §9.3): `WindowConfig::width`/`height`.
+    pub initial_viewport: (f32, f32),
 }
 
 /// Result of [`crate::AppBuilder::run_headless_frames`].
@@ -96,7 +103,22 @@ pub(crate) struct GameLoop<R: Renderer> {
     factory: Option<RendererFactory<R>>,
     running: Option<Running<R>>,
     input: InputState,
-    render_frame: RenderFrame,
+    /// Last known cursor position (contract §9.2/§9.3).
+    pointer: PointerState,
+    /// Viewport size in physical pixels, updated by [`PlatformEvent::Resized`] (contract §9.3).
+    viewport: (f32, f32),
+    stage: StageFrame,
+    /// Render-side camera follow spring (plan 0002 WP2.4), created lazily once a plugin first
+    /// produces a focus point; `None` forever when [`LoopSettings::camera_25d`] is `None`.
+    camera_follow: Option<CameraFollow>,
+    /// Focus point and camera of the most recently rendered [`StageFrame`], held for the next
+    /// frame's mouse-aim sampling (contract §9.3 step 5, "bis zur Abtastung des nächsten Frames
+    /// gehalten").
+    held_focus: Option<Vec2>,
+    held_camera: Option<Camera25D>,
+    /// Whether the one-time "renderer has no `render_stage` override" log line has run yet
+    /// (contract §9.3: "meldet die Fassade das einmal im Log").
+    logged_missing_stage_support: bool,
     timestep: FixedTimestep,
     last_time: Duration,
     fps: FpsCounter,
@@ -114,13 +136,20 @@ impl<R: Renderer> GameLoop<R> {
     ) -> Self {
         let timestep = FixedTimestep::new(settings.tick_rate_hz)
             .with_max_ticks_per_frame(settings.max_ticks_per_frame);
+        let viewport = settings.initial_viewport;
         Self {
             settings,
             plugins,
             factory: Some(factory),
             running: None,
             input: InputState::new(),
-            render_frame: RenderFrame::new(),
+            pointer: PointerState::new(),
+            viewport,
+            stage: StageFrame::new(),
+            camera_follow: None,
+            held_focus: None,
+            held_camera: None,
+            logged_missing_stage_support: false,
             timestep,
             last_time: Duration::ZERO,
             fps: FpsCounter::new(Duration::ZERO),
@@ -195,6 +224,10 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
     fn event(&mut self, ctx: &mut dyn PlatformContext, event: &PlatformEvent) {
         match event {
             PlatformEvent::Resized(size) => {
+                // Physical-pixel viewport for mouse-aim sampling (contract §9.3); tracked even
+                // before `init`/without a renderer, like `WindowConfig::width`/`height` before the
+                // first resize.
+                self.viewport = (size.width as f32, size.height as f32);
                 if let Some(running) = &mut self.running {
                     running.renderer.resize(size.width, size.height);
                 }
@@ -212,6 +245,7 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
                     ctx.request_exit();
                 }
                 self.input.apply(raw);
+                self.pointer.apply(raw);
             }
             PlatformEvent::Focused(true)
             | PlatformEvent::Occluded(_)
@@ -233,6 +267,21 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
 
         let mut tick_input = TickInput::default();
         tick_input.slots[0] = self.settings.input_map.sample(&self.input);
+        // Contract §9.3 step 3 / §9.4: the camera and focus point held from the previously
+        // rendered frame, sampled once per frame and applied to every tick due this frame. Never
+        // reaches the simulation by any other path, so which camera (if any) produced these axes
+        // cannot change a state hash (plan 0002 WP2.4 replay gate) — only the recorded `i16`
+        // values do.
+        if let Some(camera) = &self.held_camera
+            && let Some(focus) = self.held_focus
+            && let Some(cursor) = self.pointer.position()
+            && let Some(axes) =
+                sample_aim(camera, cursor, [self.viewport.0, self.viewport.1], focus)
+        {
+            tick_input.slots[0].axes[2] = axes[0];
+            tick_input.slots[0].axes[3] = axes[1];
+        }
+
         for _ in 0..plan.ticks {
             running.sim.step(tick_input);
             let tick = running.sim.tick();
@@ -248,15 +297,53 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             self.input.clear_presses();
         }
 
-        self.render_frame.clear();
+        self.stage.clear();
         for plugin in &mut self.plugins {
-            plugin.extract(running.sim.world(), plan.alpha, &mut self.render_frame);
+            plugin.extract(running.sim.world(), plan.alpha, &mut self.stage.base);
         }
-        let render = match running.renderer.render(&self.render_frame) {
+        for plugin in &mut self.plugins {
+            plugin.extract_stage(running.sim.world(), plan.alpha, &mut self.stage);
+        }
+
+        // Contract §9.3 step 5: the first plugin with an opinion wins and the rest are not asked;
+        // presentation-only, like `extract`/`extract_stage` themselves.
+        let focus = self
+            .plugins
+            .iter()
+            .find_map(|plugin| plugin.focus(running.sim.world(), plan.alpha));
+        if let Some(template) = self.settings.camera_25d
+            && let Some(focus) = focus
+        {
+            let follow = self
+                .camera_follow
+                .get_or_insert_with(|| CameraFollow::new(focus.to_array()));
+            let target = follow.update(&template, focus.to_array(), frame_time.as_secs_f32());
+            // `Camera25D` is `#[non_exhaustive]`: field assignment onto the (already owned, since
+            // `Camera25D: Copy`) template, not struct-literal update syntax (contract §2 rule 13).
+            let mut camera = template;
+            camera.target = target;
+            self.stage.camera_25d = Some(camera);
+        }
+        // Held until the next frame's aim sampling above (contract §9.3: "Fokuspunkt und
+        // gerenderte Kamera werden bis zur Abtastung des nächsten Frames gehalten"). Whatever
+        // ended up in `stage.camera_25d` counts, whether the follow spring above set it or a
+        // plugin's own `extract_stage` did (when `camera_25d` is disabled).
+        self.held_focus = focus;
+        self.held_camera = self.stage.camera_25d;
+
+        if !self.logged_missing_stage_support && !running.renderer.supports_stage() {
+            log::info!(
+                "renderer {} has no render_stage override: only StageFrame::base is drawn",
+                running.renderer.backend_name()
+            );
+            self.logged_missing_stage_support = true;
+        }
+
+        let render = match running.renderer.render_stage(&self.stage) {
             Ok(stats) => stats,
             Err(RenderError::SurfaceLost) => {
                 ctx.frame_not_presented();
-                RenderStats::default()
+                StageStats::default()
             }
             Err(error) => {
                 log::error!("rendering failed, ending the run: {error}");
@@ -274,7 +361,7 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             frame_time,
             fps: self.fps.frame(now),
             dropped_time: self.timestep.dropped_time(),
-            render,
+            render: render.base,
         };
         for plugin in &mut self.plugins {
             plugin.on_frame(&stats);
@@ -341,6 +428,7 @@ impl<R: Renderer> AppHandler for ScriptedEvents<'_, R> {
 mod tests {
     use super::*;
     use grimoire_platform::{Clock, ManualClock, PhysicalSize, PlatformWindow, run_headless};
+    use grimoire_render::{RenderFrame, RenderStats};
 
     /// Fails with the scripted error on the given render call (0-based) and records resizes.
     struct ScriptedRenderer {
@@ -408,6 +496,8 @@ mod tests {
             exit_key: None,
             record_hashes: true,
             executor: None,
+            camera_25d: None,
+            initial_viewport: (800.0, 600.0),
         }
     }
 

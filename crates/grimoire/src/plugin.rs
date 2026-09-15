@@ -3,9 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use grimoire_core::Vec2;
 use grimoire_ecs::World;
 use grimoire_platform::PlatformWindow;
-use grimoire_render::{RenderFrame, RenderStats};
+use grimoire_render::{RenderFrame, RenderStats, StageFrame};
 use grimoire_sim::Simulation;
 
 /// A game (or a part of one) plugged into the engine.
@@ -13,8 +14,9 @@ use grimoire_sim::Simulation;
 /// Call order during a run:
 /// 1. [`GamePlugin::build`] once per plugin, in registration order, on a fresh simulation.
 /// 2. [`GamePlugin::window_created`] once per plugin on the desktop, after the renderer exists.
-/// 3. Per frame: all simulation ticks due, then [`GamePlugin::extract`] for every plugin in
-///    registration order, rendering, then [`GamePlugin::on_frame`] for every plugin.
+/// 3. Per frame: all simulation ticks due, then [`GamePlugin::extract`] and
+///    [`GamePlugin::extract_stage`] for every plugin in registration order, rendering, then
+///    [`GamePlugin::on_frame`] for every plugin.
 /// 4. [`GamePlugin::shutdown`] once per plugin, in registration order, when the frame loop ends.
 ///
 /// Only `build` may shape simulation state (components, resources, systems, initial entities);
@@ -37,6 +39,28 @@ pub trait GamePlugin {
     /// between the previous and the current simulation state.
     fn extract(&mut self, world: &World, alpha: f32, frame: &mut RenderFrame) {
         let _ = (world, alpha, frame);
+    }
+
+    /// Describes the current state for the WP2.2 stage channels (contract §6): bullets, meshes,
+    /// materials, lights, the marker/debug sprite layers and [`grimoire_render::Camera25D`]. Runs
+    /// for every plugin, in registration order, right after every plugin's [`GamePlugin::extract`]
+    /// (contract §9.3 step 5). Read-only like `extract`; must not influence simulation state.
+    fn extract_stage(&mut self, world: &World, alpha: f32, stage: &mut StageFrame) {
+        let _ = (world, alpha, stage);
+    }
+
+    /// The camera's follow target and mouse-aim anchor for this frame (contract §9.2/§9.5), in
+    /// ground/world units, already interpolated with `alpha` like [`GamePlugin::extract`]. Called
+    /// for every plugin in registration order; the first `Some` wins and the rest are not asked.
+    /// `None` (the default) means this plugin has no opinion, e.g. because it manages no player
+    /// character.
+    ///
+    /// The main loop feeds the winning point into the render-side camera follow spring
+    /// ([`grimoire_render::CameraFollow`], plan 0002 WP2.4) and into [`crate::sample_aim`] — never
+    /// into the simulation, so which plugin (if any) implements this cannot change a state hash.
+    fn focus(&self, world: &World, alpha: f32) -> Option<Vec2> {
+        let _ = (world, alpha);
+        None
     }
 
     /// Receives the measurements of the frame that was just rendered.

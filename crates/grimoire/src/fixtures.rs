@@ -7,20 +7,32 @@
 //! replaces it with its own systems from P2 onward, but the focus hook and `sample_aim` (§9.4)
 //! stay usable without this feature.
 //!
-//! Deliberately out of scope here (later work packages): `GamePlugin::focus`, `extract_stage` and
-//! the rest of the §9.2 main-loop wiring that will read [`ProxyPosition`]/[`ProxyPreviousPosition`]
-//! for camera following (WP2.4) — until then, a consumer reads them directly through
-//! [`proxy_entity`]. Bot profiles that steer this proxy through synthesized input land in WP7.4.
+//! [`GamePlugin::focus`] and [`GamePlugin::extract_stage`] (contract §9.5 "Präsentation") land
+//! with plan 0002 WP2.4, once the main loop actually reads them (see `crate::main_loop`): the
+//! proxy's camera follow target and mouse-aim anchor is
+//! `ProxyPreviousPosition.lerp(ProxyPosition, alpha)`, and `extract_stage` draws a marker at that
+//! same interpolated position. Bot profiles that steer this proxy through synthesized input land
+//! in WP7.4; a consumer that needs the raw components directly still can, through
+//! [`proxy_entity`].
 
 use grimoire_collide::{Aabb, GrazeRing, LayerMask};
 use grimoire_core::math::dmath;
 use grimoire_core::{StableHash, StableHasher, Vec2, impl_stable_hash};
 use grimoire_ecs::{Access, Entity, With, World, parallel_system_fn};
+use grimoire_render::{SpriteInstance, StageFrame, shape};
 use grimoire_sigil::AimTarget;
 use grimoire_sim::{MAX_INPUT_SLOTS, Simulation, TickInput};
 
 use crate::adapters::sigil_collide::GrazeProbe;
 use crate::plugin::GamePlugin;
+
+/// Visible radius of the proxy's [`StageFrame::marker_sprites`] marker, in world units. No visual
+/// spec exists yet for this marker (the stilbibel is WP2.7); this is a placeholder large enough to
+/// see against the default [`ProxyConfig::graze_inner_radius`], flagged as a V-20 candidate.
+const MARKER_RADIUS: f32 = 0.5;
+
+/// Placeholder colour (opaque white) of the proxy's marker; see [`MARKER_RADIUS`].
+const MARKER_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// Component marker: the one entity a [`PlayerProxyPlugin`] spawns per simulation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -198,6 +210,36 @@ impl GamePlugin for PlayerProxyPlugin {
             proxy_move,
         ));
     }
+
+    /// The proxy's interpolated position: the camera's follow target and the mouse-aim anchor
+    /// (contract §9.5 "Präsentation"). `None` before `build` has run.
+    fn focus(&self, world: &World, alpha: f32) -> Option<Vec2> {
+        interpolated_position(world, alpha)
+    }
+
+    /// Draws the proxy as a marker at the same interpolated position `focus` reports, in
+    /// [`StageFrame::marker_sprites`] (layer 7, contract §6/§9.5).
+    fn extract_stage(&mut self, world: &World, alpha: f32, stage: &mut StageFrame) {
+        let Some(position) = interpolated_position(world, alpha) else {
+            return;
+        };
+        stage.marker_sprites.push(SpriteInstance {
+            position: position.to_array(),
+            half_size: [MARKER_RADIUS, MARKER_RADIUS],
+            shape: shape::CIRCLE,
+            color: MARKER_COLOR,
+            ..SpriteInstance::default()
+        });
+    }
+}
+
+/// The proxy entity's `ProxyPreviousPosition.lerp(ProxyPosition, alpha)`, or `None` if `build` has
+/// not run (no proxy entity, or one of the two position components is missing).
+fn interpolated_position(world: &World, alpha: f32) -> Option<Vec2> {
+    let entity = proxy_entity(world)?;
+    let previous = world.get::<ProxyPreviousPosition>(entity)?.0;
+    let current = world.get::<ProxyPosition>(entity)?.0;
+    Some(previous.lerp(current, alpha))
 }
 
 /// The `fixtures.proxy_move` system body (contract §9.5 "Bewegung je Tick"/"Wirkung").

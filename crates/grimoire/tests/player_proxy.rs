@@ -256,3 +256,105 @@ fn changed_speed_or_input_slot_changes_the_hash() {
     other_slot.slot = 1;
     assert_ne!(baseline, run_scripted(other_slot, 200));
 }
+
+// --- WP2.4: focus, extract_stage and the camera replay-hash gate ---------------------------
+
+#[test]
+fn focus_reports_the_interpolated_position_and_none_before_build() {
+    let sim = Simulation::new(20);
+    let plugin = PlayerProxyPlugin::default();
+    assert_eq!(
+        plugin.focus(sim.world(), 0.0),
+        None,
+        "no proxy entity exists before `build`"
+    );
+
+    let mut config = ProxyConfig::default();
+    config.start = Vec2::ZERO;
+    config.speed_per_tick = 4.0;
+    let mut sim = build_sim(21, config);
+    sim.step(tick_input(config.slot, frame(32767, 0)));
+
+    let alpha = 0.25;
+    let focus = plugin
+        .focus(sim.world(), alpha)
+        .expect("a focus point exists once the proxy has moved");
+    let expected = Vec2::ZERO.lerp(Vec2::new(4.0, 0.0), alpha);
+    assert!(
+        (focus.x - expected.x).abs() < 1e-5 && (focus.y - expected.y).abs() < 1e-5,
+        "expected {expected:?}, got {focus:?}"
+    );
+}
+
+#[test]
+fn extract_stage_draws_a_marker_at_the_same_interpolated_position_as_focus() {
+    let mut config = ProxyConfig::default();
+    config.start = Vec2::new(1.0, -2.0);
+    config.speed_per_tick = 2.0;
+    let mut sim = build_sim(22, config);
+    sim.step(tick_input(config.slot, frame(0, 32767)));
+
+    let mut plugin = PlayerProxyPlugin::default();
+    let alpha = 0.6;
+    let focus = plugin.focus(sim.world(), alpha).unwrap();
+
+    let mut stage = grimoire::render::StageFrame::new();
+    plugin.extract_stage(sim.world(), alpha, &mut stage);
+    assert_eq!(stage.marker_sprites.len(), 1, "exactly one marker sprite");
+    let marker = stage.marker_sprites[0];
+    assert_eq!(marker.shape, grimoire::render::shape::CIRCLE);
+    assert!(
+        (marker.position[0] - focus.x).abs() < 1e-6 && (marker.position[1] - focus.y).abs() < 1e-6,
+        "marker position {:?} must match focus {:?}",
+        marker.position,
+        focus
+    );
+}
+
+/// The plan 0002 WP2.4 gate: replaying a fixed, recorded `TickInput` sequence must give identical
+/// simulation hashes regardless of the camera the run is configured with — the contract's
+/// determinism rule ("Die Simulation liest nie Kamera-, Zeiger-, Viewport- oder
+/// Interpolationszustand") holds structurally (`run_headless` never calls `extract`/
+/// `extract_stage`/the camera follow spring at all), but this test pins the observable behaviour
+/// through the public `AppBuilder` API rather than only the internal wiring.
+#[test]
+fn replay_of_fixed_recorded_tick_inputs_is_independent_of_camera_parameters() {
+    let recorded: Vec<TickInput> = (0..300u64)
+        .map(|tick| tick_input(0, scripted_frame(tick)))
+        .collect();
+
+    let mut camera_a = Camera25D::default();
+    camera_a.tilt_degrees = 60.0;
+    camera_a.fov_y_degrees = 45.0;
+    camera_a.distance = 10.0;
+    camera_a.look_ahead_max = 1.0;
+    camera_a.look_ahead_smoothing = 0.1;
+
+    let mut camera_b = Camera25D::default();
+    camera_b.tilt_degrees = 75.0;
+    camera_b.fov_y_degrees = 90.0;
+    camera_b.distance = 40.0;
+    camera_b.look_ahead_max = 20.0;
+    camera_b.look_ahead_smoothing = 2.0;
+    assert_ne!(
+        camera_a, camera_b,
+        "the two configurations must actually differ for this gate to mean anything"
+    );
+
+    let run = |camera: Camera25D| {
+        let recorded = recorded.clone();
+        App::new(WindowConfig::default())
+            .seed(0xC0FFEE)
+            .camera25d(camera)
+            .plugin(PlayerProxyPlugin::default())
+            .run_headless(recorded.len() as u64, &mut move |tick| {
+                recorded[tick as usize]
+            })
+    };
+
+    let report_a = run(camera_a);
+    let report_b = run(camera_b);
+    assert_eq!(report_a.final_tick, report_b.final_tick);
+    assert_eq!(report_a.final_hash, report_b.final_hash);
+    assert_eq!(report_a.hashes, report_b.hashes);
+}
