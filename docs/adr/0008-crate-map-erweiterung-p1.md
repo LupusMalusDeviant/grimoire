@@ -92,7 +92,7 @@ jeweiligen Crates, `grimoire-link` ist ein Binary von `grimoire_debug`.
 ### Option 2: Eigene Werkzeug-Crates, Compiler in der Determinismus-Menge
 
 Neue Crates:
-- `grimoire_sigilc` (→ `grimoire_sigil`, `grimoire_core`; mit identischer `clippy.toml`)
+- `grimoire_sigilc` (→ `grimoire_sigil`, `grimoire_sim`, `grimoire_ecs`, `grimoire_core`; mit identischer `clippy.toml`)
 - `grimoire_bench` (außerhalb der Determinismus-Menge, ohne `clippy.toml`)
 - `grimoire_link` (außerhalb; → `grimoire_debug`, `grimoire_sigilc`)
 
@@ -164,11 +164,11 @@ Bausteine des Vorschlags (Namen sind Arbeitsnamen; die verbindliche Kantentabell
 1. **Laufzeitkanten.**
    - Neu ist `grimoire_sigil → grimoire_ecs`; die Kanten zu `grimoire_sim` (Tick, Zufallsströme) und `grimoire_core` bleiben.
    - `grimoire_collide` bleibt bei `grimoire_ecs` und `grimoire_core`.
-   - Die Fassade hängt in P1 normal an `grimoire_collide`, `grimoire_sigil`, `grimoire_assets` und `grimoire_debug`.
+   - Die Fassade hängt in P1 normal an `grimoire_collide`, `grimoire_sigil`, `grimoire_assets` und `grimoire_debug`. `grimoire_collide` und `grimoire_sigil` kommen schon an M1 mit den WP1.3-Skeletten hinzu, weil der Spieler-Proxy ihre Typen braucht (vorläufig, Crate-Verträge §9.1).
    - `grimoire_audio` und `grimoire_ui` bleiben Platzhalter ohne Kante bis zu einem P2-Crate-Map-ADR.
-2. **`grimoire_sigilc`.** Die neue Crate (Bibliothek und Binary `sigilc`) hängt an `grimoire_sigil` und `grimoire_core`, gehört zur Determinismus-Menge und trägt die identische `clippy.toml` (sieben Dateien). Keine Laufzeit-Crate hängt von ihr ab, auch nicht als Dev-Abhängigkeit; Laufzeit-Tests nutzen eingecheckte Unit-Fixtures. `UnitId`s leitet sie nach der Regel von `AssetId::from_path` über `StableHasher` ab, ohne Kante zu `grimoire_assets`.
+2. **`grimoire_sigilc`.** Die neue Crate (Bibliothek und Binary `sigilc`) hängt an `grimoire_sigil`, `grimoire_sim`, `grimoire_ecs` und `grimoire_core`, gehört zur Determinismus-Menge und trägt die identische `clippy.toml` (sieben Dateien). Keine Laufzeit-Crate hängt von ihr ab, auch nicht als Dev-Abhängigkeit; Laufzeit-Tests nutzen eingecheckte Unit-Fixtures. `UnitId`s leitet sie nach der Regel von `AssetId::from_path` über `StableHasher` ab, ohne Kante zu `grimoire_assets`. Die Kanten zu `grimoire_sim` und `grimoire_ecs` braucht `sigilc simulate` (Plan 0002 WP5.6): Es führt den Laufzeit-Interpreter über `grimoire_sigil::install` auf einer `Simulation` aus (vorläufig, PO-Bestätigung ausstehend). Beide Crates gehören zur Determinismus-Menge; die Regel „`sigilc` hängt nur an Crates dieser Menge“ bleibt gewahrt.
 3. **`grimoire_bench`.** Die neue Crate liegt außerhalb der Determinismus-Menge und hat keine `clippy.toml`. Sie darf von jeder Laufzeit-Crate und von `grimoire_exec` abhängen; keine Engine-Crate hängt von ihr ab. Ihre Bibliothek enthält die JSON-Schema-Typen für Bench-Ergebnisse und Golden Master (Crate-Verträge §15). Wanduhrwerte gelangen nie in Zustands- oder Subsystem-Hashes.
-4. **`grimoire_link`.** Die neue Crate (Binary `grimoire-link`) liegt außerhalb der Determinismus-Menge. Sie hängt an `grimoire_debug` mit Feature `tcp` und an `grimoire_sigilc` und darf weitere Laufzeit-Crates nutzen; nichts hängt von ihr ab. In P1 ist sie kein Release-Artefakt (P-14).
+4. **`grimoire_link`.** Die neue Crate (Binary `grimoire-link`) liegt außerhalb der Determinismus-Menge. Sie hängt an `grimoire_debug` mit Feature `tcp` und an `grimoire_sigilc` und darf weitere Laufzeit-Crates nutzen; nichts hängt von ihr ab. In P1 ist sie kein Release-Artefakt (P-14). Die feste `tcp`-Kante vereinigt sich in jeden `--workspace`-Lauf; die Auslieferungskonfiguration (Fassade ohne `debug-link`, `grimoire_debug` ohne `tcp`) prüft deshalb ein paketgewählter CI-Schritt (Crate-Verträge §2 Regel 14).
 5. **`grimoire_exec`** wird festgehalten, wie ADR-0006 und der Branch es umsetzen:
    - normale Kante zu `grimoire_ecs`, Drittcrates `rayon` und `thiserror`
    - Dev-Kanten zu `grimoire`, `grimoire_sim` und `grimoire_core` für das Hash-Gate
