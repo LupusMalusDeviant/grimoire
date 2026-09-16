@@ -207,60 +207,58 @@ const BULLET_FLAGS_MASK: u8 = 0b1111;
 /// crate on purpose so a new block kind's parameter *meaning* never needs a decoder change, only
 /// a new `kind` tag.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct BlockDef {
-    kind: u8,
-    count: u16,
-    params: [f32; 6],
-    seed_hash: u32,
+pub(crate) struct BlockDef {
+    pub(crate) kind: u8,
+    pub(crate) count: u16,
+    pub(crate) params: [f32; 6],
+    pub(crate) seed_hash: u32,
 }
 
 /// One entry of a [`ProgramRecord`]'s modifier stack, in written order.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct ModifierDef {
-    kind: u8,
-    flag: u8,
-    extra: u16,
-    params: [f32; 3],
+pub(crate) struct ModifierDef {
+    pub(crate) kind: u8,
+    pub(crate) flag: u8,
+    pub(crate) extra: u16,
+    pub(crate) params: [f32; 3],
 }
 
 /// One `Programs`-section record: a placement block plus its ordered modifier stack.
 #[derive(Debug, Clone, PartialEq)]
-struct ProgramRecord {
-    block: BlockDef,
-    modifiers: Vec<ModifierDef>,
+pub(crate) struct ProgramRecord {
+    pub(crate) block: BlockDef,
+    pub(crate) modifiers: Vec<ModifierDef>,
 }
 
 /// One `Emitters`-section record.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct EmitterRecord {
-    bullet_type: u16,
+pub(crate) struct EmitterRecord {
+    pub(crate) bullet_type: u16,
     /// Index into [`SigilUnit::programs`]; [`EmitterRecord::NO_PROGRAM`] means "spawn with the
     /// bare bullet type, no block/modifier stack".
-    program: u16,
-    role: u8,
-    delay_ticks: u32,
+    pub(crate) program: u16,
+    pub(crate) role: u8,
+    pub(crate) delay_ticks: u32,
     /// [`EmitterRecord::FOREVER`] means "repeat without an upper bound".
-    repeat: u32,
-    interval_ticks: u32,
-    speed: f32,
-    offset_x: f32,
-    offset_y: f32,
+    pub(crate) repeat: u32,
+    pub(crate) interval_ticks: u32,
+    pub(crate) speed: f32,
+    pub(crate) offset_x: f32,
+    pub(crate) offset_y: f32,
 }
 
 impl EmitterRecord {
     /// Sentinel `program` value meaning "no program".
-    const NO_PROGRAM: u16 = u16::MAX;
-    /// Sentinel `repeat` value meaning "forever". Used by this crate's own tests only (a real
-    /// `forever` repeat is otherwise a `grimoire_sigilc` encoding concern); kept as a named
-    /// constant rather than a bare `u32::MAX` literal since it documents the wire meaning.
-    #[allow(dead_code)]
-    const FOREVER: u32 = u32::MAX;
+    pub(crate) const NO_PROGRAM: u16 = u16::MAX;
+    /// Sentinel `repeat` value meaning "repeat without an upper bound", interpreted by the
+    /// `sigil.emit` phase (WP5.1).
+    pub(crate) const FOREVER: u32 = u32::MAX;
 }
 
 /// One `Curves`-section record: a keyframe list for the `speed_curve` modifier.
 #[derive(Debug, Clone, PartialEq)]
-struct CurveRecord {
-    keys: Vec<(u32, f32)>,
+pub(crate) struct CurveRecord {
+    pub(crate) keys: Vec<(u32, f32)>,
 }
 
 impl SigilUnit {
@@ -562,6 +560,29 @@ impl SigilUnit {
     pub fn behavior_refs(&self) -> &[BehaviorId] {
         self.behavior_refs.as_deref().unwrap_or(&[])
     }
+
+    /// Bullet-pattern programs of this unit (block + modifier stack), in encoding order.
+    ///
+    /// `pub(crate)`: the interpreter (WP5.1, `crate::blocks`/`crate::runtime`) is this crate's
+    /// only other module and reads a program's block/modifier shape directly rather than through
+    /// a re-exported wrapper type, matching how `bullet_types()` already exposes `BulletType`
+    /// directly. Not public: `BlockDef`/`ModifierDef` are decoder-internal shapes whose only
+    /// documented meaning lives in `docs/formats/sigil.md` §10.4, not in this crate's public API.
+    pub(crate) fn programs(&self) -> &[ProgramRecord] {
+        &self.programs
+    }
+
+    /// Emitter definitions of this unit, in encoding order (contract §11.1's `role`, `delay_ticks`,
+    /// `repeat`, `interval_ticks`, `speed`, `offset_x`/`offset_y`; `docs/formats/sigil.md` §10.5).
+    pub(crate) fn emitters(&self) -> &[EmitterRecord] {
+        &self.emitters
+    }
+
+    /// `speed_curve` keyframe curves of this unit, in encoding order (`docs/formats/sigil.md`
+    /// §10.6); indexed by a `speed_curve` modifier's `extra` field.
+    pub(crate) fn curves(&self) -> &[CurveRecord] {
+        &self.curves
+    }
 }
 
 impl PartialEq for SigilUnit {
@@ -750,35 +771,33 @@ fn encode_bullet_types(bullet_types: &[BulletType]) -> Vec<u8> {
 
 /// Known [`BlockDef::kind`] tags (`docs/formats/sigil.md`'s `Programs` section table).
 ///
-/// This crate's own decoder only ever compares a wire `kind` byte against `1..=MAX`; it never
-/// needs to distinguish one tag from another (that is `grimoire_sigilc`'s job when it interprets
-/// a `BlockDef`'s generic `params`). The named constants exist anyway as the one authoritative
-/// copy of the tag numbers documented in `docs/formats/sigil.md`, so `#[allow(dead_code)]` here
-/// is deliberate, not an oversight; only a few are exercised directly by this crate's own tests.
-struct BlockKind;
-#[allow(dead_code)]
+/// This module's own decoder only ever compares a wire `kind` byte against `1..=MAX`; it never
+/// needs to distinguish one tag from another. `crate::blocks` (WP5.1) is what actually interprets
+/// a `BlockDef`'s generic `params` per kind and reads these constants directly, so they are the
+/// one authoritative copy of the tag numbers documented in `docs/formats/sigil.md`.
+pub(crate) struct BlockKind;
 impl BlockKind {
-    const RING: u8 = 1;
-    const SPIRAL: u8 = 2;
-    const FAN: u8 = 3;
-    const AIMED: u8 = 4;
-    const WAVE: u8 = 5;
-    const LINE: u8 = 6;
-    const SCATTER: u8 = 7;
+    pub(crate) const RING: u8 = 1;
+    pub(crate) const SPIRAL: u8 = 2;
+    pub(crate) const FAN: u8 = 3;
+    pub(crate) const AIMED: u8 = 4;
+    pub(crate) const WAVE: u8 = 5;
+    pub(crate) const LINE: u8 = 6;
+    pub(crate) const SCATTER: u8 = 7;
     const MAX: u8 = 7;
 }
 
-/// Known [`ModifierDef::kind`] tags (`docs/formats/sigil.md`'s `Programs` section table). See
-/// [`BlockKind`]'s docs for why most of these are `#[allow(dead_code)]` in this crate.
-struct ModifierKind;
-#[allow(dead_code)]
+/// Known [`ModifierDef::kind`] tags (`docs/formats/sigil.md`'s `Programs` section table). Read by
+/// the decoder (this module, generic shape only) and by the interpreter (`crate::runtime`,
+/// WP5.1), which is what actually gives each tag its per-tick meaning.
+pub(crate) struct ModifierKind;
 impl ModifierKind {
-    const ACCELERATE: u8 = 1;
-    const SINE_OFFSET: u8 = 2;
-    const ROTATE: u8 = 3;
-    const MIRROR: u8 = 4;
-    const SPEED_CURVE: u8 = 5;
-    const CURVE: u8 = 6;
+    pub(crate) const ACCELERATE: u8 = 1;
+    pub(crate) const SINE_OFFSET: u8 = 2;
+    pub(crate) const ROTATE: u8 = 3;
+    pub(crate) const MIRROR: u8 = 4;
+    pub(crate) const SPEED_CURVE: u8 = 5;
+    pub(crate) const CURVE: u8 = 6;
     const MAX: u8 = 6;
 }
 

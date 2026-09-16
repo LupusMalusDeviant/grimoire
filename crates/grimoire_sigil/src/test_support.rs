@@ -11,7 +11,7 @@ use grimoire_core::StableHasher;
 
 use crate::behavior::{BehaviorId, BehaviorRegistry, BehaviorRegistryBuilder};
 use crate::content::{BulletFlags, BulletType, BulletVisual, SigilContent, SigilLibrary};
-use crate::unit::SigilUnit;
+use crate::unit::{ProgramRecord, SigilUnit};
 
 /// Hand-builds the bytes of a valid v1 unit, following the header + section-table layout
 /// documented in `crate::unit`, independently of [`SigilUnit::to_bytes`].
@@ -169,5 +169,121 @@ pub(crate) fn build_simple_content(
     let bullet_types = vec![plain_bullet_type(); bullet_type_count as usize];
     let bytes = build_unit_bytes(1, &bullet_types, emitter_count, Some(program_count), None);
     let unit = SigilUnit::from_bytes(&bytes).expect("test fixture must decode");
+    build_content(vec![unit])
+}
+
+/// Assembles a complete unit's bytes (header, section table, `content_hash`) from already-encoded
+/// section contents, sorted by `kind`. Shared by the WP5.1 fixture builders below; independent of
+/// [`SigilUnit::to_bytes`] like [`build_unit_bytes`], just factored out instead of copy-pasted a
+/// third time.
+fn assemble_unit(id: u64, mut contents: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    contents.sort_by_key(|&(kind, _)| kind);
+    let section_count = contents.len() as u32;
+    let table_len = 4u64 + u64::from(section_count) * 24;
+    let mut table = Vec::new();
+    table.extend_from_slice(&section_count.to_le_bytes());
+    let mut body = Vec::new();
+    let mut offset = table_len;
+    for (kind, bytes) in &contents {
+        table.extend_from_slice(&kind.to_le_bytes());
+        table.extend_from_slice(&0u32.to_le_bytes());
+        table.extend_from_slice(&offset.to_le_bytes());
+        table.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        offset += bytes.len() as u64;
+        body.extend_from_slice(bytes);
+    }
+    let mut payload = table;
+    payload.extend_from_slice(&body);
+
+    let mut out = Vec::with_capacity(SigilUnit::HEADER_LEN + payload.len());
+    out.extend_from_slice(&SigilUnit::MAGIC);
+    out.extend_from_slice(&SigilUnit::FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&id.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    out.extend_from_slice(&payload);
+
+    let mut hasher = StableHasher::new();
+    hasher.write_bytes(&out[0..24]);
+    hasher.write_bytes(&out[32..out.len()]);
+    let hash = hasher.finish();
+    out[24..32].copy_from_slice(&hash.to_le_bytes());
+    out
+}
+
+/// Encodes `programs` into the wire `Programs` section content (kind 2,
+/// `docs/formats/sigil.md` §10.4), independently of `SigilUnit::to_bytes`, matching this module's
+/// existing "hand-built" philosophy.
+fn encode_programs_for_test(programs: &[ProgramRecord]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(programs.len() as u16).to_le_bytes());
+    for program in programs {
+        out.push(program.block.kind);
+        out.push(0); // reserved
+        out.extend_from_slice(&program.block.count.to_le_bytes());
+        for param in &program.block.params {
+            out.extend_from_slice(&param.to_le_bytes());
+        }
+        out.extend_from_slice(&program.block.seed_hash.to_le_bytes());
+        out.extend_from_slice(&(program.modifiers.len() as u16).to_le_bytes());
+        for modifier in &program.modifiers {
+            out.push(modifier.kind);
+            out.push(modifier.flag);
+            out.extend_from_slice(&modifier.extra.to_le_bytes());
+            for param in &modifier.params {
+                out.extend_from_slice(&param.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
+/// Builds a decoded unit (id `1`) with one bullet type (`lifetime_ticks = 1`, so a WP5.1
+/// lifetime-despawn test needs only one tick), one emitter (bullet type `0`, no program of its
+/// own) and `programs` as its `Programs` section — real block/modifier records, unlike
+/// [`build_unit_bytes`]'s count-only placeholders, for `crate::blocks`'/`crate::runtime`'s/
+/// `crate::systems`'s own tests.
+pub(crate) fn build_program_bytes_unit(programs: &[ProgramRecord]) -> SigilUnit {
+    let bullet_type = BulletType {
+        lifetime_ticks: 1,
+        ..plain_bullet_type()
+    };
+    let mut bullet_type_bytes = Vec::new();
+    bullet_type_bytes.extend_from_slice(&1u16.to_le_bytes());
+    bullet_type_bytes.extend_from_slice(&bullet_type.radius.to_le_bytes());
+    bullet_type_bytes.extend_from_slice(&bullet_type.collision_radius.to_le_bytes());
+    bullet_type_bytes.extend_from_slice(&bullet_type.lifetime_ticks.to_le_bytes());
+    bullet_type_bytes.push(bullet_type.flags.0);
+    bullet_type_bytes.push(0);
+    bullet_type_bytes.extend_from_slice(&bullet_type.visual.silhouette.to_le_bytes());
+    bullet_type_bytes.extend_from_slice(&bullet_type.visual.palette.to_le_bytes());
+    bullet_type_bytes.push(bullet_type.visual.palette_space);
+    bullet_type_bytes.push(bullet_type.visual.glow);
+
+    let mut emitters_bytes = Vec::new();
+    emitters_bytes.extend_from_slice(&1u16.to_le_bytes());
+    emitters_bytes.extend_from_slice(&0u16.to_le_bytes()); // bullet_type 0
+    emitters_bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // program: none
+    emitters_bytes.push(0);
+    emitters_bytes.push(0);
+    emitters_bytes.extend_from_slice(&0u32.to_le_bytes());
+    emitters_bytes.extend_from_slice(&1u32.to_le_bytes());
+    emitters_bytes.extend_from_slice(&1u32.to_le_bytes());
+    emitters_bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    emitters_bytes.extend_from_slice(&0f32.to_le_bytes());
+    emitters_bytes.extend_from_slice(&0f32.to_le_bytes());
+
+    let mut contents = vec![(1u32, bullet_type_bytes), (3u32, emitters_bytes)];
+    if !programs.is_empty() {
+        contents.push((2, encode_programs_for_test(programs)));
+    }
+    let bytes = assemble_unit(1, contents);
+    SigilUnit::from_bytes(&bytes).expect("test fixture must decode")
+}
+
+/// Wraps `unit` in a fresh [`SigilContent`] against an empty behavior registry; a thin, readable
+/// alias of [`build_content`] for call sites that build exactly one unit.
+pub(crate) fn build_content_with_program(unit: SigilUnit) -> SigilContent {
     build_content(vec![unit])
 }

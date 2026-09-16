@@ -1,25 +1,55 @@
-//! The two P0 baseline benches (Plan-0002 WP6.2 scope item 1) and the calibrated regression
-//! injector (engine ADR-0010, "Vor der Umsetzung in WP6.2" / calibration Nachtrag).
+//! The two P0 baseline benches (Plan-0002 WP6.2 scope item 1), the WP5.1 `sigil.update`
+//! micro-bench, and the calibrated regression injector (engine ADR-0010, "Vor der Umsetzung in
+//! WP6.2" / calibration Nachtrag).
 //!
-//! Reused near-verbatim from the WP6.1 noise spike (branch `p1/wp6.1-bench-spike`,
-//! `spikes/bench-noise/src/lib.rs`), which measured these exact two bench shapes and calibrated
-//! this exact injector against them (ADR-0010). What changes here is only the crate: this is the
-//! real `grimoire_bench`, not throwaway spike code, so it carries doc comments, is part of the
-//! workspace and its own contract tests, and its calibration *unit counts* are **not** copied
-//! from the ADR's measurement table — engine ADR-0010's own closing note ("Offen für WP6.2
-//! selbst") says why: the per-unit slope is bench- and host-dependent, so WP6.2 must calibrate
-//! fresh, in the same CI job as the target measurement, every run (`scripts/calibrate_injection.sh`).
+//! The two P0 benches are reused near-verbatim from the WP6.1 noise spike (branch
+//! `p1/wp6.1-bench-spike`, `spikes/bench-noise/src/lib.rs`), which measured these exact two bench
+//! shapes and calibrated this exact injector against them (ADR-0010). What changes here is only
+//! the crate: this is the real `grimoire_bench`, not throwaway spike code, so it carries doc
+//! comments, is part of the workspace and its own contract tests, and its calibration *unit
+//! counts* are **not** copied from the ADR's measurement table — engine ADR-0010's own closing
+//! note ("Offen für WP6.2 selbst") says why: the per-unit slope is bench- and host-dependent, so
+//! WP6.2 must calibrate fresh, in the same CI job as the target measurement, every run
+//! (`scripts/calibrate_injection.sh`).
 //!
 //! `sim_step_600` is a small self-contained stand-in for the P0 demo scenario
 //! (`grimoire_sim/tests/scenario/mod.rs` is private to that crate's test binary and not
 //! reusable from here, same as in the spike): one exclusive integrate system plus a periodic
 //! despawn/respawn keeps the shape (moving entities, one archetype change, a `Simulation::step`
 //! call) without reproducing the golden scenario.
+//!
+//! `sigil_update_6k` is new in Plan 0002 WP5.1: the plan requires a micro-bench proving the
+//! `sigil.update` hot path calls no `grimoire_core::math::dmath` trigonometry per bullet per tick
+//! ("der heiße Pfad ist heilig ... belegst es mit einem Mikro-Bench"). It spawns
+//! [`SIGIL_ENTITIES`] active bullets across programs that stack all six modifiers (`accelerate`,
+//! `sine_offset`, `rotate`, `mirror`, `speed_curve`, `curve` — `mirror` only ever acts at emit
+//! time, so it contributes nothing to the *ticked* cost this bench measures, but its presence in
+//! the stacked program still proves the decoder/interpreter accept it there), then steps ticks
+//! after the one-off emit burst has finished, so almost the entire measured cost is
+//! `sigil.update`/`sigil.resolve` on an already-full pool, not `sigil.emit`.
+//!
+//! **What this bench proves today, and what it does not yet.** Building and running it (`cargo
+//! test -p grimoire_bench`, and — per this crate's own contribution rule — Callgrind only on the
+//! CI runner, never locally) shows the scenario is real and deterministic. Turning that into the
+//! same kind of hard proof `ecs_query_10k`/`sim_step_600` already have — a Callgrind `Ir` count
+//! wired into `.github/workflows/bench-gate.yml` with an accepted baseline — is a follow-up this
+//! pull request deliberately leaves open rather than unilaterally running the separate
+//! `bench-accept-baseline` acceptance ceremony (see the WP5.1 report). In the meantime, the "no
+//! trigonometry per bullet per tick" claim is also checked the way `clippy.toml`'s
+//! `disallowed-methods` already checks the *raw* `f32` methods for this crate family: by
+//! inspection — `grimoire_sigil::runtime` (the module this bench exercises) has no `use` of
+//! `grimoire_core::math::dmath`'s `sin`/`cos`/`tan`/`atan2`/... anywhere in its per-tick
+//! functions, only in the once-per-content-load `RuntimeCache` builder and the once-per-bullet
+//! `sine_offset` seed.
 
 use std::hint::black_box;
 
 use grimoire_core::impl_stable_hash;
+use grimoire_core::math::Vec2;
 use grimoire_ecs::{System, World, system_fn};
+use grimoire_sigil::{
+    BehaviorRegistryBuilder, Emitter, SigilConfig, SigilLibrary, SigilUnit, install,
+};
 use grimoire_sim::{Simulation, TickInput};
 
 /// Entities in the ECS query benchmark (`ecs_query_10k`; task scope: "ECS query over 10k
@@ -189,8 +219,188 @@ pub fn run_calibration_units(units: u64) -> f32 {
     acc
 }
 
+/// Scenario name of the `sigil.update` hot-path benchmark (contract §15.1 `BenchResult::scenario`).
+pub const SIGIL_SCENARIO: &str = "sigil_update_6k";
+
+/// Volley size of the single emitter [`build_sigil_update`] installs.
+const SIGIL_RING_COUNT: u16 = 50;
+/// Number of volleys the emitter fires before `repeat` is exhausted; `SIGIL_RING_COUNT *
+/// SIGIL_VOLLEYS * 2` bullets end up active (the `* 2` is the program's `mirror` modifier, which
+/// doubles every volley's shot list at emit time — see [`build_sigil_unit`]).
+const SIGIL_VOLLEYS: u32 = 60;
+/// Bullets active once every volley has fired (`SIGIL_RING_COUNT * SIGIL_VOLLEYS * 2`).
+pub const SIGIL_ENTITIES: u32 = SIGIL_RING_COUNT as u32 * SIGIL_VOLLEYS * 2;
+/// Ticks per wall-clock sample of the `sigil.update` benchmark, after the emit burst.
+pub const SIGIL_WALLCLOCK_TICKS: u32 = 300;
+/// Ticks per Callgrind probe of the `sigil.update` benchmark, after the emit burst.
+pub const SIGIL_IR_TICKS: u32 = 300;
+
+const HEADER_LEN: usize = 40;
+const SECTION_ENTRY_LEN: u64 = 24;
+
+/// Hand-assembles one `SigilUnit`'s bytes (independent of `SigilUnit::to_bytes`, matching
+/// `grimoire_sigil`'s own fixture convention: `src/test_support.rs`, `tests/golden.rs`,
+/// `tests/interpreter.rs` — this crate cannot reach any of their `pub(crate)`/private helpers, so
+/// it duplicates the small amount of encoding it needs rather than adding a public
+/// fixture-building API to `grimoire_sigil` just for this bench).
+///
+/// One bullet type (`lifetime_ticks = 0`, unbounded — this bench measures ticked bullets staying
+/// alive, not despawning), one `Curves` section (for `speed_curve`), one program stacking all six
+/// modifiers on a `ring` block, and one emitter referencing it.
+fn build_sigil_unit() -> SigilUnit {
+    let mut bullet_type = Vec::new();
+    bullet_type.extend_from_slice(&1u16.to_le_bytes());
+    bullet_type.extend_from_slice(&1.0f32.to_le_bytes()); // radius
+    bullet_type.extend_from_slice(&1.0f32.to_le_bytes()); // collision_radius
+    bullet_type.extend_from_slice(&0u32.to_le_bytes()); // lifetime_ticks: unbounded
+    bullet_type.push(0); // flags
+    bullet_type.push(0); // reserved
+    bullet_type.extend_from_slice(&0u16.to_le_bytes()); // silhouette
+    bullet_type.extend_from_slice(&0u16.to_le_bytes()); // palette
+    bullet_type.push(0); // palette_space
+    bullet_type.push(0); // glow
+
+    let mut curves = Vec::new();
+    curves.extend_from_slice(&1u16.to_le_bytes()); // one curve
+    curves.extend_from_slice(&3u16.to_le_bytes()); // three keys
+    for &(at_ticks, mul) in &[(0u32, 1.0f32), (150, 1.4), (300, 0.8)] {
+        curves.extend_from_slice(&at_ticks.to_le_bytes());
+        curves.extend_from_slice(&mul.to_le_bytes());
+    }
+
+    let mut program = Vec::new();
+    // BlockDef: kind 1 (ring), reserved, count, params[6], seed_hash.
+    program.push(1);
+    program.push(0);
+    program.extend_from_slice(&SIGIL_RING_COUNT.to_le_bytes());
+    for param in [0.0f32; 6] {
+        program.extend_from_slice(&param.to_le_bytes());
+    }
+    program.extend_from_slice(&0u32.to_le_bytes());
+    // Six modifiers: accelerate, sine_offset, rotate, mirror, speed_curve, curve.
+    let modifiers: [(u8, u8, u16, [f32; 3]); 6] = [
+        (1, 0, 0, [0.01, 5.0, 0.0]), // accelerate
+        (2, 0, 0, [0.3, 8.0, 0.2]),  // sine_offset
+        (3, 0, 0, [0.02, 0.0, 0.0]), // rotate
+        (4, 0, 1, [0.0, 0.0, 0.0]),  // mirror
+        (5, 0, 0, [0.0, 0.0, 0.0]),  // speed_curve, extra 0 -> the one curve above
+        (6, 0, 0, [0.01, 0.0, 0.0]), // curve
+    ];
+    program.extend_from_slice(&(modifiers.len() as u16).to_le_bytes());
+    for (kind, flag, extra, params) in modifiers {
+        program.push(kind);
+        program.push(flag);
+        program.extend_from_slice(&extra.to_le_bytes());
+        for param in params {
+            program.extend_from_slice(&param.to_le_bytes());
+        }
+    }
+    let mut programs = Vec::new();
+    programs.extend_from_slice(&1u16.to_le_bytes());
+    programs.extend_from_slice(&program);
+
+    let mut emitter = Vec::new();
+    emitter.extend_from_slice(&0u16.to_le_bytes()); // bullet_type
+    emitter.extend_from_slice(&0u16.to_le_bytes()); // program 0
+    emitter.push(0); // role
+    emitter.push(0); // reserved
+    emitter.extend_from_slice(&0u32.to_le_bytes()); // delay_ticks
+    emitter.extend_from_slice(&SIGIL_VOLLEYS.to_le_bytes()); // repeat
+    emitter.extend_from_slice(&1u32.to_le_bytes()); // interval_ticks
+    emitter.extend_from_slice(&1.0f32.to_le_bytes()); // speed
+    emitter.extend_from_slice(&0f32.to_le_bytes());
+    emitter.extend_from_slice(&0f32.to_le_bytes());
+    let mut emitters = Vec::new();
+    emitters.extend_from_slice(&1u16.to_le_bytes());
+    emitters.extend_from_slice(&emitter);
+
+    assemble_sigil_unit(
+        1,
+        vec![(1, bullet_type), (2, programs), (3, emitters), (5, curves)],
+    )
+}
+
+fn assemble_sigil_unit(id: u64, mut contents: Vec<(u32, Vec<u8>)>) -> SigilUnit {
+    contents.sort_by_key(|&(kind, _)| kind);
+    let section_count = contents.len() as u32;
+    let table_len = 4u64 + u64::from(section_count) * SECTION_ENTRY_LEN;
+    let mut table = Vec::new();
+    table.extend_from_slice(&section_count.to_le_bytes());
+    let mut body = Vec::new();
+    let mut offset = table_len;
+    for (kind, bytes) in &contents {
+        table.extend_from_slice(&kind.to_le_bytes());
+        table.extend_from_slice(&0u32.to_le_bytes());
+        table.extend_from_slice(&offset.to_le_bytes());
+        table.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        offset += bytes.len() as u64;
+        body.extend_from_slice(bytes);
+    }
+    let mut payload = table;
+    payload.extend_from_slice(&body);
+
+    let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+    out.extend_from_slice(&SigilUnit::MAGIC);
+    out.extend_from_slice(&SigilUnit::FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&id.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    out.extend_from_slice(&payload);
+
+    let mut hasher = grimoire_core::StableHasher::new();
+    hasher.write_bytes(&out[0..24]);
+    hasher.write_bytes(&out[32..out.len()]);
+    let hash = hasher.finish();
+    out[24..32].copy_from_slice(&hash.to_le_bytes());
+
+    SigilUnit::from_bytes(&out).expect("hand-built bench fixture must decode")
+}
+
+/// Builds the `sigil.update` benchmark: `install`s `build_sigil_unit`'s unit with capacity for
+/// every bullet the burst will spawn, and one `Emitter` entity.
+#[must_use]
+pub fn build_sigil_update(seed: u64) -> Simulation {
+    let unit = build_sigil_unit();
+    let unit_id = unit.id();
+    let registry = BehaviorRegistryBuilder::new(1).build();
+    let library = SigilLibrary::new(vec![unit], registry.clone()).expect("library must build");
+    let mut sim = Simulation::new(seed);
+    install(
+        &mut sim,
+        library,
+        registry,
+        SigilConfig::new(
+            SIGIL_ENTITIES + 1,
+            Vec2::new(-1.0e6, -1.0e6),
+            Vec2::new(1.0e6, 1.0e6),
+        ),
+    )
+    .expect("install must succeed");
+    sim.world_mut().spawn((Emitter {
+        unit: unit_id,
+        emitter: 0,
+        origin: Vec2::ZERO,
+        rotation: 0.0,
+        started_at: 0,
+    },));
+    sim
+}
+
+/// Runs `ticks + extra_ticks` simulation steps. Callers that want the measured region to be
+/// (almost) pure `sigil.update`/`sigil.resolve` should call this only after the emitter's
+/// `SIGIL_VOLLEYS` volleys have already fired (i.e. after at least that many ticks have already
+/// run once, outside the measured region).
+pub fn run_sigil_update_ticks(sim: &mut Simulation, ticks: u32, extra_ticks: u32) {
+    for _ in 0..(ticks + extra_ticks) {
+        sim.step(TickInput::default());
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use grimoire_sigil::BulletPool;
+
     use super::*;
 
     #[test]
@@ -231,12 +441,43 @@ mod tests {
     #[test]
     fn scenario_names_are_valid_bench_result_slugs() {
         // Contract §15.1: scenario matches [a-z0-9_]{1,64}.
-        for name in [ECS_SCENARIO, SIM_SCENARIO] {
+        for name in [ECS_SCENARIO, SIM_SCENARIO, SIGIL_SCENARIO] {
             assert!(!name.is_empty() && name.len() <= 64);
             assert!(
                 name.bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
             );
         }
+    }
+
+    #[test]
+    fn sigil_benchmark_body_reaches_full_population_then_keeps_it() {
+        let mut sim = build_sigil_update(42);
+        // Run every volley (WP5.1's `sigil.emit`), then confirm the full population is active
+        // and alive before the measured region even starts.
+        run_sigil_update_ticks(&mut sim, SIGIL_VOLLEYS, 0);
+        assert_eq!(
+            sim.world()
+                .resource::<BulletPool>()
+                .expect("install must have added the pool")
+                .len(),
+            SIGIL_ENTITIES,
+            "every volley must have fired and every bullet must still be alive"
+        );
+        run_sigil_update_ticks(&mut sim, SIGIL_IR_TICKS, 0);
+        assert_eq!(
+            sim.world().resource::<BulletPool>().unwrap().len(),
+            SIGIL_ENTITIES,
+            "the measured region keeps every bullet alive (unbounded lifetime, generous bounds)"
+        );
+    }
+
+    #[test]
+    fn sigil_benchmark_is_deterministic_for_a_given_seed() {
+        let mut a = build_sigil_update(7);
+        let mut b = build_sigil_update(7);
+        run_sigil_update_ticks(&mut a, SIGIL_VOLLEYS + SIGIL_IR_TICKS, 0);
+        run_sigil_update_ticks(&mut b, SIGIL_VOLLEYS + SIGIL_IR_TICKS, 0);
+        assert_eq!(a.state_hash(), b.state_hash());
     }
 }
