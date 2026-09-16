@@ -197,7 +197,38 @@ jobs:
         env:
           RUNNER_LABEL: ${{ matrix.os }}
         run: bash .github/scripts/report-gpu-adapter.sh "$RUNNER_LABEL" ci-logs/test.log ci-logs/test-offscreen-cpu.log
-      # Examples open windows: build them, never run them in CI.
+      # Plan 0002 WP2.8: the three deterministic render test scenes (`pbr_materials`, `shadows`,
+      # `camera_tilt`), rendered on the software adapter and compared against a per-platform
+      # reference in WARNING MODE (a mismatch is reported, never fails this step — see
+      # `crates/grimoire_render/tests/snapshot_scenes.rs`'s module doc comment, "Warning mode", for
+      # how that becomes failing). Run on every OS, including macOS: that runner currently resolves
+      # `GRIMOIRE_GPU_ADAPTER=software` to no adapter at all (PRD-0018's adapter table; the same
+      # module doc comment explains why), which this step's own "no reference"/skip reporting
+      # already covers cleanly, so there is nothing macOS-specific to special-case here.
+      - name: Render WP2.8 deterministic test scenes
+        env:
+          GRIMOIRE_GPU_ADAPTER: software
+        run: |
+          mkdir -p ci-logs
+          cargo test -p grimoire_render --test snapshot_scenes --locked -- --ignored --nocapture 2>&1 | tee ci-logs/test-snapshot-scenes.log
+      - name: Report WP2.8 snapshot scene results
+        if: ${{ !cancelled() }}
+        env:
+          RUNNER_LABEL: ${{ matrix.os }}
+        run: bash .github/scripts/report-snapshot-diff.sh "$RUNNER_LABEL" ci-logs/test-snapshot-scenes.log
+      # Populated only when a scene had no reference yet or mismatched one: lets a
+      # human pull down what the software adapter actually produced on this runner to review and,
+      # if it looks right, commit as that platform's new reference.
+      - name: Upload WP2.8 snapshot candidates
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshot-candidates-${{ matrix.os }}
+          path: target/wp28-snapshots/
+          if-no-files-found: ignore
+          retention-days: 14
+      # Examples open windows: build them, never run them in CI. The milestone-showcase example
+      # `pbr_stage` (plan 0002 WP2.8) is covered here too, build-only like every other example.
       - name: Build examples
         run: cargo build --workspace --examples --locked
       - name: Upload float probe
@@ -236,3 +267,62 @@ jobs:
           # Missing core probes fail the comparison only if every test job succeeded.
           TESTS_RESULT: ${{ needs.test.result }}
         run: bash .github/scripts/compare-float-probes.sh float-probe "Debug-Build"
+
+  showcase-gif:
+    name: M1 showcase GIF (pbr_stage)
+    # Plan 0002 WP2.8 milestone showcase: renders the merged stage (meshes, PBR materials, lights,
+    # the key-light shadow map, the tilted camera — the same cast as the `pbr_stage` example, which
+    # this job never runs itself, only builds via the `test` job's "Build examples" step) offscreen
+    # as a PNG sequence and assembles it into a GIF artifact
+    # (`crates/grimoire_render/tests/pbr_stage_showcase.rs`).
+    #
+    # Kept cheap on purpose: one OS (`ubuntu-latest`, the cheapest GitHub-hosted
+    # runner) instead of the three-OS matrix `test` uses — a GIF is a showcase artifact, not a
+    # per-platform correctness check, so running it three times would triple the cost for no
+    # additional information (`snapshot_scenes.rs`'s per-platform references already cover
+    # per-platform rendering correctness) — and skipped on pull requests entirely: a milestone GIF
+    # is worth refreshing on every merge to `main`, not worth paying for on every review iteration
+    # of a pull request. `workflow_dispatch` can still run it on demand (for example to refresh the
+    # GIF after a purely visual tweak that does not otherwise touch `main`).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Same reasoning as the `test` job: lavapipe gives this runner a software Vulkan adapter.
+      - name: Install software Vulkan (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      # `pbr_stage_showcase.rs`'s renderer helper does not read `GRIMOIRE_REQUIRE_GPU_ADAPTER`
+      # (unlike `tests/offscreen.rs`): a missing adapter here would just mean an empty artifact, so
+      # a hard failure (via `set -e` and no GPU) is the honest outcome rather than a silent skip.
+      - name: Render the pbr_stage PNG sequence
+        env:
+          GRIMOIRE_GPU_ADAPTER: software
+        run: |
+          cargo test -p grimoire_render --test pbr_stage_showcase --locked -- --ignored --nocapture render_pbr_stage_png_sequence
+          test -f target/wp28-pbr-stage-gif/frame_0000.png
+      # ffmpeg ships preinstalled on GitHub-hosted runners; a two-pass palette (generate, then
+      # apply) keeps an 8-bit GIF from banding the PBR spheres/gradients as badly as ffmpeg's
+      # default fixed palette would.
+      - name: Assemble the PNG sequence into a GIF
+        run: |
+          palette="$(mktemp --suffix=.png)"
+          ffmpeg -y -framerate 24 -i target/wp28-pbr-stage-gif/frame_%04d.png \
+            -vf "palettegen" "$palette"
+          ffmpeg -y -framerate 24 -i target/wp28-pbr-stage-gif/frame_%04d.png -i "$palette" \
+            -lavfi "paletteuse" pbr_stage.gif
+          ls -la pbr_stage.gif
+      - name: Upload the showcase GIF
+        uses: actions/upload-artifact@v7
+        with:
+          name: pbr_stage-showcase-gif
+          path: pbr_stage.gif
+          if-no-files-found: error
+          retention-days: 30
