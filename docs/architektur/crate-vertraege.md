@@ -378,7 +378,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-16 | §6 (Registrierung bleibt renderer-spezifisch) | #9 | K | — | nein |
 | 2026-09-16 | §6 (Vorausschau: Fokus-Geschwindigkeit mal 1 s, begrenzt) | #11 | A (PO-Entscheid V-20) | Render-A (WP2.5 ff.) | nein |
 | 2026-09-16 | §6, §9.5 (Kamera nur nach Anmeldung; Marker-Werte vorlaeufig) | #11 | K | — | nein |
-| 2026-09-16 | §6 (Knochenverformung: `MeshVertex` um `joints`/`weights`, `SkinBinding`, `StageFrame::joint_matrices`) | #TBD | A (PO-Entscheid V-20) | Render-A/B (P1 „Figuren in der Engine") | nein |
+| 2026-09-16 | §6 (Knochenverformung: `MeshVertex` um `joints`/`weights`, `SkinBinding`, `StageFrame::joint_matrices`) | #23 | A (PO-Entscheid V-20) | Render-A/B (P1 „Figuren in der Engine") | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
