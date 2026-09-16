@@ -22,5 +22,7 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 | [0011](0011-spekulares-anti-aliasing-statt-taa.md) | Kantenglättung für Glanzlichter: geometrisches Spekular-Anti-Aliasing statt TAA (OF-3.5, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
 | [0012](0012-schatten-key-light-shadowmap-plus-blob.md) | Schatten: Shadowmap für das Key-Light plus Blob-Schatten (OF-3.2, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge; Punktlicht-Schattenwerfer zurückgestellt) |
 | [0013](0013-downlevel-pruefung-licht-cluster-layout.md) | Downlevel-Prüfung und Licht-/Cluster-Datenlayout für Clustered Forward+ (WP3.1, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
+| [0014](0014-bullet-darstellung-billboard-impostor.md) | Bullet-Darstellung: Billboard-Impostor statt instanzierte Low-Poly-Meshes (OF-3.3, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
+| [0015](0015-licht-culling-compute-clustering.md) | Licht-Culling: Compute-Clustering statt CPU-Froxel-Zuordnung (vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
 
 Den aktuellen Status jeder Entscheidung nennt ihre Datei.

@@ -1,0 +1,35 @@
+[package]
+name = "light-bullet-stress"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Spike plan 0002 WP3.2: OF-3.3 bullet representation (billboard impostor vs. instanced low-poly meshes) and light culling (CPU-froxel vs. compute-clustering) under stress instance/light counts."
+
+# Standalone crate: deliberately not a member of the engine workspace (same convention as
+# spikes/bench-noise, spikes/look-dev, spikes/sigil-syntax), so its own Cargo.lock and lints stay
+# out of the workspace's.
+[workspace]
+
+[dependencies]
+grimoire_gpu = { path = "../../crates/grimoire_gpu" }
+# Only for `BulletInstance` (the real contract type, §6), `procedural::icosphere` (the low-poly
+# mesh) and `cluster_layout` (WP3.1's frozen light/cluster data layout, reused verbatim per the
+# WP3.2 instruction not to define a second one). No engine-facade type crosses back out of this
+# spike (`grimoire_render` stays a leaf dependency here, same layer rule as the real crate map).
+grimoire_render = { path = "../../crates/grimoire_render" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+
+[[bin]]
+name = "bullet_stress"
+path = "src/bin/bullet_stress.rs"
+
+[[bin]]
+name = "light_cluster"
+path = "src/bin/light_cluster.rs"
+
+[profile.release]
+debug = true
+
+[lints.rust]
+unsafe_code = "deny"

@@ -1,0 +1,89 @@
+# Spike OF-3.3 / light culling, plan 0002 WP3.2 (light-bullet-stress): throwaway workflow, lives
+# only on this branch (same convention as .github/workflows/spike-wp6.1-bench-noise.yml).
+#
+# Every push that triggers this workflow is watched until it finishes:
+#   gh run watch <id> --exit-status        (red run: gh run view <id> --log-failed)
+
+name: Spike WP3.2 light/bullet stress (OF-3.3, light culling)
+
+on:
+  push:
+    branches: [p1/wp3.2-light-bullet-spikes]
+    paths:
+      - spikes/wp3.2-light-bullet-stress/**
+      - .github/workflows/spike-wp3.2-light-bullet-stress.yml
+  # Lets this throwaway workflow be proven on the branch with `gh workflow run <file> --ref
+  # <branch>` without an empty commit, same rule this project applies to any job a pull request
+  # never exercises (plan 0002 WP2.8's ffmpeg/path lessons).
+  workflow_dispatch:
+
+concurrency:
+  group: spike-wp3.2-light-bullet-stress
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Forces the CPU adapter (lavapipe on Linux, contract §6): this measurement never touches a
+  # hardware GPU. GRIMOIRE_REQUIRE_GPU_ADAPTER turns a missing adapter into a hard failure instead
+  # of the test harness's usual skip-and-count (WP2.1 pattern) -- a measurement run skipping
+  # silently would report nothing and still turn the job green, exactly the failure mode WP2.8's
+  # "job no pull request runs" lesson warns about.
+  GRIMOIRE_GPU_ADAPTER: software
+  GRIMOIRE_REQUIRE_GPU_ADAPTER: "1"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: spikes/wp3.2-light-bullet-stress
+
+jobs:
+  measure:
+    name: measure (Linux, lavapipe software adapter)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      # Same package as ci.yml's own Linux test job ("Install software Vulkan (lavapipe)"): this
+      # spike is a standalone crate/workflow, so it needs its own install step rather than
+      # inheriting ci.yml's (WP2.8's lesson: install a needed tool explicitly, never assume it is
+      # already there).
+      - name: Install software Vulkan (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/wp3.2-light-bullet-stress
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      # Correctness only (tiny instance/light counts, no timing read): both render pipelines
+      # actually draw, the compute-clustering shader matches the CPU reference on a small grid.
+      # Never skipped here (GRIMOIRE_REQUIRE_GPU_ADAPTER=1 above) -- a silent skip would let a
+      # broken shader through to the measurement steps below unnoticed.
+      - name: cargo test (correctness, software adapter)
+        run: cargo test --locked
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Bullet stress (billboard vs. instanced low-poly mesh, 10k/20k instances)
+        run: |
+          mkdir -p results
+          ./target/release/bullet_stress | tee results/bullet_stress.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Light culling (CPU-froxel vs. compute-clustering, 256 lights)
+        run: |
+          ./target/release/light_cluster | tee results/light_cluster.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wp32-light-bullet-stress-results
+          path: spikes/wp3.2-light-bullet-stress/results/
+          if-no-files-found: error
+          retention-days: 30
