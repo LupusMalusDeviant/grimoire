@@ -102,6 +102,64 @@ fn format_adapter_line(
     )
 }
 
+/// Formats [`GpuContext::capability_report_lines`]; a free function so it is testable without a
+/// real adapter (WP3.1, downlevel check ahead of plan 0002 WP3.4's clustered forward+ pass).
+///
+/// Reports a fixed, meaningful subset of [`wgpu::DownlevelFlags`] (whether storage buffers can be
+/// read in the fragment stage, written in the fragment stage, used in compute, and used in the
+/// vertex stage) and the limits that bound the light/cluster storage buffers WP3.4 will need
+/// (`max_storage_buffers_per_shader_stage`, `max_storage_buffer_binding_size`, the compute
+/// workgroup size and invocation limits, `max_uniform_buffer_binding_size`, `max_bind_groups`,
+/// `max_texture_dimension_2d`) — not every field `wgpu::Limits` defines.
+fn format_capability_lines(
+    features: wgpu::Features,
+    downlevel: wgpu::DownlevelCapabilities,
+    limits: wgpu::Limits,
+) -> Vec<String> {
+    vec![
+        format!("grimoire-gpu-features: {features:?}"),
+        format!(
+            "grimoire-gpu-downlevel: shader_model={:?} fragment_storage={} fragment_writable_storage={} compute_shaders={} vertex_storage={}",
+            downlevel.shader_model,
+            downlevel
+                .flags
+                .contains(wgpu::DownlevelFlags::FRAGMENT_STORAGE),
+            downlevel
+                .flags
+                .contains(wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE),
+            downlevel
+                .flags
+                .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS),
+            downlevel
+                .flags
+                .contains(wgpu::DownlevelFlags::VERTEX_STORAGE),
+        ),
+        format!(
+            "grimoire-gpu-limits: max_storage_buffers_per_shader_stage={} max_storage_buffer_binding_size={} max_compute_workgroup_size={}x{}x{} max_compute_invocations_per_workgroup={} max_uniform_buffer_binding_size={} max_bind_groups={} max_texture_dimension_2d={}",
+            limits.max_storage_buffers_per_shader_stage,
+            limits.max_storage_buffer_binding_size,
+            limits.max_compute_workgroup_size_x,
+            limits.max_compute_workgroup_size_y,
+            limits.max_compute_workgroup_size_z,
+            limits.max_compute_invocations_per_workgroup,
+            limits.max_uniform_buffer_binding_size,
+            limits.max_bind_groups,
+            limits.max_texture_dimension_2d,
+        ),
+    ]
+}
+
+/// WebGL2/GLES 3.0 baseline (no storage buffers, no compute), so GL 3.3-class adapters qualify;
+/// resolution and buffer size follow the adapter. The default for [`GpuContext::new_offscreen`]
+/// and [`GpuContext::new_for_window`]; [`GpuContext::new_offscreen_with_limits`] (WP3.1) can ask
+/// for more.
+fn conservative_required_limits(adapter_limits: wgpu::Limits) -> wgpu::Limits {
+    wgpu::Limits {
+        max_buffer_size: adapter_limits.max_buffer_size,
+        ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter_limits)
+    }
+}
+
 /// `wgpu` requires `Debug` on the instance display handle; `dyn PlatformWindow` has none.
 struct WindowDisplay(Arc<dyn PlatformWindow>);
 
@@ -155,6 +213,38 @@ impl GpuContext {
             None,
             options,
             adapter_override,
+            wgpu::Features::empty(),
+            conservative_required_limits,
+        ))
+    }
+
+    /// Creates an offscreen context like [`GpuContext::new_offscreen`], but requests
+    /// `required_features` and limits built by `required_limits` (from the adapter's own limits)
+    /// instead of the conservative WebGL2 baseline [`GpuContext::new_offscreen`] uses.
+    ///
+    /// For probing or exercising capabilities beyond the shipping baseline (WP3.1, groundwork for
+    /// the light/cluster storage buffers of plan 0002 WP3.4's clustered forward+ pass); the
+    /// renderer itself keeps using [`GpuContext::new_offscreen`]. Honours [`ENV_GPU_ADAPTER`].
+    ///
+    /// # Errors
+    /// [`GpuError::NoAdapter`] if no adapter exists, [`GpuError::RequestDevice`] if the adapter
+    /// refuses a device with `required_features`/the limits `required_limits` computed.
+    pub fn new_offscreen_with_limits(
+        options: ContextOptions,
+        required_features: wgpu::Features,
+        required_limits: impl FnOnce(wgpu::Limits) -> wgpu::Limits,
+    ) -> Result<Self, GpuError> {
+        let adapter_override = AdapterOverride::from_env();
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        adapter_override.restrict_backends(&mut descriptor);
+        let instance = wgpu::Instance::new(descriptor);
+        pollster::block_on(Self::from_instance(
+            instance,
+            None,
+            options,
+            adapter_override,
+            required_features,
+            required_limits,
         ))
     }
 
@@ -190,6 +280,8 @@ impl GpuContext {
             Some(&surface),
             options,
             adapter_override,
+            wgpu::Features::empty(),
+            conservative_required_limits,
         ))?;
         let surface = WindowSurface::new(surface, window, &context, options.vsync)?;
         Ok((context, surface))
@@ -200,6 +292,8 @@ impl GpuContext {
         surface: Option<&wgpu::Surface<'static>>,
         options: ContextOptions,
         adapter_override: AdapterOverride,
+        required_features: wgpu::Features,
+        required_limits: impl FnOnce(wgpu::Limits) -> wgpu::Limits,
     ) -> Result<Self, GpuError> {
         let power_preference = if options.high_performance {
             wgpu::PowerPreference::HighPerformance
@@ -242,15 +336,10 @@ impl GpuContext {
         );
 
         let adapter_limits = adapter.limits();
-        // WebGL2/GLES 3.0 baseline (no storage buffers, no compute), so GL 3.3-class adapters
-        // qualify; resolution and buffer size follow the adapter.
-        let required_limits = wgpu::Limits {
-            max_buffer_size: adapter_limits.max_buffer_size,
-            ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter_limits)
-        };
+        let required_limits = required_limits(adapter_limits);
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("grimoire device"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits,
             ..Default::default()
         };
@@ -338,6 +427,23 @@ impl GpuContext {
         )
     }
 
+    /// Capability report lines for CI job summaries (WP3.1, downlevel check ahead of plan 0002
+    /// WP3.4's clustered forward+ pass): the *adapter's* own features, downlevel flags and limits.
+    /// These reflect what the hardware/driver can do, independent of whatever (possibly more
+    /// conservative) `required_features`/limits this particular [`GpuContext`]'s device was
+    /// created with — [`GpuContext::new_offscreen`]'s device, for example, is deliberately
+    /// restricted to a WebGL2 baseline that supports neither storage buffers nor compute at all.
+    /// Three greppable lines, expected once per test binary like
+    /// [`GpuContext::adapter_report_line`].
+    #[must_use]
+    pub fn capability_report_lines(&self) -> Vec<String> {
+        format_capability_lines(
+            self.adapter.features(),
+            self.adapter.get_downlevel_capabilities(),
+            self.adapter.limits(),
+        )
+    }
+
     /// Runs `create` while capturing out-of-memory and validation errors, turning them into a
     /// [`GpuError`] instead of the logging uncaptured-error handler.
     ///
@@ -414,5 +520,60 @@ mod tests {
             line,
             "grimoire-gpu-adapter: name=Microsoft Basic Render Driver backend=Dx12 device_type=Cpu driver=10.0.26200"
         );
+    }
+
+    #[test]
+    fn capability_lines_report_the_downlevel_flags_wp3_1_cares_about() {
+        let downlevel = wgpu::DownlevelCapabilities {
+            flags: wgpu::DownlevelFlags::FRAGMENT_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            limits: wgpu::DownlevelLimits::default(),
+            shader_model: wgpu::ShaderModel::Sm5,
+        };
+        let lines =
+            format_capability_lines(wgpu::Features::empty(), downlevel, wgpu::Limits::default());
+        assert_eq!(lines.len(), 3);
+        // `wgpu::Features`'s exact `Debug` formatting is `wgpu`'s to define; only the greppable
+        // prefix (what CI's report script matches on) is this crate's contract.
+        assert!(lines[0].starts_with("grimoire-gpu-features: "));
+        assert_eq!(
+            lines[1],
+            "grimoire-gpu-downlevel: shader_model=Sm5 fragment_storage=true fragment_writable_storage=false compute_shaders=true vertex_storage=false"
+        );
+        assert!(lines[2].starts_with("grimoire-gpu-limits: "));
+    }
+
+    #[test]
+    fn capability_lines_report_the_measured_limits_wp3_1_needs_for_clustered_forward_plus() {
+        let downlevel = wgpu::DownlevelCapabilities::default();
+        let limits = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 8,
+            max_storage_buffer_binding_size: 128 << 20,
+            max_compute_workgroup_size_x: 256,
+            max_compute_workgroup_size_y: 256,
+            max_compute_workgroup_size_z: 64,
+            max_compute_invocations_per_workgroup: 256,
+            max_uniform_buffer_binding_size: 64 << 10,
+            max_bind_groups: 4,
+            max_texture_dimension_2d: 8192,
+            ..wgpu::Limits::default()
+        };
+        let lines = format_capability_lines(wgpu::Features::empty(), downlevel, limits);
+        assert_eq!(
+            lines[2],
+            "grimoire-gpu-limits: max_storage_buffers_per_shader_stage=8 max_storage_buffer_binding_size=134217728 max_compute_workgroup_size=256x256x64 max_compute_invocations_per_workgroup=256 max_uniform_buffer_binding_size=65536 max_bind_groups=4 max_texture_dimension_2d=8192"
+        );
+    }
+
+    #[test]
+    fn conservative_required_limits_allow_neither_storage_buffers_nor_compute() {
+        let adapter_limits = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 8,
+            max_compute_invocations_per_workgroup: 256,
+            ..wgpu::Limits::default()
+        };
+        let required = conservative_required_limits(adapter_limits);
+        assert_eq!(required.max_storage_buffers_per_shader_stage, 0);
+        assert_eq!(required.max_compute_invocations_per_workgroup, 0);
+        assert_eq!(required.max_storage_buffer_binding_size, 0);
     }
 }

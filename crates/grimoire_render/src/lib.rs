@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+pub mod cluster_layout;
 mod mesh;
 mod mesh_pass;
 pub mod procedural;
