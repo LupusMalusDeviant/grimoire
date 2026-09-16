@@ -579,21 +579,22 @@ impl Renderer for WgpuRenderer {
     /// billboards with silhouette, palette and glow; their glow also yields a few bullet-cloud
     /// lights through [`crate::point_light_from_bullet`] (the `bullet_lights` module).
     /// `marker_sprites` and `debug_sprites` are drawn by the sprite pipeline through
-    /// [`crate::Camera2D`], like the world sprites. Point lights, the key light and ambient are validated and counted (as before
-    /// WP2.3) and, from WP2.5, actually shaded — every valid point light through the same GGX term
-    /// as the key light. From WP3.4 (engine ADR-0015 "compute clustering"), shading is clustered
-    /// forward+: lights are clamped to this renderer's configured [`crate::LightBudget`] (the
-    /// `Low 32`/`High 256` count budget, contract §6), a bullet light's contribution is capped per
-    /// [`crate::BulletLightCap`] (PRD-0003 rule 5 / FR-15), and a GPU compute pass assigns lights
-    /// to froxels instead of every fragment scanning every light. `StageStats::base.draw_calls`
-    /// counts every pass (contract §6: "draw_calls: alle Pässe") — the mesh pass's draw calls plus
-    /// the sprite pass's. A structurally valid mesh instance whose `mesh` handle was never
-    /// registered with this renderer (`WgpuRenderer::register_mesh`) is not counted in
-    /// [`StageStats::meshes_drawn`] but in [`StageStats::meshes_rejected_unregistered`] instead
-    /// (contract §6, PO decision V-20, 2026-09-16).
+    /// [`crate::Camera2D`], like the world sprites. Point lights, the key light and ambient are
+    /// validated and counted (as before WP2.3) and, from WP2.5, actually shaded — every valid
+    /// point light through the same GGX term as the key light. From WP3.4 (engine ADR-0015
+    /// "compute clustering"), shading is clustered forward+: lights are clamped to this renderer's
+    /// configured [`crate::LightBudget`] (the `Low 32`/`High 256` count budget, contract §6), a
+    /// bullet light's contribution is capped per [`crate::BulletLightCap`] (PRD-0003 rule 5 /
+    /// FR-15), and a GPU compute pass assigns lights to froxels instead of every fragment scanning
+    /// every light. `StageStats::base.draw_calls` counts every pass (contract §6: "draw_calls: alle
+    /// Pässe") — the mesh pass's draw calls plus those of every sprite channel and the bullet
+    /// pass. A structurally valid mesh instance whose `mesh` handle was never registered with this
+    /// renderer (`WgpuRenderer::register_mesh`) is not counted in [`StageStats::meshes_drawn`] but
+    /// in [`StageStats::meshes_rejected_unregistered`] instead (contract §6, PO decision V-20,
+    /// 2026-09-16).
     ///
     /// # Errors
-    /// Same as [`Renderer::render`], applied across both passes.
+    /// Same as [`Renderer::render`], applied across every pass.
     fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
         self.render_stage_impl(frame, true)
     }

@@ -1,6 +1,6 @@
-// Bullet pass, layer 6 (plan 0002 WP3.5, engine ADR-0014 "billboard impostors"). One instanced
-// draw call for every accepted bullet: the quad corners come from the vertex index, the
-// per-bullet data is a `BulletInstance` (24 bytes) read straight off its `#[repr(C)]` layout.
+// Bullet pass, layer 6 (plan 0002 WP3.5, engine ADR-0014 "billboard impostors"). Instanced draws
+// over every accepted bullet: the quad corners come from the vertex index, the per-bullet data is
+// a `BulletInstance` (24 bytes) read straight off its `#[repr(C)]` layout.
 //
 // Look (stylebook v0, "Bullets"): each bullet is a camera-facing billboard whose outline comes
 // from a signed-distance atlas indexed by `silhouette` (PRD-0003 rule 3 through a texture, not
@@ -30,7 +30,7 @@ struct Camera {
     viewport: vec4<f32>,
 }
 
-// Layout must match `BulletStyleGpu` in bullet_pass.rs (144 bytes).
+// Layout must match `BulletStyleGpu` in bullet_pass.rs (128 bytes).
 struct Style {
     body: array<vec4<f32>, PALETTE_COUNT>,
     core: array<vec4<f32>, PALETTE_COUNT>,
