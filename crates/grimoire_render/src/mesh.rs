@@ -44,7 +44,7 @@ mod vertex {
         /// mesh ever reaches [`crate::WgpuRenderer::register_mesh`].
         pub joints: [u16; 4],
         /// Skinning weight for each of [`MeshVertex::joints`], summing to `1.0` (tolerance `1e-3`,
-        /// checked by the pack decoder, not by [`MeshData::validate`] — see its doc comment).
+        /// checked by [`crate::mesh::MeshData::validate`] and, before that, by the pack decoder).
         pub weights: [f32; 4],
     }
 
