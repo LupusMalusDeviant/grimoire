@@ -696,8 +696,12 @@ pub enum RenderLayer { World, Vfx, PostFxResolve, Telegraphy, Bullets, PlayerMar
 
 *Freigegeben (PO, 2026-09-15; Stufe A nach PO-Entscheid V-20, §2b), einschließlich `ground_to_screen` und der
 Lesart, dass WP2.2 nur Lichtwerte prüft und die Licht-Anzahl (Low 32 / High 256) erst WP3.4 begrenzt. Das
-adversariale Review fand keine Blocker; offen vor WP3.4/WP3.5 bleibt, wie verbindlich `PointLight::is_bullet_light`
-aus dem Bullet-Kanal abgeleitet wird (PO-Entscheid ausstehend).*
+adversariale Review fand keine Blocker. **Klarstellung (PO-Entscheid, 2026-09-16, vor WP3.4):** Wie verbindlich
+`PointLight::is_bullet_light` aus dem Bullet-Kanal abgeleitet wird, ist entschieden — Geschoss-Lichter entstehen
+ausschließlich in der Engine, aus dem Bullet-Kanal, über `grimoire_render::point_light_from_bullet` (WP3.4,
+unten); dieser Weg setzt das Feld immer. Das Spiel baut solche Lichter nicht von Hand; ein Test
+(`point_light_from_bullet_always_sets_is_bullet_light`) sichert das für beliebige, auch strukturell ungültige
+Eingaben ab. WP3.5s Bullet-Pass leitet den tatsächlichen Bullet-Kanal später durch genau diesen Weg.*
 
 Additiv zu den P0-Typen (`Camera2D`, `SpriteInstance`, `RenderFrame` bleiben unverändert) und zum Bullet-Kanal
 oben. Realistischer PBR-Look statt Toon/Cel-Shading (Spiel-ADR-0014); Materialien sind glTF-Metallic-Roughness-
@@ -811,13 +815,15 @@ pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-00
   `ambient` setzt das jeweilige Bool-Flag. Ein Zähl-**Budget** (`Low 32`/`High 256`, PRD-0003 FR-11) gehört nach
   Plan 0002 WP3.4 zum Clustered-Forward+-Pass und ist bewusst **nicht** Teil dieses Vertrags — `RendererConfig`
   bleibt unverändert (§6, kein `#[non_exhaustive]`, ein neues Feld wäre inkompatibel), WP3.4 muss dafür einen
-  eigenen additiven Weg wählen, wie `StageFrame`/`StageStats` es hier vormachen.
+  eigenen additiven Weg wählen, wie `StageFrame`/`StageStats` es hier vormachen. **Umgesetzt:** siehe
+  „Clustered Forward+ und Lichtbudget" weiter unten (WP3.4, `StageRendererConfig`/`LightBudget`).
 - **Bullet-Licht-Obergrenze (PRD-0003 Regel 5 / FR-15):** `PointLight::is_bullet_light` markiert Lichter aus dem
   Bullet-Kanal; `StageFrame::bullet_light_cap` trägt den Obergrenzen-Parameter für ihren Bodenanteil
   (`floor_contribution`, 0.0..=1.0). Dieser Vertrag definiert nur den Haken — *wie* er die Shading-Gleichung
   begrenzt, legt die Stilbibel (WP2.7) fest und setzt der PBR-Pass um (WP3.4/WP3.5). `is_valid`/
   `clamped_floor_contribution` prüfen bzw. klemmen den Parameter selbst: ein nicht-endlicher Wert fällt sicher auf
-  `0.0` zurück (kein Bodenbeitrag von Bullet-Licht) statt NaN weiterzureichen.
+  `0.0` zurück (kein Bodenbeitrag von Bullet-Licht) statt NaN weiterzureichen. **Umgesetzt (WP3.4):** siehe
+  „Clustered Forward+ und Lichtbudget" weiter unten.
 - **Ambient:** `Flat` oder `Hemisphere` (PRD-0003 FR-01, „einfacher Umgebungsterm“); `StageFrame::ambient` ist
   nicht optional (Nullintensität statt `None` für „kein Ambient“).
 - **Persistenz über `clear()`:** `camera_25d`, `key_light`, `ambient` und `bullet_light_cap` beschreiben die
@@ -927,6 +933,96 @@ pub struct SkinBinding {                 // Debug, Clone, Copy, PartialEq, Eq, D
   (`grimoire::adapters::figure_assets`), die als einzige Crate beide Seiten kennt. Kein
   Vertragsbestandteil dieses Abschnitts; siehe §12 für das Pack-Format selbst und den
   Pull-Request-Text für die dort verwendeten `AssetKind`-Werte.
+
+**Clustered Forward+ und Lichtbudget (Ergänzung P1, Plan 0002 WP3.4, Engine-ADR-0015
+„Compute-Clustering", PO-Entscheid V-20, 2026-09-16)**
+
+Additiv zum Licht-Kanal oben (WP2.2) und zu `grimoire_render::cluster_layout` (WP3.1, Engine-ADR-0013,
+bis hierhin nicht verdrahtet). Kein bestehendes Feld ändert Typ oder Bedeutung; `cluster_layout`s
+Drei-Puffer-Layout (Lichtliste, Cluster-Tabelle, Index-Liste) bleibt unverändert — Engine-ADR-0015
+entschied nur, *wer* die Cluster-Tabelle und Index-Liste befüllt (ein Compute-Pass, nie die CPU), nie
+ihre Form.
+
+```rust
+// grimoire_render — additiv (WP3.4):
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LightBudget { #[default] Low, High }        // light_count(): 32 bzw. 256 (cluster_layout)
+#[non_exhaustive]
+pub struct StageRendererConfig { pub base: RendererConfig, pub light_budget: LightBudget }   // Default
+pub fn point_light_from_bullet(bullet: &BulletInstance) -> PointLight;   // setzt is_bullet_light immer
+
+impl WgpuRenderer {
+    pub fn new_for_window_staged(window: Arc<dyn PlatformWindow>, config: StageRendererConfig)
+        -> Result<Self, RenderError>;
+    pub fn new_offscreen_staged(width: u32, height: u32, config: StageRendererConfig)
+        -> Result<Self, RenderError>;
+    // new_for_window/new_offscreen (P0, Signatur unverändert) wählen LightBudget::default() (Low).
+}
+
+// StageStats (§6 oben) wächst additiv um Zähler:
+//   pub point_lights_over_budget: u32,       pub clusters_with_lights: u32,
+//   pub light_cluster_index_entries: u32,
+```
+
+**Semantik:**
+
+- **Der additive Weg für das Lichtbudget:** Dieser Vertrag (oben, WP2.2-Freigabe) schließt ein neues
+  `RendererConfig`-Feld ausdrücklich aus (kein `#[non_exhaustive]`, ein neues Feld bräche jede
+  Struct-Literal-Konstruktion) und verlangt von WP3.4 „einen eigenen additiven Weg ..., wie
+  `StageFrame`/`StageStats` es vormachen". Gewählt: `StageRendererConfig`, ein neuer,
+  `#[non_exhaustive]`er Nachbartyp mit `base: RendererConfig` plus `light_budget: LightBudget` —
+  dieselbe Form wie `StageFrame`/`StageStats` (Vertrag §2 Regel 13), hier auf einen
+  Konstruktionsparameter statt einen Frame-Kanal angewendet. `WgpuRenderer::new_for_window`/
+  `new_offscreen` behalten ihre bisherige Signatur (jeder bestehende Aufrufer bleibt gültig) und
+  wählen `LightBudget::default()` (`Low`, 32 Lichter) intern; `..._staged`-Gegenstücke wählen das
+  Budget explizit. Begründung für `Low` statt `High` als Default: die bisherige interne Obergrenze
+  war ebenfalls 32 (`mesh_pass::MAX_POINT_LIGHTS`, jetzt entfernt); `High` als stiller Default würde
+  jedem bestehenden Aufrufer, der nie mehr als eine Handvoll Lichter zeichnet, ungefragt die
+  achtfache Index-Listen-Größe zuweisen (bis zu 3,54 statt 0,44 MB, Engine-ADR-0013).
+- **Compute statt CPU (Engine-ADR-0015):** `grimoire_render::cluster_pass::ClusterPass` dispatcht
+  `cluster.wgsl` einmal je Frame (54 Arbeitsgruppen à 64 Threads für 3.456 Cluster); die Lichtliste
+  wird hochgeladen, Cluster-Tabelle und Index-Liste nie von der CPU beschrieben oder in der
+  Zeichenschleife zurückgelesen. `mesh.wgsl`s Fragment-Shader liest das Ergebnis aus Gruppe 4 (drei
+  nur-lesende Storage-Buffer) statt der bisherigen festen `array<PointLightGpu, 32>`; die Reihenfolge
+  (Compute schreibt, Fragment liest) ist allein durch die Warteschlangen-Einreihung sichergestellt —
+  kein `device.poll(Wait)` im heißen Pfad, genau die von Engine-ADR-0015 verlangte Eigenschaft.
+- **Zuordnungstest:** Ein Licht (Kugel: Position + Reichweite) wird einem Froxel zugeordnet, wenn die
+  Kugel dessen view-space-achsenausgerichtete Hülle schneidet — ein Kugel-gegen-Hülle-Test auf der
+  echten, perspektivischen Kamera-Basis, nicht auf abstrakten Rasterkoordinaten wie im WP3.2-Spike.
+  Die Hülle umschließt den tatsächlichen, spitz zulaufenden Frustum-Ausschnitt vollständig, sodass der
+  Test ein Licht höchstens zu Unrecht aufnimmt, nie zu Unrecht ausschließt (kein stilles Fallenlassen).
+- **Bullet-Licht-Obergrenze wirkt jetzt (PRD-0003 Regel 5 / FR-15):** `mesh_pass::build_light_list`
+  multipliziert die hochgeladene `intensity` eines Lichts mit `is_bullet_light == true` mit
+  `StageFrame::bullet_light_cap.clamped_floor_contribution()`, bevor es das Crate in Richtung GPU
+  verlässt — der einzige Ort, an dem der Haken angewendet wird; `mesh.wgsl` unterscheidet danach nicht
+  mehr, welches Licht ein Bullet-Licht war. `BulletLightCap::default()` trägt neu `0.25`
+  (Stilbibel-Vorschlag v0, `docs/art/stilbibel.md`, ausdrücklich vorläufig bis zum Look-Review P-11)
+  statt der bisherigen `1.0` (kein Zusatz-Deckel).
+- **Der einzige erlaubte Erzeugungsweg für Geschoss-Lichter:** `point_light_from_bullet` setzt
+  `is_bullet_light` immer und ist der einzige Ort im Crate, der das tut (siehe die Klarstellung zum
+  Licht-Kanal oben). Position, Reichweite, Intensität und Farbe sind vorläufige, im
+  Pull-Request-Text begründete Werte; bindend an dieser PO-Entscheidung ist nur, dass das Feld gesetzt
+  wird, nicht die konkreten Zahlen.
+- **Neue Zähler (`StageStats`):** `point_lights_over_budget` (wie viele der bereits gültigen
+  `point_lights_drawn` das konfigurierte `LightBudget` überschritten haben, aus demselben
+  strukturell berechneten Wert abgeleitet, nie ein zweites Mal geprüft), `clusters_with_lights`/
+  `light_cluster_index_entries` (wie viele der 3.456 Froxel mindestens ein Licht trugen bzw. die
+  Gesamtzahl der Licht-Cluster-Zuordnungen). Die beiden letzteren stammen aus einer
+  nicht-blockierenden Rücklese der (kleinen, budgetunabhängigen) Cluster-Tabelle und hinken dem
+  tatsächlichen GPU-Stand um etwa einen Frame hinterher — eine bewusste Entscheidung, um nicht
+  dieselbe blockierende CPU-Kostenfalle einzuführen, die Engine-ADR-0015 beim Messen selbst schon als
+  „pessimistisch gegenüber einem gepipelinten Renderer" kennzeichnet. Alle drei Zähler bleiben `0`
+  bei einem Renderer ohne konfiguriertes Lichtbudget bzw. ohne Compute-Clustering (`NullRenderer`) —
+  dieselbe capability-gated Zählweise, die `meshes_rejected_unregistered` bereits eingeführt hat.
+- **`grimoire_gpu`-Grenzen angehoben:** `conservative_required_limits` fordert neu mindestens drei
+  Storage-Buffer je Shader-Stufe (vorher höchstens einer, für die Knochenmatrizen-Palette), fünf
+  Bind-Gruppen (vorher vier) und Compute-Grenzen für eine `@workgroup_size(64)`-Dispatch über 54
+  Arbeitsgruppen (vorher `0`, Compute war ungenutzt) — dieselbe Art Abweichung, die die
+  Knochenverformung oben schon einmal begründet hat (kein aktuell unterstützter Adapter ist
+  betroffen, Engine-ADR-0013s Tabelle zeigt große Reserven auf allen drei Zieladaptern).
+- **`StageStats::point_lights_drawn`/`bullet_point_lights_drawn`:** unverändert — sie zählen
+  weiterhin jedes strukturell gültige Licht bzw. jedes davon mit `is_bullet_light`, unabhängig vom
+  konfigurierten Budget (dieser Vertrag, WP2.2).
 
 ## 7. `grimoire_ecs`
 

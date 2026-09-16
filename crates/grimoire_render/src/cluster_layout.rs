@@ -1,14 +1,19 @@
-//! Light and cluster data layout for the clustered forward+ pass (plan 0002 WP3.1, groundwork for
-//! WP3.4).
+//! Light and cluster data layout for the clustered forward+ pass (plan 0002 WP3.1, wired into the
+//! render pipeline by WP3.4).
 //!
-//! **Status:** this module is WP3.1 preparation, not yet part of the render contract (contract
-//! §6 explicitly defers the light budget and its storage layout to WP3.4: *"Ein Zähl-Budget (Low
-//! 32/High 256, PRD-0003 FR-11) gehört nach Plan 0002 WP3.4 zum Clustered-Forward+-Pass und ist
-//! bewusst nicht Teil dieses Vertrags"*). Nothing here is wired into [`crate::StageFrame`],
-//! [`crate::StageStats`] or [`crate::Renderer`]; WP3.4 chooses how (and whether unchanged) these
-//! types reach the render vertex/fragment/compute pipeline, subject to a contract PR (§2b) before
-//! it starts. Downlevel evidence for the storage-buffer access this layout assumes lives in
-//! `grimoire_gpu`'s `tests/downlevel.rs` and the crate's `capability_report_lines`.
+//! **Status:** frozen by WP3.1/engine ADR-0013 (`#[repr(C)]` types below, size/alignment tests) and
+//! now actually consumed (WP3.4, engine ADR-0015 "compute clustering"): `cluster_pass.rs` runs the
+//! GPU assignment this layout was designed for, and `mesh_pass.rs`/`mesh.wgsl` read its output
+//! (group 4) instead of the earlier fixed-size, unclustered light array. This module's own layout
+//! (the three buffer shapes, [`LIGHT_BUDGET_LOW`]/[`LIGHT_BUDGET_HIGH`]) is unchanged from WP3.1 —
+//! ADR-0015's decision was *who* fills the cluster table and index list (a compute shader, not the
+//! CPU), never their shape. Still not itself part of the render contract in the sense of carrying
+//! public contract types ([`crate::StageFrame`]/[`crate::StageStats`] stay the contract surface);
+//! see `docs/architektur/crate-vertraege.md` §6 for the additive path (`StageRendererConfig`,
+//! `LightBudget`) WP3.4 chose for the count budget contract §6 explicitly left open for it, and the
+//! new counters on [`crate::StageStats`]. Downlevel evidence for the storage-buffer access this
+//! layout assumes lives in `grimoire_gpu`'s `tests/downlevel.rs` and the crate's
+//! `capability_report_lines`.
 //!
 //! # The three buffers
 //!
@@ -135,6 +140,24 @@ pub const fn worst_case_total_bytes(light_budget: usize) -> usize {
         + light_index_list_worst_case_bytes(light_budget)
 }
 
+/// Flat index of froxel `(x, y, z)` into the cluster table / a per-cluster slice of the index list
+/// (WP3.4): `x + CLUSTER_GRID_X * (y + CLUSTER_GRID_Y * z)`. This module leaves the encoding
+/// unspecified up to WP3.1 (any consumer was free to pick one); WP3.4's compute-clustering pass
+/// (`cluster_pass.rs`, `cluster.wgsl`) and the mesh pass's fragment shader (`mesh.wgsl`) both use
+/// this exact formula so a cluster written by the former is read back at the same index by the
+/// latter — the one place that encoding is now pinned down, mirroring how [`CLUSTER_GRID_X`]/
+/// [`CLUSTER_GRID_Y`]/[`CLUSTER_GRID_Z`] and their WGSL literal counterparts stay in sync by
+/// convention, not by shared codegen (there is no WGSL/Rust bridge in this crate — see
+/// `mesh.wgsl`'s and `cluster.wgsl`'s own copies of this formula).
+///
+/// `x`, `y`, `z` are expected to already be in range (`< CLUSTER_GRID_X`/`_Y`/`_Z` respectively);
+/// out-of-range inputs still return a value (no panic, this is `const fn` arithmetic on `u32`), but
+/// it will not be a valid index into a [`CLUSTER_COUNT`]-sized buffer.
+#[must_use]
+pub const fn cluster_index(x: u32, y: u32, z: u32) -> usize {
+    (x + CLUSTER_GRID_X * (y + CLUSTER_GRID_Y * z)) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +207,21 @@ mod tests {
     fn worst_case_total_sums_all_three_buffers() {
         assert_eq!(worst_case_total_bytes(LIGHT_BUDGET_LOW), 471_040);
         assert_eq!(worst_case_total_bytes(LIGHT_BUDGET_HIGH), 3_574_784);
+    }
+
+    #[test]
+    fn cluster_index_is_x_fastest_then_y_then_z() {
+        assert_eq!(cluster_index(0, 0, 0), 0);
+        assert_eq!(cluster_index(1, 0, 0), 1);
+        assert_eq!(cluster_index(0, 1, 0), CLUSTER_GRID_X as usize);
+        assert_eq!(
+            cluster_index(0, 0, 1),
+            (CLUSTER_GRID_X * CLUSTER_GRID_Y) as usize
+        );
+        assert_eq!(
+            cluster_index(CLUSTER_GRID_X - 1, CLUSTER_GRID_Y - 1, CLUSTER_GRID_Z - 1),
+            CLUSTER_COUNT - 1
+        );
     }
 
     #[test]
