@@ -51,6 +51,15 @@
 //! casters (see [`crate::ShadowMode::KeyLightPlusPoints`]'s doc comment and this crate's WP2.6
 //! ADR).
 //!
+//! **Mipmaps and multisampling (texture-quality package, strand B1, 2026-09-16):**
+//! [`upload_texture`] generates a full CPU-side mip chain for every registered texture
+//! ([`generate_mip_chain`]) instead of uploading a single level; the sampler's `mipmap_filter` is
+//! `Linear` to match. Independently, [`MeshPass::render`]'s colour and depth targets multisample
+//! at [`crate::Msaa`]'s configured level (default [`crate::Msaa::X4`]) and resolve into the pass's
+//! previous, single-sample target before the sprite pass draws on top — the shadow pass and the
+//! cluster compute dispatch above stay single-sampled, unaffected by this field (see
+//! [`crate::Msaa`]'s doc comment for exactly what is and is not multisampled).
+//!
 //! Not part of the crate's public API (engine ADR-0002: `wgpu` stays invisible outside this
 //! crate and its `grimoire_gpu` dependency).
 
@@ -65,7 +74,7 @@ use crate::shadow_pass::{ShadowCaster, ShadowPass};
 use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight, MAX_SKIN_JOINTS};
 use crate::texture::{TextureData, TextureError, TextureRegistry};
 use crate::{
-    BlobShadowInstance, BulletLightCap, LightBudget, MeshHandle, MeshInstance, PbrMaterial,
+    BlobShadowInstance, BulletLightCap, LightBudget, MeshHandle, MeshInstance, Msaa, PbrMaterial,
     PointLight, RenderLayer, ShadowConfig, SkinBinding, TextureHandle,
 };
 
@@ -302,10 +311,16 @@ fn create_bone_buffer(context: &GpuContext, capacity: u32) -> Result<wgpu::Buffe
     })
 }
 
+/// Creates the mesh pass's depth buffer at `sample_count` (texture-quality package, strand B1:
+/// `1` for [`Msaa::Off`], `4` for [`Msaa::X4`] — [`Msaa::sample_count`]), matching whatever sample
+/// count the colour target this frame renders into uses (`msaa_color_view`/`view` in
+/// [`MeshPass::render`]): `wgpu` requires every attachment of a render pass, colour and depth
+/// alike, to agree on sample count.
 fn create_depth_view(
     context: &GpuContext,
     width: u32,
     height: u32,
+    sample_count: u32,
 ) -> Result<wgpu::TextureView, GpuError> {
     let texture = context.capture_errors(|device| {
         device.create_texture(&wgpu::TextureDescriptor {
@@ -316,7 +331,7 @@ fn create_depth_view(
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -324,6 +339,50 @@ fn create_depth_view(
         })
     })?;
     Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
+/// Creates the mesh pass's multisampled colour target (texture-quality package, strand B1,
+/// [`Msaa::X4`] only — [`MeshPass::render`] never has a `msaa_color_view` at all under
+/// [`Msaa::Off`], so this is never called then): a `RENDER_ATTACHMENT`-only texture at
+/// `sample_count` (never sampled or read back directly — [`MeshPass::render`] resolves it into
+/// the pass's previous, single-sample colour target every frame, exactly like the depth buffer
+/// above needing no `TEXTURE_BINDING` usage).
+fn create_msaa_color_view(
+    context: &GpuContext,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    sample_count: u32,
+) -> Result<wgpu::TextureView, GpuError> {
+    let texture = context.capture_errors(|device| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("grimoire mesh msaa colour target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+    })?;
+    Ok(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
+/// Multisample state shared by every pipeline drawn into the mesh pass's render pass (the rigid,
+/// skinned and blob-shadow pipelines — [`MeshPass::render`]'s header comment on draw order): all
+/// three must agree on sample count with each other and with the pass's colour/depth attachments,
+/// so this is the one place that builds it.
+fn multisample_state(sample_count: u32) -> wgpu::MultisampleState {
+    wgpu::MultisampleState {
+        count: sample_count,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+    }
 }
 
 fn upload_mesh(context: &GpuContext, data: &MeshData) -> Result<GpuMesh, GpuError> {
@@ -356,11 +415,256 @@ fn upload_mesh(context: &GpuContext, data: &MeshData) -> Result<GpuMesh, GpuErro
     })
 }
 
-/// Uploads `data`'s pixels to a new GPU texture: [`crate::TextureColorSpace::Srgb`] becomes
-/// `Rgba8UnormSrgb`, [`crate::TextureColorSpace::Linear`] becomes `Rgba8Unorm` (contract §6:
-/// base colour is sRGB, normal/ORM are linear). No mipmaps (see `texture.rs`'s module doc on
-/// scope).
+/// Decodes one sRGB-encoded channel (`0.0..=1.0`) to linear light, the exact transfer function
+/// `Rgba8UnormSrgb` hardware sampling applies (IEC 61966-2-1) — used here so the CPU-side mip
+/// averaging below agrees with what the GPU would compute if it could average texels itself.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.040_45 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Encodes one linear-light channel (`0.0..=1.0`) back to sRGB; the inverse of [`srgb_to_linear`].
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// `srgb_to_linear` for every possible input byte, computed once per process (mipmap CPU
+/// generation, texture-quality package strand B1). [`box_filter_downsample`] decodes every
+/// *source* texel it reads — the large majority of this module's sRGB transfer-function calls,
+/// since a full mip chain reads roughly 4/3 of a texture's source pixel count in total, each up to
+/// three channels — while only *encoding* once per (far fewer) output texel, so this table is
+/// worth building; a matching encode table is not, both because encode inputs are not bytes and
+/// because there are so many fewer of them. Values are bit-identical to calling
+/// [`srgb_to_linear`] directly (this table is exactly [`srgb_to_linear`]'s output at every byte
+/// value, not an approximation), so replacing the call with a lookup changes performance only,
+/// never a single averaged pixel's value.
+fn srgb_to_linear_lut() -> &'static [f32; 256] {
+    static TABLE: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0f32; 256];
+        for (byte, slot) in table.iter_mut().enumerate() {
+            *slot = srgb_to_linear(byte as f32 / 255.0);
+        }
+        table
+    })
+}
+
+/// Averages `texels` (anywhere from 1 to 9 RGBA8 texels — see [`box_filter_downsample`]'s doc
+/// comment for why the box can widen past 2x2 to a 2x3, 3x2 or 3x3 box at the last row/column of
+/// an odd source dimension) into one output texel for the next mip level (mipmap CPU generation,
+/// texture-quality package strand B1). `color_space` decides how the colour channels are
+/// averaged: [`crate::texture::TextureColorSpace::Srgb`] decodes each to linear, averages, then
+/// re-encodes (sRGB → linear → mitteln → sRGB, per the Festlegung);
+/// [`crate::texture::TextureColorSpace::Linear`] averages the raw bytes directly. Alpha is
+/// **always** averaged directly, regardless of `color_space`: `Rgba8UnormSrgb` only applies the
+/// sRGB transfer function to R/G/B on the GPU, never to A (it stays plain `Unorm`), so decoding
+/// alpha here would disagree with how the sampled texture is actually interpreted downstream.
+fn average_texels(texels: &[[u8; 4]], color_space: crate::texture::TextureColorSpace) -> [u8; 4] {
+    debug_assert!(!texels.is_empty() && texels.len() <= 9);
+    let count = texels.len() as f32;
+    let mut linear_sum = [0f32; 3];
+    let mut alpha_sum = 0f32;
+    let lut =
+        matches!(color_space, crate::texture::TextureColorSpace::Srgb).then(srgb_to_linear_lut);
+    for texel in texels {
+        for (channel, sum) in linear_sum.iter_mut().enumerate() {
+            *sum += match lut {
+                Some(table) => table[texel[channel] as usize],
+                None => f32::from(texel[channel]) / 255.0,
+            };
+        }
+        alpha_sum += f32::from(texel[3]) / 255.0;
+    }
+    let mut out = [0u8; 4];
+    for (channel, sum) in linear_sum.into_iter().enumerate() {
+        let mean_linear = sum / count;
+        let mean = match color_space {
+            crate::texture::TextureColorSpace::Srgb => linear_to_srgb(mean_linear),
+            crate::texture::TextureColorSpace::Linear => mean_linear,
+        };
+        out[channel] = (mean.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+    out[3] = ((alpha_sum / count).clamp(0.0, 1.0) * 255.0).round() as u8;
+    out
+}
+
+/// Downsamples one RGBA8 mip level (`width` x `height`, row-major, top row first) to the next
+/// (`next_width` x `next_height`) with a box filter (mipmap CPU generation, texture-quality
+/// package strand B1). `next_width`/`next_height` must each be `(dimension / 2).max(1)` (the same
+/// halving `wgpu` itself uses to size a texture's mip chain) — every *destination* column/row gets
+/// a source box of 2 columns/rows, **except the last one when the source dimension is odd**, whose
+/// box widens to 3 columns/rows, absorbing the one extra remaining source column/row instead of
+/// dropping it (so the last destination texel, when *both* dimensions are odd, draws from a 3x3 —
+/// up to 9-texel — box, not the usual 2x2). This way the chain's level count always matches what
+/// `wgpu` allows for `(width, height)` (`1 + floor(log2(max(width, height)))`, the standard mip
+/// chain length), and no source pixel is ever skipped or read out of bounds, for square,
+/// non-square and odd sizes alike.
+fn box_filter_downsample(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    next_width: u32,
+    next_height: u32,
+    color_space: crate::texture::TextureColorSpace,
+) -> Vec<u8> {
+    let mut out = vec![0u8; next_width as usize * next_height as usize * 4];
+    for dy in 0..next_height {
+        let y_start = dy * 2;
+        let y_count = if dy + 1 == next_height {
+            height - y_start
+        } else {
+            2
+        };
+        for dx in 0..next_width {
+            let x_start = dx * 2;
+            let x_count = if dx + 1 == next_width {
+                width - x_start
+            } else {
+                2
+            };
+            // At most 3x3 (both dimensions odd, last row and column at once).
+            let mut texels: [[u8; 4]; 9] = [[0; 4]; 9];
+            let mut count = 0usize;
+            for y in y_start..y_start + y_count {
+                for x in x_start..x_start + x_count {
+                    let index = (y as usize * width as usize + x as usize) * 4;
+                    texels[count] = [
+                        pixels[index],
+                        pixels[index + 1],
+                        pixels[index + 2],
+                        pixels[index + 3],
+                    ];
+                    count += 1;
+                }
+            }
+            let averaged = average_texels(&texels[..count], color_space);
+            let out_index = (dy as usize * next_width as usize + dx as usize) * 4;
+            out[out_index..out_index + 4].copy_from_slice(&averaged);
+        }
+    }
+    out
+}
+
+/// Builds the full mip chain for `data`'s pixels, level 0 first (a byte-for-byte copy of
+/// `data.pixels`) down to a final 1x1 level, each later level a box-filtered downsample of the one
+/// before it ([`box_filter_downsample`]). Pure CPU computation, no GPU dependency — matches
+/// [`crate::texture`]'s "entirely GPU-free" module doc comment; [`upload_texture`] is the only
+/// caller and does the actual GPU upload of every returned level.
+fn generate_mip_chain(data: &TextureData) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut levels: Vec<(u32, u32, Vec<u8>)> = vec![(data.width, data.height, data.pixels.clone())];
+    loop {
+        let (width, height) = {
+            let (width, height, _) = levels.last().expect("level 0 was pushed above");
+            (*width, *height)
+        };
+        if width == 1 && height == 1 {
+            break;
+        }
+        let next_width = (width / 2).max(1);
+        let next_height = (height / 2).max(1);
+        let next_pixels = {
+            let (_, _, pixels) = levels.last().expect("level 0 was pushed above");
+            box_filter_downsample(
+                pixels,
+                width,
+                height,
+                next_width,
+                next_height,
+                data.color_space,
+            )
+        };
+        levels.push((next_width, next_height, next_pixels));
+    }
+    levels
+}
+
+/// Uploads `data`'s pixels to a new GPU texture, plus its full CPU-generated mip chain (mipmap
+/// generation, texture-quality package strand B1): [`crate::TextureColorSpace::Srgb`] becomes
+/// `Rgba8UnormSrgb`, [`crate::TextureColorSpace::Linear`] becomes `Rgba8Unorm` (contract §6: base
+/// colour is sRGB, normal/ORM are linear).
+///
+/// **Mip generation lives here, on the CPU, not on the GPU:** [`generate_mip_chain`] computes
+/// every level via a box filter (sRGB pixels decoded to linear, averaged, re-encoded — see its doc
+/// comment) before any of it reaches the GPU; there is no compute- or render-pass-based
+/// downsampling pipeline in this crate, deliberately, since this package's [`TextureData`] only
+/// carries plain CPU pixels to begin with. No special-casing for normal maps: `mesh.wgsl`
+/// renormalizes the sampled normal after decoding regardless of which mip level was sampled, so an
+/// averaged (and therefore shorter-than-unit-length) normal vector in a lower mip is corrected
+/// there, exactly like a GPU-generated mip chain would need the same renormalization. The 1x1
+/// fallback textures ([`create_fallback_texture`]) are unaffected: they stay single-level, sampled
+/// unconditionally regardless of mip level. [`TextureData`] and the contract are unchanged — this
+/// is purely an upload-time implementation detail of this crate.
 fn upload_texture(context: &GpuContext, data: &TextureData) -> Result<GpuTexture, GpuError> {
+    let format = match data.color_space {
+        crate::texture::TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        crate::texture::TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
+    };
+    let levels = generate_mip_chain(data);
+    let mip_level_count = u32::try_from(levels.len()).unwrap_or(u32::MAX);
+    let size = wgpu::Extent3d {
+        width: data.width,
+        height: data.height,
+        depth_or_array_layers: 1,
+    };
+    let texture = context.capture_errors(|device| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("grimoire material texture"),
+            size,
+            mip_level_count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    })?;
+    // `TextureData::validate` (run by `TextureRegistry::register` before this is ever called)
+    // already guarantees `width * 4` fits a `u32` and `pixels.len() == width * height * 4`; every
+    // later level is this function's own output, already exactly `level_width * level_height * 4`
+    // bytes ([`box_filter_downsample`]).
+    for (level, (level_width, level_height, level_pixels)) in levels.iter().enumerate() {
+        context.queue().write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            level_pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(level_width * 4),
+                rows_per_image: Some(*level_height),
+            },
+            wgpu::Extent3d {
+                width: *level_width,
+                height: *level_height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(GpuTexture { texture, view })
+}
+
+/// Uploads `data`'s pixels as a single-level GPU texture, without [`generate_mip_chain`] — the
+/// pre-B1 upload path, kept only so
+/// [`crate::WgpuRenderer::register_texture_single_level_for_measurement`] can give
+/// `tests/offscreen.rs` a no-mipmap baseline to measure [`upload_texture`]'s relative cost against
+/// (mirrors [`crate::WgpuRenderer::render_stage_with_specular_aa`]'s reason for existing, applied
+/// to mip generation instead of specular AA). **Not part of the render contract** and never used by
+/// [`MeshPass::register_texture`], the only path a game ever calls.
+fn upload_texture_single_level(
+    context: &GpuContext,
+    data: &TextureData,
+) -> Result<GpuTexture, GpuError> {
     let format = match data.color_space {
         crate::texture::TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
         crate::texture::TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
@@ -372,7 +676,7 @@ fn upload_texture(context: &GpuContext, data: &TextureData) -> Result<GpuTexture
     };
     let texture = context.capture_errors(|device| {
         device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("grimoire material texture"),
+            label: Some("grimoire material texture (single-level measurement)"),
             size,
             mip_level_count: 1,
             sample_count: 1,
@@ -382,8 +686,6 @@ fn upload_texture(context: &GpuContext, data: &TextureData) -> Result<GpuTexture
             view_formats: &[],
         })
     })?;
-    // `TextureData::validate` (run by `TextureRegistry::register` before this is ever called)
-    // already guarantees `width * 4` fits a `u32` and `pixels.len() == width * height * 4`.
     context.queue().write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
@@ -651,6 +953,20 @@ pub(crate) struct MeshPass {
     texture_bind_groups: HashMap<TextureBindKey, wgpu::BindGroup>,
     instance_buffer: wgpu::Buffer,
     instance_capacity: u32,
+    /// Colour format of the pass's (single-sample) output target, kept only to recreate
+    /// `msaa_color_view` at a new size on [`MeshPass::resize`] (texture-quality package, strand
+    /// B1) — never a `wgpu` type this crate's public API exposes.
+    color_format: wgpu::TextureFormat,
+    /// Multisampling level chosen at construction (texture-quality package, strand B1), fixed for
+    /// this pass's lifetime like `light_budget` below — WP3.4's `light_budget` field is the
+    /// precedent for a construction-time-only render parameter.
+    msaa: Msaa,
+    /// The mesh pass's multisampled colour target, `Some` only under [`Msaa::X4`] — `None` under
+    /// [`Msaa::Off`], in which case [`MeshPass::render`] draws straight into its caller-provided
+    /// target exactly as before this field existed. Resolved into that target every frame when
+    /// `Some` ([`MeshPass::render`]'s render-pass `resolve_target`); recreated on
+    /// [`MeshPass::resize`] alongside `depth_view` below.
+    msaa_color_view: Option<wgpu::TextureView>,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     /// Key-light shadow map (plan 0002 WP2.6): depth texture, comparison sampler, its own
@@ -826,6 +1142,7 @@ fn create_skinned_pipeline(
     bone_bind_group_layout: &wgpu::BindGroupLayout,
     cluster_bind_group_layout: &wgpu::BindGroupLayout,
     color_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> Result<wgpu::RenderPipeline, GpuError> {
     let device = context.device();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -893,7 +1210,7 @@ fn create_skinned_pipeline(
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: multisample_state(sample_count),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
                 entry_point: Some("fs_main"),
@@ -914,11 +1231,15 @@ fn create_skinned_pipeline(
 /// depth-tested against the opaque meshes' depth buffer (`DEPTH_FORMAT`) but never depth-writing,
 /// vertex-pulled (no vertex buffer, only a per-instance one). Reuses `camera_bind_group_layout`
 /// (group 0) so it can be drawn with the same bind group as the opaque meshes, without a uniform
-/// buffer of its own (`blob_shadow.wgsl`'s header comment explains why that is sound).
+/// buffer of its own (`blob_shadow.wgsl`'s header comment explains why that is sound). `sample_count`
+/// (texture-quality package, strand B1) must match the rigid/skinned pipelines' above: all three
+/// draw into the same render pass ([`MeshPass::render`]'s header comment on draw order), so `wgpu`
+/// requires them to agree.
 fn create_blob_pipeline(
     context: &GpuContext,
     camera_bind_group_layout: &wgpu::BindGroupLayout,
     color_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> Result<wgpu::RenderPipeline, GpuError> {
     let device = context.device();
     let shader = context.capture_errors(|device| {
@@ -966,7 +1287,7 @@ fn create_blob_pipeline(
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: multisample_state(sample_count),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
@@ -1028,7 +1349,9 @@ impl MeshPass {
         width: u32,
         height: u32,
         light_budget: LightBudget,
+        msaa: Msaa,
     ) -> Result<Self, GpuError> {
+        let sample_count = msaa.sample_count();
         let device = context.device();
         let shader = context.capture_errors(|device| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1088,7 +1411,11 @@ impl MeshPass {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            // Trilinear filtering between mip levels (texture-quality package, strand B1): now
+            // that `upload_texture` always uploads a full mip chain, blending the two nearest
+            // levels avoids a visible seam where the shader's automatic LOD selection
+            // (`textureSample`'s implicit derivatives in `mesh.wgsl`) crosses a level boundary.
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         // Sampling these reproduces the material's plain factors exactly (mesh.wgsl's header
@@ -1187,7 +1514,7 @@ impl MeshPass {
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
-                multisample: wgpu::MultisampleState::default(),
+                multisample: multisample_state(sample_count),
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some("fs_main"),
@@ -1206,7 +1533,20 @@ impl MeshPass {
             })
         })?;
 
-        let depth_view = create_depth_view(context, width, height)?;
+        let depth_view = create_depth_view(context, width, height, sample_count)?;
+        // Multisampled colour target (texture-quality package, strand B1): only under
+        // `Msaa::X4` (`sample_count > 1`) — see `msaa_color_view`'s doc comment.
+        let msaa_color_view = if sample_count > 1 {
+            Some(create_msaa_color_view(
+                context,
+                color_format,
+                width,
+                height,
+                sample_count,
+            )?)
+        } else {
+            None
+        };
         let instance_capacity =
             16u32.min(mesh_instance_capacity(device.limits().max_buffer_size).max(1));
         let instance_buffer = create_mesh_instance_buffer(context, instance_capacity)?;
@@ -1214,7 +1554,12 @@ impl MeshPass {
         let shadow_pass = ShadowPass::new(context, &ShadowConfig::default())?;
         let shadow_sampling_bind_group =
             create_shadow_sampling_bind_group(context, &shadow_bind_group_layout, &shadow_pass);
-        let blob_pipeline = create_blob_pipeline(context, &camera_bind_group_layout, color_format)?;
+        let blob_pipeline = create_blob_pipeline(
+            context,
+            &camera_bind_group_layout,
+            color_format,
+            sample_count,
+        )?;
         let blob_instance_capacity =
             16u32.min(blob_instance_capacity(device.limits().max_buffer_size).max(1));
         let blob_instance_buffer = create_blob_instance_buffer(context, blob_instance_capacity)?;
@@ -1233,6 +1578,7 @@ impl MeshPass {
             &bone_bind_group_layout,
             cluster_pass.fragment_bind_group_layout(),
             color_format,
+            sample_count,
         )?;
         let skinned_instance_capacity =
             16u32.min(skinned_mesh_instance_capacity(device.limits().max_buffer_size).max(1));
@@ -1260,6 +1606,9 @@ impl MeshPass {
             texture_bind_groups: HashMap::new(),
             instance_buffer,
             instance_capacity,
+            color_format,
+            msaa,
+            msaa_color_view,
             depth_view,
             depth_size: (width.max(1), height.max(1)),
             shadow_pass,
@@ -1280,8 +1629,9 @@ impl MeshPass {
         })
     }
 
-    /// Recreates the depth buffer for a new colour target size; a no-op if `width`/`height` match
-    /// the current depth buffer already.
+    /// Recreates the depth buffer — and, under [`Msaa::X4`] (texture-quality package, strand B1),
+    /// the multisampled colour target — for a new colour target size; a no-op if `width`/`height`
+    /// match the current depth buffer already.
     pub(crate) fn resize(
         &mut self,
         context: &GpuContext,
@@ -1292,7 +1642,19 @@ impl MeshPass {
         if size == self.depth_size {
             return Ok(());
         }
-        self.depth_view = create_depth_view(context, width, height)?;
+        let sample_count = self.msaa.sample_count();
+        self.depth_view = create_depth_view(context, width, height, sample_count)?;
+        self.msaa_color_view = if sample_count > 1 {
+            Some(create_msaa_color_view(
+                context,
+                self.color_format,
+                width,
+                height,
+                sample_count,
+            )?)
+        } else {
+            None
+        };
         self.depth_size = size;
         Ok(())
     }
@@ -1359,6 +1721,28 @@ impl MeshPass {
     /// in a material simply falls back to the default texture (see [`MeshPass::texture_bind_key`]).
     pub(crate) fn is_texture_registered(&self, handle: TextureHandle) -> bool {
         self.gpu_textures.contains_key(&handle)
+    }
+
+    /// [`MeshPass::register_texture`], but via [`upload_texture_single_level`] instead of
+    /// [`upload_texture`] — see that function's doc comment for why this exists at all
+    /// (measurement only, never used by [`MeshPass::register_texture`] itself).
+    ///
+    /// # Errors
+    /// Same as [`MeshPass::register_texture`].
+    pub(crate) fn register_texture_single_level(
+        &mut self,
+        context: &GpuContext,
+        texture: TextureData,
+    ) -> Result<TextureHandle, TextureError> {
+        let handle = self.texture_registry.register(texture)?;
+        let data = self
+            .texture_registry
+            .get(handle)
+            .expect("just registered above, so it is present");
+        let gpu_texture = upload_texture_single_level(context, data)
+            .map_err(|error| TextureError::Gpu(error.to_string()))?;
+        self.gpu_textures.insert(handle, gpu_texture);
+        Ok(handle)
     }
 
     /// Resolves `material`'s three optional texture slots to a [`TextureBindKey`]: a handle that
@@ -1800,6 +2184,15 @@ impl MeshPass {
         let shadow_sampling_bind_group = &self.shadow_sampling_bind_group;
         let instance_buffer = &self.instance_buffer;
         let depth_view = &self.depth_view;
+        // Multisampled colour target (texture-quality package, strand B1): under `Msaa::X4`, the
+        // pass renders into `msaa_color_view` and resolves into the caller-provided `view`
+        // (`resolve_target`); the multisampled attachment itself is discarded afterwards (only the
+        // resolved image is ever read back or presented). Under `Msaa::Off` this is exactly the
+        // pre-B1 render pass: straight into `view`, no resolve.
+        let (color_view, resolve_target, color_store) = match self.msaa_color_view.as_ref() {
+            Some(msaa_view) => (msaa_view, Some(view), wgpu::StoreOp::Discard),
+            None => (view, None, wgpu::StoreOp::Store),
+        };
         let blob_pipeline = &self.blob_pipeline;
         let skinned_pipeline = &self.skinned_pipeline;
         let skinned_instance_buffer = &self.skinned_instance_buffer;
@@ -1817,12 +2210,12 @@ impl MeshPass {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("grimoire mesh pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
+                        view: color_view,
                         depth_slice: None,
-                        resolve_target: None,
+                        resolve_target,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(clear_color),
-                            store: wgpu::StoreOp::Store,
+                            store: color_store,
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -2687,5 +3080,173 @@ mod tests {
     #[test]
     fn point_light_falloff_at_zero_distance_is_at_most_one() {
         assert!(point_light_falloff(0.0, 10.0) <= 1.0);
+    }
+
+    // --- Mipmap CPU generation (texture-quality package, strand B1) ----------------------------
+
+    use crate::texture::TextureColorSpace;
+
+    fn texture(width: u32, height: u32, color_space: TextureColorSpace) -> TextureData {
+        TextureData {
+            width,
+            height,
+            pixels: vec![0u8; width as usize * height as usize * 4],
+            color_space,
+        }
+    }
+
+    /// The mip chain's level count `wgpu` itself would allow for `(width, height)`
+    /// (`1 + floor(log2(max(width, height)))`, the standard chain length every GPU texture mip
+    /// chain follows) — [`generate_mip_chain`] must match this exactly, or [`upload_texture`]'s
+    /// `mip_level_count` would either under-use the chain or fail `wgpu`'s texture validation.
+    fn expected_level_count(width: u32, height: u32) -> usize {
+        let largest = width.max(height).max(1);
+        (32 - largest.leading_zeros()) as usize
+    }
+
+    #[test]
+    fn mip_chain_level_count_matches_wgpu_for_several_sizes() {
+        for &(width, height) in &[
+            (1, 1),
+            (2, 2),
+            (4, 4),
+            (5, 5),
+            (8, 3),
+            (3, 8),
+            (7, 1),
+            (1, 7),
+            (128, 64),
+            (129, 65),
+        ] {
+            let levels = generate_mip_chain(&texture(width, height, TextureColorSpace::Linear));
+            assert_eq!(
+                levels.len(),
+                expected_level_count(width, height),
+                "size {width}x{height}"
+            );
+            // Every level halves (floored, minimum 1) the one before it, and the chain always
+            // bottoms out at exactly 1x1 — never smaller, never skipped.
+            let (last_width, last_height, last_pixels) = levels.last().expect("at least level 0");
+            assert_eq!((*last_width, *last_height), (1, 1));
+            assert_eq!(last_pixels.len(), 4);
+            let (first_width, first_height, _) = levels[0];
+            assert_eq!((first_width, first_height), (width, height));
+        }
+    }
+
+    #[test]
+    fn mip_chain_never_shrinks_a_dimension_below_one() {
+        // A 1-pixel-wide (or -tall) texture: every level must keep that dimension at exactly 1,
+        // never 0, and never read past it (see `box_filter_downsample`'s doc comment).
+        let levels = generate_mip_chain(&texture(1, 16, TextureColorSpace::Linear));
+        assert!(levels.iter().all(|(width, _, _)| *width == 1));
+        assert_eq!(levels.last().expect("at least level 0").1, 1);
+    }
+
+    /// Odd-sized downsampling must not drop the last row/column: three columns of a *linear*
+    /// (not sRGB, so no transfer-function rounding to account for) single-channel texture average
+    /// to their arithmetic mean once `next_width` reaches `1` and every column is absorbed into
+    /// that one destination texel — computable by hand: `(0 + 90 + 180) / 3 = 90`.
+    #[test]
+    fn odd_width_downsample_absorbs_every_column_instead_of_dropping_the_last() {
+        let data = TextureData {
+            width: 3,
+            height: 1,
+            pixels: vec![
+                0, 0, 0, 255, // column 0
+                90, 90, 90, 255, // column 1
+                180, 180, 180, 255, // column 2
+            ],
+            color_space: TextureColorSpace::Linear,
+        };
+        let levels = generate_mip_chain(&data);
+        assert_eq!(levels.len(), 2, "3x1 -> 1x1, no intermediate level");
+        let (width, height, pixels) = &levels[1];
+        assert_eq!((*width, *height), (1, 1));
+        assert_eq!(pixels, &vec![90, 90, 90, 255]);
+    }
+
+    /// A genuine 1xN texture (the spec's explicit edge case): width stays `1` throughout, only
+    /// height halves each level. Values chosen so every intermediate average is an exact integer,
+    /// independently computable: rows `10, 20, 30, 40` -> `15, 35` -> `25`.
+    #[test]
+    fn one_by_n_texture_mip_chain_matches_hand_computed_means() {
+        let data = TextureData {
+            width: 1,
+            height: 4,
+            pixels: vec![
+                10, 0, 0, 255, // row 0
+                20, 0, 0, 255, // row 1
+                30, 0, 0, 255, // row 2
+                40, 0, 0, 255, // row 3
+            ],
+            color_space: TextureColorSpace::Linear,
+        };
+        let levels = generate_mip_chain(&data);
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0].0, 1);
+        assert_eq!(levels[1].2, vec![15, 0, 0, 255, 35, 0, 0, 255]);
+        assert_eq!(levels[2].2, vec![25, 0, 0, 255]);
+    }
+
+    #[test]
+    fn identical_srgb_texels_average_to_the_same_value() {
+        // Decode-average-encode is the identity when every input texel already agrees: the
+        // "known mean" is trivially the value itself, independent of the sRGB transfer function's
+        // exact shape.
+        let data = TextureData {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                200, 150, 50, 255, 200, 150, 50, 255, //
+                200, 150, 50, 255, 200, 150, 50, 255,
+            ],
+            color_space: TextureColorSpace::Srgb,
+        };
+        let levels = generate_mip_chain(&data);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[1].2, vec![200, 150, 50, 255]);
+    }
+
+    /// The sRGB case's known mean, worked out by hand (also in this test's own doc comment so the
+    /// number is auditable without running the test): a 2x2 checkerboard of sRGB-encoded black
+    /// (`0`) and white (`255`) decodes to linear `0.0`/`1.0` (both endpoints of the sRGB transfer
+    /// function are fixed points, so no curve arithmetic needed there), averages to linear `0.5`,
+    /// and `1.055 * 0.5^(1/2.4) - 0.055 ≈ 0.7354`, i.e. byte `188` — nowhere near the naive
+    /// (colour-space-unaware) byte average of `(0 + 0 + 255 + 255) / 4 = 128`, which is exactly
+    /// the bug this test would catch. Alpha is checked separately: it is never sRGB-decoded
+    /// (`Rgba8UnormSrgb` only applies the transfer function to R/G/B), so the same `0`/`255`
+    /// checkerboard averages there as a plain byte mean, `127.5` rounded to `128`.
+    #[test]
+    fn known_mean_srgb_checkerboard_matches_hand_computed_value() {
+        let data = TextureData {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                0, 0, 0, 0, 255, 255, 255, 255, //
+                255, 255, 255, 255, 0, 0, 0, 0,
+            ],
+            color_space: TextureColorSpace::Srgb,
+        };
+        let levels = generate_mip_chain(&data);
+        let (width, height, pixels) = &levels[1];
+        assert_eq!((*width, *height), (1, 1));
+        assert_eq!(&pixels[0..3], &[188, 188, 188], "sRGB-aware RGB mean");
+        assert_eq!(
+            pixels[3], 128,
+            "alpha is averaged linearly, never sRGB-decoded"
+        );
+    }
+
+    #[test]
+    fn srgb_and_linear_transfer_functions_round_trip_within_rounding() {
+        for &byte in &[0u8, 1, 16, 64, 128, 200, 254, 255] {
+            let value = f32::from(byte) / 255.0;
+            let round_tripped = linear_to_srgb(srgb_to_linear(value));
+            assert!(
+                (round_tripped - value).abs() < 1e-4,
+                "byte {byte}: {round_tripped} vs {value}"
+            );
+        }
     }
 }

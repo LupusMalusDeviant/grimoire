@@ -169,6 +169,7 @@ impl WgpuRenderer {
             width,
             height,
             config.light_budget,
+            config.msaa,
         )
         .map_err(map_gpu_error)?;
         Ok(Self {
@@ -233,6 +234,7 @@ impl WgpuRenderer {
             width,
             height,
             config.light_budget,
+            config.msaa,
         )
         .map_err(map_gpu_error)?;
         Ok(Self {
@@ -304,6 +306,27 @@ impl WgpuRenderer {
         texture: TextureData,
     ) -> Result<TextureHandle, TextureError> {
         self.mesh_pass.register_texture(&self.context, texture)
+    }
+
+    /// Measurement hook (texture-quality package, strand B1): registers `texture` exactly like
+    /// [`WgpuRenderer::register_texture`], except it uploads only mip level 0 — no CPU-side mip
+    /// chain generation at all — so `tests/offscreen.rs` can measure
+    /// [`WgpuRenderer::register_texture`]'s relative cost against a no-mipmap baseline on the same
+    /// public API a game would use. Mirrors [`WgpuRenderer::render_stage_with_specular_aa`]'s
+    /// reason for existing (OF-3.5), applied to mip generation instead.
+    ///
+    /// **Not part of the render contract** and not meant for production use: a game always calls
+    /// [`WgpuRenderer::register_texture`]. May disappear once this measurement is no longer
+    /// needed.
+    ///
+    /// # Errors
+    /// Same as [`WgpuRenderer::register_texture`].
+    pub fn register_texture_single_level_for_measurement(
+        &mut self,
+        texture: TextureData,
+    ) -> Result<TextureHandle, TextureError> {
+        self.mesh_pass
+            .register_texture_single_level(&self.context, texture)
     }
 }
 

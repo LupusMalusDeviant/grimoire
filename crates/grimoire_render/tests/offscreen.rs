@@ -19,9 +19,9 @@ use std::time::Duration;
 use grimoire_render::procedural::{altar_block, floor_tile_grid, icosphere};
 use grimoire_render::{
     AmbientLight, BlobShadowInstance, Camera2D, Camera25D, DirectionalLight, MaterialHandle,
-    MeshHandle, MeshInstance, PbrMaterial, PointLight, RenderError, RenderFrame, Renderer,
-    RendererConfig, ShadowMode, SpriteInstance, StageFrame, TextureColorSpace, TextureData,
-    TextureHandle, WgpuRenderer, shape,
+    MeshHandle, MeshInstance, Msaa, PbrMaterial, PointLight, RenderError, RenderFrame, Renderer,
+    RendererConfig, ShadowMode, SpriteInstance, StageFrame, StageRendererConfig, TextureColorSpace,
+    TextureData, TextureHandle, WgpuRenderer, shape,
 };
 
 const SIZE: u32 = 64;
@@ -1315,4 +1315,146 @@ fn measure_ten_thousand_sprite_cpu_time() {
         total / frames,
         wall.elapsed()
     );
+}
+
+// --- Texture-quality package, strand B1: mipmap and multisampling cost measurements -------------
+
+fn offscreen_renderer_staged(
+    width: u32,
+    height: u32,
+    initial_sprite_capacity: u32,
+    msaa: Msaa,
+) -> Option<WgpuRenderer> {
+    // `StageRendererConfig` is `#[non_exhaustive]`: even `..Default::default()` struct-update
+    // syntax is rejected outside its defining crate, so this builds it field by field instead
+    // (the same pattern `snapshot_scenes.rs` already uses for other non-exhaustive/default types).
+    let mut config = StageRendererConfig::default();
+    config.base = RendererConfig {
+        vsync: false,
+        initial_sprite_capacity,
+        allow_software_fallback: true,
+    };
+    config.msaa = msaa;
+    match WgpuRenderer::new_offscreen_staged(width, height, config) {
+        Ok(renderer) => {
+            report_adapter_once(&renderer);
+            Some(renderer)
+        }
+        Err(RenderError::NoAdapter) => {
+            let required = std::env::var(ENV_REQUIRE_GPU_ADAPTER).ok();
+            skip_without_adapter(adapter_required(required.as_deref()));
+            None
+        }
+        Err(error) => panic!("offscreen renderer creation failed: {error}"),
+    }
+}
+
+fn median(durations: &mut [Duration]) -> Duration {
+    durations.sort();
+    durations[durations.len() / 2]
+}
+
+/// Texture-quality package strand B1 measurement: relative CPU-side frame cost of the mesh pass's
+/// 4x multisampling ([`Msaa::X4`], the default) against no multisampling ([`Msaa::Off`]), on the
+/// same 500-mesh-plus-10k-sprite stress scene [`measure_specular_aa_relative_cost_and_shimmer`]
+/// uses. Software-adapter timings only, never a GPU budget (see that test's doc comment for why);
+/// run explicitly with `GRIMOIRE_GPU_ADAPTER=software cargo test -p grimoire_render --test
+/// offscreen -- --ignored --nocapture measure_msaa`.
+#[test]
+#[ignore = "texture-quality B1 measurement, run explicitly (see this test's doc comment)"]
+fn measure_msaa_relative_cost() {
+    for msaa in [Msaa::Off, Msaa::X4] {
+        let Some(mut renderer) = offscreen_renderer_staged(1280, 720, 16_384, msaa) else {
+            return;
+        };
+        let (meshes, materials) = mesh_swarm(&mut renderer, 500);
+
+        let mut frame = StageFrame::new();
+        frame.base.clear_color = [0.02, 0.02, 0.03, 1.0];
+        frame.base.camera = Camera2D {
+            center: [0.0, 0.0],
+            world_height: 100.0,
+        };
+        frame.base.sprites = swarm(10_000);
+        frame.camera_25d = Some(top_down_camera());
+        full_bright_lighting(&mut frame);
+        frame.materials = materials;
+        frame.meshes = meshes;
+        for i in 0..8 {
+            frame.point_lights.push(point_light(
+                [(i as f32 - 4.0) * 12.0, (i as f32 * 7.0).sin() * 20.0, 6.0],
+                25.0,
+                2.0,
+            ));
+        }
+
+        for _ in 0..5 {
+            renderer.render_stage(&frame).expect("warm-up render");
+        }
+        renderer.read_offscreen_rgba().expect("flush");
+        // `RenderStats::cpu_time` only covers command *encoding*, not actual completion (`submit`
+        // does not block) — MSAA's extra work happens on the WARP driver thread and would not show
+        // up there at all. Wall-clock time around the whole batch, forced to completion by a final
+        // `read_offscreen_rgba` (a blocking map-and-read), is what actually reflects it.
+        let frames = 30;
+        let mut cpu_time_total = Duration::ZERO;
+        let wall_start = std::time::Instant::now();
+        for _ in 0..frames {
+            let stats = renderer.render_stage(&frame).expect("render");
+            cpu_time_total += stats.base.cpu_time;
+        }
+        renderer.read_offscreen_rgba().expect("flush");
+        let wall_total = wall_start.elapsed();
+        println!(
+            "backend {} (software adapter, NOT a GPU budget): msaa={msaa:?}, 500 meshes + 10k sprites, {frames} frames: cpu_time avg {:?}, wall-clock avg (incl. driver completion) {:?}",
+            renderer.backend_name(),
+            cpu_time_total / frames,
+            wall_total / frames
+        );
+    }
+}
+
+/// Texture-quality package strand B1 measurement: relative cost (CPU box-filter generation plus
+/// GPU upload of every level) of [`WgpuRenderer::register_texture`]'s full mip chain against
+/// uploading only mip level 0
+/// ([`WgpuRenderer::register_texture_single_level_for_measurement`], a measurement-only hook — see
+/// its doc comment), for a few representative base-colour texture sizes. Median of 5 per-call
+/// timings, software-adapter timings only. Run explicitly with `GRIMOIRE_GPU_ADAPTER=software
+/// cargo test -p grimoire_render --test offscreen -- --ignored --nocapture measure_mipmap`.
+#[test]
+#[ignore = "texture-quality B1 measurement, run explicitly (see this test's doc comment)"]
+fn measure_mipmap_generation_relative_cost() {
+    let Some(mut renderer) = offscreen_renderer(64, 64, 16) else {
+        return;
+    };
+    for &size in &[256u32, 512, 1024, 2048] {
+        let pixels = vec![128u8; size as usize * size as usize * 4];
+        let sample = || TextureData {
+            width: size,
+            height: size,
+            pixels: pixels.clone(),
+            color_space: TextureColorSpace::Srgb,
+        };
+
+        let mut with_mips = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            renderer.register_texture(sample()).expect("valid texture");
+            with_mips.push(start.elapsed());
+        }
+        let mut without_mips = Vec::new();
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            renderer
+                .register_texture_single_level_for_measurement(sample())
+                .expect("valid texture");
+            without_mips.push(start.elapsed());
+        }
+        println!(
+            "backend {} (software adapter, NOT a GPU budget): {size}x{size} base-colour texture, 5 calls: with mips median {:?}, without mips median {:?}",
+            renderer.backend_name(),
+            median(&mut with_mips),
+            median(&mut without_mips),
+        );
+    }
 }
