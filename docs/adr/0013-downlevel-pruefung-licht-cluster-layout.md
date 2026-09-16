@@ -1,6 +1,6 @@
 # ADR-0013: Downlevel-Prüfung und Licht-/Cluster-Datenlayout für Clustered Forward+ (WP3.1)
 
-- **Status:** Vorgeschlagen (2026-09-16; PO-Entscheid aussteht)
+- **Status:** Akzeptiert (PO, 2026-09-16)
 - **Datum:** 2026-09-16
 - **Entscheider:** Lupus Malus Deviant (PO), Entscheidung aussteht; vorbereitet durch Claude
 - **Bezug:** Plan 0002 WP3.1 (Spiel-Repo), Risiko R2 (Plan 0002: „256 Clustered Lights + 10k

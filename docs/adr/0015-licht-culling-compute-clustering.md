@@ -1,6 +1,6 @@
 # ADR-0015: Licht-Culling — Compute-Clustering statt CPU-Froxel-Zuordnung
 
-- **Status:** Vorgeschlagen (2026-09-16; PO-Entscheid aussteht)
+- **Status:** Akzeptiert (PO, 2026-09-16)
 - **Datum:** 2026-09-16
 - **Entscheider:** Lupus Malus Deviant (PO), Entscheidung aussteht; vorbereitet durch Claude
 - **Bezug:** Spiel-Repo Plan 0002 WP3.2/WP3.3; [PRD-0003](https://github.com/LupusMalusDeviant/fiends-n-patrons/blob/main/docs/prd/0003-rendering-und-art.md)

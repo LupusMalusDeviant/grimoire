@@ -1,6 +1,6 @@
 # ADR-0011: Kantenglättung für Glanzlichter — geometrisches Spekular-Anti-Aliasing statt TAA (OF-3.5)
 
-- **Status:** Vorgeschlagen (2026-09-16; PO-Entscheid aussteht)
+- **Status:** Akzeptiert (PO, 2026-09-16)
 - **Datum:** 2026-09-16
 - **Entscheider:** Lupus Malus Deviant (PO), Entscheidung aussteht; vorbereitet durch Claude
 - **Bezug:** Spiel-Repo [ADR-0014](https://github.com/LupusMalusDeviant/fiends-n-patrons/blob/main/docs/adr/0014-realistischer-3d-look-statt-toon.md)

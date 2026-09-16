@@ -19,10 +19,10 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 | [0008](0008-crate-map-erweiterung-p1.md) | Crate-Map-Erweiterung P1 (akzeptiert 2026-09-15; Nummer vorläufig bis zum Merge) |
 | [0009](0009-lizenz-alle-rechte-vorbehalten.md) | Lizenz der Engine: Alle Rechte vorbehalten (Nummer vorläufig bis zum Merge der P1-Branches) |
 | [0010](0010-benchmark-strategie.md) | Benchmark-Strategie für das Regressions-Gate (OF-17.3, akzeptiert 2026-09-15) |
-| [0011](0011-spekulares-anti-aliasing-statt-taa.md) | Kantenglättung für Glanzlichter: geometrisches Spekular-Anti-Aliasing statt TAA (OF-3.5, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
-| [0012](0012-schatten-key-light-shadowmap-plus-blob.md) | Schatten: Shadowmap für das Key-Light plus Blob-Schatten (OF-3.2, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge; Punktlicht-Schattenwerfer zurückgestellt) |
-| [0013](0013-downlevel-pruefung-licht-cluster-layout.md) | Downlevel-Prüfung und Licht-/Cluster-Datenlayout für Clustered Forward+ (WP3.1, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
-| [0014](0014-bullet-darstellung-billboard-impostor.md) | Bullet-Darstellung: Billboard-Impostor statt instanzierte Low-Poly-Meshes (OF-3.3, vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
-| [0015](0015-licht-culling-compute-clustering.md) | Licht-Culling: Compute-Clustering statt CPU-Froxel-Zuordnung (vorgeschlagen 2026-09-16, Nummer vorläufig bis zum Merge) |
+| [0011](0011-spekulares-anti-aliasing-statt-taa.md) | Kantenglättung für Glanzlichter: geometrisches Spekular-Anti-Aliasing statt TAA (OF-3.5, angenommen 2026-09-16) |
+| [0012](0012-schatten-key-light-shadowmap-plus-blob.md) | Schatten: Shadowmap für das Key-Light plus Blob-Schatten (OF-3.2, angenommen 2026-09-16; Punktlicht-Schattenwerfer zurückgestellt) |
+| [0013](0013-downlevel-pruefung-licht-cluster-layout.md) | Downlevel-Prüfung und Licht-/Cluster-Datenlayout für Clustered Forward+ (WP3.1, angenommen 2026-09-16) |
+| [0014](0014-bullet-darstellung-billboard-impostor.md) | Bullet-Darstellung: Billboard-Impostor statt instanzierte Low-Poly-Meshes (OF-3.3, angenommen 2026-09-16) |
+| [0015](0015-licht-culling-compute-clustering.md) | Licht-Culling: Compute-Clustering statt CPU-Froxel-Zuordnung (angenommen 2026-09-16) |
 
 Den aktuellen Status jeder Entscheidung nennt ihre Datei.
