@@ -197,6 +197,28 @@ jobs:
         env:
           RUNNER_LABEL: ${{ matrix.os }}
         run: bash .github/scripts/report-gpu-adapter.sh "$RUNNER_LABEL" ci-logs/test.log ci-logs/test-offscreen-cpu.log
+      # WP3.1 downlevel check ahead of WP3.4 (clustered forward+): proves the local dev workflow's
+      # forced software adapter (see the offscreen step above) also runs the two functional-proof
+      # pipelines in `grimoire_gpu`'s `tests/downlevel.rs` (a fragment shader reading a storage
+      # buffer, a compute pass writing one). macOS has no CPU adapter, so its downlevel numbers
+      # come from the auto-selected adapter already exercised in the "Test" step above instead
+      # (same reasoning as the offscreen step).
+      - name: Test WP3.1 downlevel capability probe on the CPU adapter
+        if: runner.os != 'macOS'
+        env:
+          GRIMOIRE_GPU_ADAPTER: software
+          GRIMOIRE_REQUIRE_GPU_ADAPTER: "1"
+        run: |
+          mkdir -p ci-logs
+          cargo test --workspace --test downlevel --locked 2>&1 | tee ci-logs/test-downlevel-cpu.log
+      # Features, downlevel flags and limits the adapter actually reported, per runner, plus how
+      # many WP3.1 tests skipped for lack of an adapter or capability. Runs even if a Test step
+      # above failed, so a red run still says what it measured.
+      - name: Report WP3.1 downlevel capabilities
+        if: ${{ !cancelled() }}
+        env:
+          RUNNER_LABEL: ${{ matrix.os }}
+        run: bash .github/scripts/report-gpu-downlevel.sh "$RUNNER_LABEL" ci-logs/test.log ci-logs/test-downlevel-cpu.log
       # Plan 0002 WP2.8: the three deterministic render test scenes (`pbr_materials`, `shadows`,
       # `camera_tilt`), rendered on the software adapter and compared against a per-platform
       # reference in WARNING MODE (a mismatch is reported, never fails this step — see
