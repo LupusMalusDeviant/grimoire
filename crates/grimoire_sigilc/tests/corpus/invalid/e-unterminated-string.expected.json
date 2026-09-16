@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-unterminated-string.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0003",
+      "severity": "error",
+      "file": "invalid/e-unterminated-string.sigil",
+      "line": 3,
+      "column": 10,
+      "node_path": "meta.name",
+      "token": "\"Unterminated",
+      "message": "Unterminated string literal: no closing `\"` before the end of the line.",
+      "fix_hint": "Add a closing `\"`.",
+      "related": null
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+sigil 1
+// e-double-comma: a doubled comma in the `keys` list (a single trailing comma is allowed).
+emitter bloom {
+  bullet = petal
+  modifier speed_curve {
+    keys = [
+      (at = 0t, mul = 1.6),
+      (at = 20t, mul = 0.3),,
+      (at = 60t, mul = 0.3),
+    ]
+  }
+}

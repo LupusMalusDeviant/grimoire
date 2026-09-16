@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-unclosed-list.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0011",
+      "severity": "error",
+      "file": "invalid/e-unclosed-list.sigil",
+      "line": 6,
+      "column": 1,
+      "node_path": "bullets.orb.flags",
+      "token": "}",
+      "message": "`}` closes an enclosing body before this list is closed with `]`.",
+      "fix_hint": "Add `]`.",
+      "related": {
+        "label": "opening list",
+        "line": 5,
+        "column": 11,
+        "token": "["
+      }
+    }
+  ]
+}

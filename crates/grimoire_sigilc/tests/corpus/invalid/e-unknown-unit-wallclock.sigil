@@ -1,0 +1,6 @@
+sigil 1
+// e-unknown-unit-wallclock: wall-clock units do not exist in Sigil; time is always in ticks.
+emitter burst {
+  bullet = orb
+  delay = 5s
+}

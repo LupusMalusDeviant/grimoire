@@ -17,12 +17,36 @@
 //! and hash-container rules as the simulation crates (enforced by `clippy.toml`, kept identical
 //! to the other six determinism-set crates).
 //!
-//! **Status:** skeleton (Plan-0002 WP1.3). The actual parser, validator and compiler land in
-//! WP1.4 (syntax spike) and WP4 (compiler). [`derive_unit_id`] is implemented now because
-//! `grimoire_sigil::UnitId` (contract §11.1) is available as of WP1.3.
+//! **Status:** lexer, parser and diagnostics land in WP4.1 (this module tree: [`span`],
+//! [`syntax`], [`parser`], [`fmt`], [`diagnostics`]); the schema pass, the `SigilUnit` encoder and
+//! the `sigilc build`/`set`/`simulate` subcommands are Plan 0002 WP4.2/WP4.3/WP5.6.
+//! [`derive_unit_id`] predates WP4.1 (added in WP1.3, once `grimoire_sigil::UnitId`, contract
+//! §11.1, existed) and is unrelated to parsing.
+//!
+//! WP4.1's own entry point is [`parser::parse`]: it lexes and parses one `.sigil` source file
+//! into a lossless [`syntax::SyntaxNode`] plus every [`diagnostics::Diagnostic`] found along the
+//! way, never panicking regardless of how malformed the input is (contract §2 rule 9). See
+//! `docs/formats/sigil.md` for the grammar, the header and comment rules, and the full diagnostic
+//! code table, and `crates/grimoire_sigilc/tests/corpus/` for the conformance corpus this parser
+//! is checked against.
 
 use grimoire_core::StableHasher;
 use grimoire_sigil::UnitId;
+
+pub mod diagnostics;
+pub mod fmt;
+mod lexer;
+pub mod parser;
+pub mod span;
+pub mod syntax;
+
+pub use diagnostics::{
+    DIAGNOSTICS_SCHEMA_VERSION, Diagnostic, DiagnosticsDocument, RelatedLocation, Severity,
+};
+pub use fmt::format;
+pub use parser::{ParseOutput, SUPPORTED_SIGIL_VERSION, parse};
+pub use span::{Position, Span};
+pub use syntax::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// Domain separator fed into [`derive_unit_id`] before the path itself.
 ///

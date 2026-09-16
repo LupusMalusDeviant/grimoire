@@ -6,6 +6,27 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 ## [Unreleased]
 
 ### Added
+- `grimoire_sigilc`: Lexer, Parser und Diagnosen der Sigil-Quelltextsyntax `sigil 1` nach
+  Engine-ADR-0007 (Plan 0002 WP4.1; nicht Vertragsbestandteil — §11.1 reserviert die übrige API
+  von `grimoire_sigilc` ausdrücklich für WP4). Verlustfreier Syntaxbaum (`syntax`-Modul):
+  Kommentare, Leerzeilen und Reihenfolge überstehen das Einlesen, nachgewiesen durch einen
+  Formatierer (`format`) und Roundtrip-Property-Tests (`parse -> fmt -> parse`) über den Korpus,
+  über zufälligen Text, über zufällige Bytes und über jede Kürzung jeder Korpusdatei
+  (`tests/roundtrip.rs`). Diagnosen (Datei, Zeile, Spalte, Knotenpfad, Ursache, Fix-Hinweis,
+  stabiler Code `SIGnnnn`) als Text und als JSON-Dokument mit `schema_version`
+  (Vertrag §2 Regel 11, `sigilc parse --json`); zehn Codes dokumentiert in
+  `docs/formats/sigil.md` (`SIG0001`–`SIG0004`, `SIG0006`–`SIG0011`, `SIG0005` reserviert).
+  Mehrere Fehler je Datei werden gesammelt gemeldet, soweit sich der Parser sinnvoll erholen kann.
+  Verschachtelung von Body/Liste/Record ist auf 64 Ebenen begrenzt (`SIG0010`) statt eines
+  Stapelüberlaufs; ein Property-Test wirft zufällige Bytes auf den Parser, ohne dass er
+  abstürzt oder hängt (Vertrag §2 Regel 9). Konformitätskorpus unter
+  `crates/grimoire_sigilc/tests/corpus/` (gültige und ungültige `.sigil`-Dateien mit
+  `.expected.json`-Diagnosen daneben, reine Daten ohne Rust-spezifische Kodierung, gedacht auch
+  für einen späteren C#-Asset-Compiler-Test). CLI-Unterbefehle `sigilc check` und
+  `sigilc parse --json` zum Vorführen der Diagnosen; `build`/`set`/`migrate`/`fmt`/`simulate`
+  bleiben WP4.2/WP4.3/WP5.6 vorbehalten. `serde`/`serde_json` (bereits gepinnt, wie in
+  `grimoire_bench`) und `proptest` (Dev-Abhängigkeit, wie in fünf anderen Crates) sind neu in
+  diese Crate verdrahtet, ohne neuen Workspace-Pin.
 - `grimoire_render`: Render-Vertrag v1 (WP2.2, additiv, Vertragsänderung wartet auf PO-Freigabe V-20): `Camera25D` (Neigung, FOV, Ziel, Look-Ahead-Parameter, `screen_to_ground`/`ground_to_screen` als Strahl-Ebene-Schnitt ohne NaN an Horizont oder bei parallelem Strahl), `MeshInstance` (Mesh-/Material-Handle, Transform, Ebene), `PbrMaterial` (glTF-Metallic-Roughness-kompatibel, optionale Basisfarbe-/Normalen-/ORM-Texturen, `AlphaMode`), `PointLight`, `DirectionalLight` (Key-Light), `AmbientLight` (flach oder Hemisphäre), `BulletLightCap` (PRD-0003 Regel 5 / FR-15). Neues Modul `grimoire_render::stage3d`; `StageFrame`/`StageStats` wachsen additiv; `NullRenderer` validiert und zählt die neuen Kanäle; `grimoire_render` hängt neu (additiv, bereits erlaubte Kante) von `grimoire_core` ab.
 - Schema-Codegen nach Projekt-ADR-0011 (angenommen, Option 2e), Plan 0002 WP8.1: neue Werkzeug-Crate `grimoire_schemagen` (kein `grimoire_*`-Abhängigkeit, keine `clippy.toml`) mit einer kleinen, eigenen Schema-Beschreibungssprache (`schema/*.gschema`), einem Rust-Emitter (Structs/Enums mit `encode`/`decode` nach Vertrag §2 Regel 9: Längen-/Anzahlprüfung vor Allokation, `TrailingBytes`, `InvalidUtf8`, `InvalidEnum`, `FieldTooLong`, nie Panic) und einem Doku-Emitter für Feldtabellen. Schemata für das Debug-Protokoll v1 (§13: `Hello`, `ErrorMsg`, `LogMsg`, `Stats`, `StatsScope`, `StatsCounter`, `SwapSigilUnit`, `SwapAck`, `SigilPreview`, `PeerRole`, `ErrorCode`, Katalog-IDs) und das Pack-Manifest v1 (§12: `PackManifestBody`). Generierter Code eingecheckt in `grimoire_debug::generated`/`grimoire_assets::generated`; CI-Check `check-schemagen-drift.sh` (docs-Job) hält ihn aktuell. `grimoire_assets`s Manifest-Codec bleibt vorerst unverdrahtet neben dem handgeschriebenen `PackReader`/`PackWriter` (WP8.3 folgt); `grimoire_debug`s Nutzlasttypen sind in der öffentlichen API. `grimoire_debug::ProtocolError` bekam additiv `UnexpectedEnd`, `TrailingBytes`, `InvalidUtf8`, `FieldTooLong`, `InvalidEnum`. Formatdoku generiert nach `docs/formats/debug-protocol.md` und `docs/formats/pack.md` (P-9).
 - `grimoire_render`: echtes PBR-Shading im Mesh-Pass (WP2.5, ADR-0014 im Spiel-Repo): GGX-Mikrofacetten mit höhenkorrelierter Smith-Sichtbarkeit und Schlick-Fresnel, Metallic-Roughness aus `PbrMaterial`, analytischer Umgebungsterm (Hemisphären-Diffus plus Karis-Split-Sum-Näherung für Spekular-Ambient) und geometrisches Spekular-Anti-Aliasing (OF-3.5, Roughness-Weitung über die Bildschirmraum-Varianz der Schattierungsnormale). Punktlichter aus `StageFrame::point_lights` werden erstmals tatsächlich geschattet (einfache, ungeclusterte P1-Lichtschleife, intern auf `MAX_POINT_LIGHTS = 32` begrenzt — nicht der Vertrags-Budget `Low 32`/`High 256` aus WP3.4); `PointLight::is_bullet_light`/`BulletLightCap` bleiben unangewendet (Vertrag §6 weist das WP3.4/WP3.5 zu). Neue minimale Texturregistrierung (`TextureData`, `TextureColorSpace`, `TextureError`, `WgpuRenderer::register_texture`) samt Sampling von Basisfarbe/Normalen/ORM mit Fallback auf die Materialfaktoren, wenn keine Textur registriert ist (Normal-Mapping über einen ableitungsbasierten Tangentenraum, da `MeshVertex` keinen Tangenten führt). Neuer, korrekter Normalen-Matrix-Pfad im Vertex-Shader (Inverse-Transponierte statt der bisherigen Annahme gleichförmiger Skalierung). `WgpuRenderer::render_stage_with_specular_aa` ist ein Mess-Hook für OF-3.5 (kein Vertragsbestandteil). Engine-ADR-0011 (vorgeschlagen) empfiehlt geometrisches Spekular-AA statt TAA mit gemessenen Zahlen.

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-header-wrong-version.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0002",
+      "severity": "error",
+      "file": "invalid/e-header-wrong-version.sigil",
+      "line": 1,
+      "column": 7,
+      "node_path": "version",
+      "token": "2",
+      "message": "Unsupported Sigil version 2; this compiler reads `sigil 1`.",
+      "fix_hint": "Change the header to `sigil 1`, or migrate the file with a newer `sigilc`.",
+      "related": null
+    }
+  ]
+}

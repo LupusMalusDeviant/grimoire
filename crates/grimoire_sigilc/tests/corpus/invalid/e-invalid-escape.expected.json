@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-invalid-escape.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0004",
+      "severity": "error",
+      "file": "invalid/e-invalid-escape.sigil",
+      "line": 3,
+      "column": 10,
+      "node_path": "meta.name",
+      "token": "\"Bad \\q Escape\"",
+      "message": "Invalid escape sequence `\\q` in a string literal.",
+      "fix_hint": "Valid escapes are `\\\"`, `\\\\`, `\\n` and `\\t`.",
+      "related": null
+    }
+  ]
+}

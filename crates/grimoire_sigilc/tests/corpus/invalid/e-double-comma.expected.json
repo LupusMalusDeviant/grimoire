@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-double-comma.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0009",
+      "severity": "error",
+      "file": "invalid/e-double-comma.sigil",
+      "line": 8,
+      "column": 29,
+      "node_path": "emitters.bloom.modifiers[0].keys",
+      "token": ",",
+      "message": "Unexpected `,` in a list: expected a value or `]`.",
+      "fix_hint": "Remove the extra comma; a single trailing comma is allowed.",
+      "related": null
+    }
+  ]
+}

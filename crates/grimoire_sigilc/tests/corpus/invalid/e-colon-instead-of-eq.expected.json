@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-colon-instead-of-eq.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0008",
+      "severity": "error",
+      "file": "invalid/e-colon-instead-of-eq.sigil",
+      "line": 6,
+      "column": 10,
+      "node_path": "emitters.burst.block.count",
+      "token": ":",
+      "message": "Expected `=` after the field name, found `:`.",
+      "fix_hint": "Use `=` to assign the value.",
+      "related": null
+    }
+  ]
+}

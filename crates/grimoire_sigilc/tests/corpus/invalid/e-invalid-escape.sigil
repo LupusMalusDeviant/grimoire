@@ -1,0 +1,4 @@
+sigil 1
+meta {
+  name = "Bad \q Escape"
+}

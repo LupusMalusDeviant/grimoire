@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-deeply-nested-list.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0010",
+      "severity": "error",
+      "file": "invalid/e-deeply-nested-list.sigil",
+      "line": 5,
+      "column": 70,
+      "node_path": "meta.x",
+      "token": "[",
+      "message": "This value nests too deeply.",
+      "fix_hint": "Flatten the structure; Sigil values may nest at most 64 levels deep.",
+      "related": null
+    }
+  ]
+}
