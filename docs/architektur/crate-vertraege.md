@@ -1071,6 +1071,57 @@ pub struct StageRendererConfig {
   sich dadurch nicht — reine Implementierungsdetails von `grimoire_render::mesh_pass`, wie schon vor
   diesem Paket (WP2.5s Abschnitt oben nennt `TextureData` als einzigen Vertragstyp).
 
+**Echte Tangenten (Ergänzung P1, Paket „Texturqualität" Strang B2, Stufe A nach V-20, gebündelte
+PO-Freigabe offen, 2026-09-16)**
+
+Additiv zum Mesh-Kanal oben und zur Knochenverformung (P1-Skinning-Ergänzung, dieser Abschnitt
+oben): ein weiteres `MeshVertex`-Feld, kein bestehendes Feld ändert Typ oder Bedeutung. Der
+PO-Entscheid deckt, **dass** Blender Tangenten exportiert und die Engine sie nutzt (Festlegung
+„Texturqualität", 2026-09-16); das konkrete Feld, sein Typ und sein Vorgabewert sind der Vorschlag
+dieses Pull Requests zur gebündelten Freigabe — genau die Unterscheidung, die WP3.4s Abschnitt
+oben nach der Berichtigung in `bede011` jetzt schon vormacht.
+
+```rust
+// grimoire_render::mesh — MeshVertex wächst additiv (72 statt 56 Byte, repr(C), kein Padding):
+pub struct MeshVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub joints: [u16; 4],
+    pub weights: [f32; 4],
+    pub tangent: [f32; 4],   // neu: xyz Einheitstangente, w Bitangenten-Händigkeit (+1/-1)
+}
+// Vorgabe (MeshVertex::new/Default): [0.0, 0.0, 0.0, 0.0] — das vereinbarte "keine Tangente"-
+// Zeichen (jedes prozedurale Testmesh, WP2.3, unverändert; jedes FNP_MESH-Primitiv ohne
+// TEXCOORD_0, geteilte Spezifikation Strang A).
+```
+
+**Semantik:**
+
+- **Dekoder (`grimoire_render::figure_format::decode_mesh`):** liest `FNP_MESH` Fassung 1 **und** 2
+  — die Fassung wird je Art geführt, nicht mehr über das gemeinsame `FORMAT_VERSION` aller anderen
+  Dekoder in diesem Modul (`MESH_FORMAT_VERSION_1`/`_2`, additiv, nur `decode_mesh` betroffen).
+  Fassung 1 liefert `tangent = [0,0,0,0]` für jeden Vertex; Fassung 2 liest zusätzlich `f32[4]
+  tangent` je Vertex und prüft sie (`|xyz| = 1` Toleranz `1e-3`, `w = ±1` Toleranz `1e-3`, oder der
+  Sentinel `[0,0,0,0]`) — jede andere Tangente ist `FigureFormatError::InvalidTangent`, nie ein
+  Absturz (Vertrag §2 Regel 9).
+- **Shader (`mesh.wgsl`), der eine Ausweichweg:** Ein Fragment, dessen interpolierte `tangent.w`
+  `abs(w) < 0.5` erfüllt, nutzt weiterhin `cotangent_frame` (unverändert seit WP2.5) — jedes
+  prozedurale Testmesh und jedes `FNP_MESH`-Primitiv ohne `TEXCOORD_0` bleibt also bildidentisch.
+  Jedes andere Fragment baut die TBN aus der Weltraum-Normale, `tangent.xyz` und
+  `bitangent = cross(normal, tangent.xyz) * tangent.w` (glTF-/MikkTSpace-Konvention).
+- **Die einzige Drehung einer Tangente:** Eine geskinnte Instanz dreht `tangent.xyz` mit denselben
+  Knochenmatrizen wie die Normale (`vs_skinned`) — das ist die einzige Drehung, die eine Tangente
+  in der Engine erfährt; sie kommt roh aus dem Pack, genau wie Position und Normale. `tangent.w`
+  bleibt in jedem Schritt unverändert. Diese Festlegung wurde am 2026-09-16 berichtigt: ein
+  ursprünglicher Satz verlangte eine zusätzliche Drehung der Tangente um +90° um die X-Achse an der
+  Skelettwurzel, was wörtlich umgesetzt jede Tangente doppelt gedreht hätte, weil dieselbe Drehung
+  bereits in der Knochenhierarchie steckt und über das Skinning wirkt.
+- **Bildidentität für Bestandsgeometrie:** Jedes prozedurale Testmesh trägt weiterhin die Vorgabe
+  `[0,0,0,0]` und läuft damit unverändert über `cotangent_frame` — die sieben
+  Schnappschuss-Referenzen aus dem vorigen Paket (B1) bleiben bitgleich (`mean_abs_diff`/
+  `max_abs_diff` = 0, im Pull-Request-Text nachgewiesen).
+
 ## 7. `grimoire_ecs`
 
 ```rust

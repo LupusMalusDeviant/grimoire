@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use grimoire::adapters::figure_assets::{self, FNP_FIGURE, FNP_MATERIAL, FNP_MESH, FNP_SKELETON};
-use grimoire_assets::{AssetPath, AssetStore, PackReader, PackWriter};
+use grimoire_assets::{AssetId, AssetPath, AssetStore, PackReader, PackWriter};
 use grimoire_render::figure_format::{self, JointPose};
 use grimoire_render::{
     AmbientLight, Camera25D, DirectionalLight, MaterialHandle, MeshInstance, PointLight,
@@ -500,6 +500,91 @@ fn render_figure_from_pack_file() {
 
     let rest_matrices = figure_format::rest_pose_skin_matrices(&figure.skeleton);
     let rest_image = render_figure_framed(&mut renderer, &figure, rest_matrices, height, mid_z);
+    let (dark, foreground) = count_very_dark_head_pixels(&rest_image, 30);
+    println!(
+        "grimoire-figure-tangent-check: figure={figure_name} tangents=real head_region_dark_pixels={dark} head_region_foreground_pixels={foreground}"
+    );
+
+    // Texture-quality package strand B2's measurement: the very same pack, pose, camera and
+    // lighting, but with every part's real (MikkTSpace) tangent forced to the "no tangent"
+    // sentinel `[0,0,0,0]` — the pre-B2 behaviour, since `mesh.wgsl` then falls back to
+    // `cotangent_frame` exactly as it did before this package existed. Re-decodes each part's mesh
+    // via the same `store` (a cache keyed by asset id, so this hits the copy `load_figure` already
+    // decoded and paid no second read or GPU upload for the untouched original) rather than
+    // diffing against a different engine build, which cannot even load a `kind_version` 2
+    // `FNP_MESH` at all (see this test's module-level report) — this isolates exactly the one
+    // variable the Festlegung asks about.
+    let mut no_tangent_parts = Vec::with_capacity(figure.parts.len());
+    for (index, part) in figure.parts.iter().enumerate() {
+        let mesh_path = AssetPath::new(&format!("figures/{figure_name}/mesh/{index}"))
+            .expect("valid asset path");
+        let mesh_id = AssetId::from_path(&mesh_path);
+        let mesh_handle = store
+            .load(mesh_id, FNP_MESH, figure_format::decode_mesh)
+            .expect("this mesh already decoded once above, so this only hits the cache");
+        let mut mesh_data = store
+            .get(mesh_handle)
+            .expect("just loaded above, so it is present")
+            .clone();
+        for vertex in &mut mesh_data.vertices {
+            vertex.tangent = [0.0, 0.0, 0.0, 0.0];
+        }
+        let mesh = renderer
+            .register_mesh(mesh_data)
+            .expect("stripped-tangent mesh is still structurally valid");
+        no_tangent_parts.push(figure_assets::LoadedFigurePart {
+            mesh,
+            material: part.material,
+        });
+    }
+    let no_tangent_figure = figure_assets::LoadedFigure {
+        parts: no_tangent_parts,
+        skeleton: figure.skeleton.clone(),
+        bounds_min: figure.bounds_min,
+        bounds_max: figure.bounds_max,
+    };
+    let no_tangent_rest_matrices =
+        figure_format::rest_pose_skin_matrices(&no_tangent_figure.skeleton);
+    let no_tangent_image = render_figure_framed(
+        &mut renderer,
+        &no_tangent_figure,
+        no_tangent_rest_matrices,
+        height,
+        mid_z,
+    );
+    let (no_tangent_dark, no_tangent_foreground) =
+        count_very_dark_head_pixels(&no_tangent_image, 30);
+    println!(
+        "grimoire-figure-tangent-check: figure={figure_name} tangents=stripped head_region_dark_pixels={no_tangent_dark} head_region_foreground_pixels={no_tangent_foreground}"
+    );
+    {
+        let dir = out_dir();
+        no_tangent_image
+            .write_png(&dir.join(format!("{figure_name}_no_tangent_rest.png")))
+            .expect("write the no-tangent comparison image");
+        Image::beside(&[&no_tangent_image, &rest_image])
+            .write_png(&dir.join(format!("{figure_name}_tangent_before_after.png")))
+            .expect("write the before/after comparison strip");
+
+        // Whole-image diff between the real-tangent and stripped-tangent renders: how many pixels
+        // changed at all, and by how much on average/at most — the head-region dark-pixel count
+        // above is a narrow proxy, this is the unfiltered picture.
+        let mut changed = 0u32;
+        let mut sum_abs_diff = 0u64;
+        let mut max_abs_diff = 0u8;
+        for (a, b) in rest_image.rgba.iter().zip(&no_tangent_image.rgba) {
+            let diff = a.abs_diff(*b);
+            if diff > 0 {
+                changed += 1;
+            }
+            sum_abs_diff += u64::from(diff);
+            max_abs_diff = max_abs_diff.max(diff);
+        }
+        let mean_abs_diff = sum_abs_diff as f64 / rest_image.rgba.len() as f64;
+        println!(
+            "grimoire-figure-tangent-check: figure={figure_name} whole_image_changed_channels={changed} mean_abs_diff={mean_abs_diff:.3} max_abs_diff={max_abs_diff}"
+        );
+    }
 
     // A visible bend, applied to every joint that has a parent: a quarter turn about X shared by
     // the whole hierarchy reads clearly from the tilted camera without needing to know which bone
@@ -539,6 +624,44 @@ fn render_figure_from_pack_file() {
         .write_png(&dir.join(format!("{figure_name}_comparison.png")))
         .expect("write the comparison image");
     println!("grimoire-figure-from-pack: dir={}", dir.display());
+}
+
+/// Head-darkness proxy for the texture-quality package's Strand B2 measurement ("miss, ob die
+/// dunklen Stellen am Kopf verschwinden" — measure, don't just describe, whether the dark patches
+/// at the head go away). Counts, among the pixels in the top third of `image` (where a standing
+/// humanoid figure's head sits in this showcase's own framing) that do **not** match the
+/// background colour sampled from the image's top-left corner (guaranteed background — the figure
+/// never reaches the frame's edges here), how many are darker than `threshold` in every channel.
+/// Not a general-purpose metric, just enough to compare the very same pack, camera and lighting
+/// before and after a shading change.
+fn count_very_dark_head_pixels(image: &Image, threshold: u8) -> (u32, u32) {
+    let background = [image.rgba[0], image.rgba[1], image.rgba[2], image.rgba[3]];
+    let mut dark = 0u32;
+    let mut foreground = 0u32;
+    let top_third = image.height / 3;
+    for y in 0..top_third {
+        for x in 0..image.width {
+            let index = (y as usize * image.width as usize + x as usize) * 4;
+            let pixel = [
+                image.rgba[index],
+                image.rgba[index + 1],
+                image.rgba[index + 2],
+                image.rgba[index + 3],
+            ];
+            let is_background = pixel
+                .iter()
+                .zip(background)
+                .all(|(&a, b)| a.abs_diff(b) <= 6);
+            if is_background {
+                continue;
+            }
+            foreground += 1;
+            if pixel[0] <= threshold && pixel[1] <= threshold && pixel[2] <= threshold {
+                dark += 1;
+            }
+        }
+    }
+    (dark, foreground)
 }
 
 /// Like [`render_figure`], but frames the figure by its own height and lights it for a figure

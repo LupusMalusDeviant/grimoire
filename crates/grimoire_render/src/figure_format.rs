@@ -39,8 +39,19 @@ use crate::stage3d::AlphaMode;
 use crate::texture::{TextureColorSpace, TextureData};
 
 /// Format version every decoder in this module accepts (`kind_version`, contract §12: "Jeder
-/// Eintrag beginnt mit `u32 version`").
+/// Eintrag beginnt mit `u32 version`"), except [`decode_mesh`] (texture-quality package, strand
+/// B2): the version is tracked per kind, not shared, precisely so `FNP_MESH` could grow
+/// independently — see [`MESH_FORMAT_VERSION_1`]/[`MESH_FORMAT_VERSION_2`].
 pub const FORMAT_VERSION: u32 = 1;
+
+/// `FNP_MESH`'s original vertex layout (texture-quality package, strand B2): no tangent, 56 bytes
+/// per vertex in the payload (`decode_mesh` fills [`MeshVertex::tangent`] with the "no tangent"
+/// sentinel `[0.0; 4]` for a version-1 payload).
+pub const MESH_FORMAT_VERSION_1: u32 = 1;
+/// `FNP_MESH` version 2 (texture-quality package, strand B2, shared spec): each vertex grows by
+/// `f32[4] tangent` (72 bytes per vertex), checked by [`decode_mesh`] against
+/// [`FigureFormatError::InvalidTangent`]'s rule.
+pub const MESH_FORMAT_VERSION_2: u32 = 2;
 
 /// Upper bound on `FNP_MESH`'s `vertex_count` (shared spec).
 pub const MAX_MESH_VERTICES: u32 = 1_000_000;
@@ -167,6 +178,16 @@ pub enum FigureFormatError {
         /// The skeleton's joint count.
         joint_count: u32,
     },
+    /// A `kind_version` 2 `FNP_MESH` vertex's tangent is neither a valid tangent (`|xyz| = 1`
+    /// within tolerance `1e-3`, `w = +1` or `w = -1` within tolerance `1e-3`, shared spec) nor the
+    /// agreed "no tangent" sentinel `[0, 0, 0, 0]` (texture-quality package, strand B2). Never a
+    /// panic (contract §2 rule 9) — this is the shared spec's own "everything else is an error"
+    /// third case for a mesh tangent.
+    #[error("mesh vertex {vertex} has an invalid tangent (neither a valid tangent nor [0,0,0,0])")]
+    InvalidTangent {
+        /// Index of the offending vertex.
+        vertex: u32,
+    },
 }
 
 /// Bounds-checked little-endian cursor over one payload byte slice. Every read returns
@@ -289,7 +310,28 @@ fn check_count(what: &'static str, count: u32, limit: u32) -> Result<u32, Figure
     Ok(count)
 }
 
+/// Whether `tangent` is a valid `kind_version` 2 [`MeshVertex::tangent`] (shared spec,
+/// texture-quality package strand B2): `|xyz| = 1` (tolerance `1e-3`) and `w = +1` or `w = -1`
+/// (tolerance `1e-3`) — or the agreed "no tangent" sentinel `[0, 0, 0, 0]` (a primitive without
+/// `TEXCOORD_0`, shared spec).
+fn is_valid_tangent(tangent: [f32; 4]) -> bool {
+    if tangent == [0.0, 0.0, 0.0, 0.0] {
+        return true;
+    }
+    let [x, y, z, w] = tangent;
+    let length_ok = ((x * x + y * y + z * z).sqrt() - 1.0).abs() <= 1e-3;
+    let handedness_ok = (w - 1.0).abs() <= 1e-3 || (w + 1.0).abs() <= 1e-3;
+    length_ok && handedness_ok
+}
+
 /// Decodes an `FNP_MESH` payload (shared spec, `figures/<name>/mesh/<i>`) into a [`MeshData`].
+///
+/// Reads its own `kind_version` (texture-quality package, strand B2) rather than the shared
+/// [`FORMAT_VERSION`] every other decoder in this module uses: [`MESH_FORMAT_VERSION_1`] (56 bytes
+/// per vertex, [`MeshVertex::tangent`] filled with the "no tangent" sentinel `[0.0; 4]`) and
+/// [`MESH_FORMAT_VERSION_2`] (72 bytes per vertex, `f32[4] tangent` read and checked against
+/// [`is_valid_tangent`], any other value rejected as [`FigureFormatError::InvalidTangent`]) are
+/// both accepted; anything else is [`FigureFormatError::UnsupportedVersion`].
 ///
 /// Checks `vertex_count` (`<= MAX_MESH_VERTICES`) and `index_count` (`<= MAX_MESH_INDICES`, a
 /// multiple of 3) against the shared spec's documented upper bounds *before* allocating either
@@ -306,7 +348,13 @@ fn check_count(what: &'static str, count: u32, limit: u32) -> Result<u32, Figure
 /// See [`FigureFormatError`]; never panics, for any input.
 pub fn decode_mesh(bytes: &[u8]) -> Result<MeshData, FigureFormatError> {
     let mut cursor = Cursor::new(bytes);
-    cursor.expect_version()?;
+    let version = cursor.u32()?;
+    if version != MESH_FORMAT_VERSION_1 && version != MESH_FORMAT_VERSION_2 {
+        return Err(FigureFormatError::UnsupportedVersion {
+            expected: MESH_FORMAT_VERSION_2,
+            found: version,
+        });
+    }
 
     let vertex_count = check_count("vertex_count", cursor.u32()?, MAX_MESH_VERTICES)?;
     let index_count = check_count("index_count", cursor.u32()?, MAX_MESH_INDICES)?;
@@ -315,18 +363,30 @@ pub fn decode_mesh(bytes: &[u8]) -> Result<MeshData, FigureFormatError> {
     }
 
     let mut vertices = Vec::with_capacity(vertex_count as usize);
-    for _ in 0..vertex_count {
+    for vertex_index in 0..vertex_count {
         let position = cursor.f32_array::<3>()?;
         let normal = cursor.f32_array::<3>()?;
         let uv = cursor.f32_array::<2>()?;
         let joints = [cursor.u16()?, cursor.u16()?, cursor.u16()?, cursor.u16()?];
         let weights = cursor.f32_array::<4>()?;
+        let tangent = if version == MESH_FORMAT_VERSION_2 {
+            let tangent = cursor.f32_array::<4>()?;
+            if !is_valid_tangent(tangent) {
+                return Err(FigureFormatError::InvalidTangent {
+                    vertex: vertex_index,
+                });
+            }
+            tangent
+        } else {
+            [0.0; 4]
+        };
         vertices.push(MeshVertex {
             position,
             normal,
             uv,
             joints,
             weights,
+            tangent,
         });
     }
 
@@ -821,7 +881,7 @@ mod tests {
     /// module's decoder side of it), small enough to hand-encode legibly.
     fn valid_mesh_bytes() -> Vec<u8> {
         let mut buf = Vec::new();
-        push_u32(&mut buf, FORMAT_VERSION);
+        push_u32(&mut buf, MESH_FORMAT_VERSION_1);
         push_u32(&mut buf, 4); // vertex_count
         push_u32(&mut buf, 6); // index_count
         let vertices: [RawVertex; 4] = [
@@ -885,7 +945,7 @@ mod tests {
         assert_eq!(
             decode_mesh(&bytes),
             Err(FigureFormatError::UnsupportedVersion {
-                expected: FORMAT_VERSION,
+                expected: MESH_FORMAT_VERSION_2,
                 found: 99,
             })
         );
@@ -894,7 +954,7 @@ mod tests {
     #[test]
     fn decode_mesh_rejects_vertex_count_over_the_documented_limit() {
         let mut buf = Vec::new();
-        push_u32(&mut buf, FORMAT_VERSION);
+        push_u32(&mut buf, MESH_FORMAT_VERSION_1);
         push_u32(&mut buf, MAX_MESH_VERTICES + 1);
         push_u32(&mut buf, 0);
         assert_eq!(
@@ -910,7 +970,7 @@ mod tests {
     #[test]
     fn decode_mesh_rejects_index_count_not_a_multiple_of_three() {
         let mut buf = Vec::new();
-        push_u32(&mut buf, FORMAT_VERSION);
+        push_u32(&mut buf, MESH_FORMAT_VERSION_1);
         push_u32(&mut buf, 0);
         push_u32(&mut buf, 4);
         assert_eq!(
@@ -972,6 +1032,131 @@ mod tests {
                     | Err(FigureFormatError::UnsupportedVersion { .. })
             ));
         }
+    }
+
+    /// The same four-vertex fixture as [`valid_mesh_bytes`], but `kind_version` 2
+    /// (texture-quality package, strand B2): every vertex carries `tangent`. `tangent_for` lets
+    /// each test pick per-vertex tangents (a valid tangent, the `[0,0,0,0]` sentinel, or an
+    /// invalid one) without duplicating the whole payload builder.
+    fn mesh_v2_bytes(tangent_for: impl Fn(usize) -> [f32; 4]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_u32(&mut buf, MESH_FORMAT_VERSION_2);
+        push_u32(&mut buf, 4); // vertex_count
+        push_u32(&mut buf, 6); // index_count
+        let vertices: [RawVertex; 4] = [
+            (
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0],
+                [0, 0, 0, 0],
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0],
+                [0, 0, 0, 0],
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 1.0],
+                [1, 0, 0, 0],
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 1.0],
+                [1, 0, 0, 0],
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+        ];
+        for (index, (position, normal, uv, joints, weights)) in vertices.into_iter().enumerate() {
+            push_f32s(&mut buf, &position);
+            push_f32s(&mut buf, &normal);
+            push_f32s(&mut buf, &uv);
+            for joint in joints {
+                push_u16(&mut buf, joint);
+            }
+            push_f32s(&mut buf, &weights);
+            push_f32s(&mut buf, &tangent_for(index));
+        }
+        for index in [0u32, 1, 2, 0, 2, 3] {
+            push_u32(&mut buf, index);
+        }
+        buf
+    }
+
+    #[test]
+    fn decode_mesh_round_trips_a_valid_v2_payload_with_tangents() {
+        let bytes = mesh_v2_bytes(|_| [1.0, 0.0, 0.0, 1.0]);
+        let mesh = decode_mesh(&bytes).expect("valid v2 mesh payload");
+        assert_eq!(mesh.vertices.len(), 4);
+        for vertex in &mesh.vertices {
+            assert_eq!(vertex.tangent, [1.0, 0.0, 0.0, 1.0]);
+        }
+    }
+
+    #[test]
+    fn decode_mesh_accepts_the_zero_tangent_sentinel_in_v2() {
+        let bytes = mesh_v2_bytes(|_| [0.0, 0.0, 0.0, 0.0]);
+        let mesh = decode_mesh(&bytes).expect("the [0,0,0,0] sentinel is a valid v2 tangent");
+        assert_eq!(mesh.vertices[0].tangent, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn decode_mesh_accepts_negative_handedness_in_v2() {
+        let bytes = mesh_v2_bytes(|_| [1.0, 0.0, 0.0, -1.0]);
+        let mesh = decode_mesh(&bytes).expect("w = -1 is a valid handedness");
+        assert_eq!(mesh.vertices[0].tangent, [1.0, 0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn decode_mesh_rejects_a_non_unit_tangent_in_v2() {
+        let bytes = mesh_v2_bytes(|index| {
+            if index == 1 {
+                [2.0, 0.0, 0.0, 1.0] // |xyz| = 2, not 1
+            } else {
+                [1.0, 0.0, 0.0, 1.0]
+            }
+        });
+        assert_eq!(
+            decode_mesh(&bytes),
+            Err(FigureFormatError::InvalidTangent { vertex: 1 })
+        );
+    }
+
+    #[test]
+    fn decode_mesh_rejects_an_invalid_handedness_in_v2() {
+        let bytes = mesh_v2_bytes(|index| {
+            if index == 2 {
+                [1.0, 0.0, 0.0, 0.5] // neither +1, -1, nor the [0,0,0,0] sentinel
+            } else {
+                [1.0, 0.0, 0.0, 1.0]
+            }
+        });
+        assert_eq!(
+            decode_mesh(&bytes),
+            Err(FigureFormatError::InvalidTangent { vertex: 2 })
+        );
+    }
+
+    #[test]
+    fn is_valid_tangent_accepts_the_sentinel_and_both_handedness_signs_within_tolerance() {
+        assert!(is_valid_tangent([0.0, 0.0, 0.0, 0.0]));
+        assert!(is_valid_tangent([1.0, 0.0, 0.0, 1.0]));
+        assert!(is_valid_tangent([1.0, 0.0, 0.0, -1.0]));
+        // Within the documented 1e-3 tolerance on both length and handedness.
+        assert!(is_valid_tangent([1.0006, 0.0, 0.0, 1.0009]));
+    }
+
+    #[test]
+    fn is_valid_tangent_rejects_a_non_unit_length_or_bad_handedness() {
+        assert!(!is_valid_tangent([2.0, 0.0, 0.0, 1.0]));
+        assert!(!is_valid_tangent([1.0, 0.0, 0.0, 0.0])); // non-zero xyz, w = 0: not a sentinel
+        assert!(!is_valid_tangent([1.0, 0.0, 0.0, 0.5]));
     }
 
     #[test]
