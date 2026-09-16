@@ -287,6 +287,12 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The showcase test writes relative to its own working directory (the package root under
+    # cargo test), while the shell steps run at the repository root, so a relative path pointed the
+    # two at different places. One absolute directory, passed through env (never interpolated into
+    # a run block), keeps every step in this job on the same files.
+    env:
+      GRIMOIRE_PBR_STAGE_GIF_OUT_DIR: ${{ github.workspace }}/pbr-stage-gif
     steps:
       - uses: actions/checkout@v7
       - name: Install pinned toolchain (rust-toolchain.toml)
@@ -307,16 +313,16 @@ jobs:
           GRIMOIRE_GPU_ADAPTER: software
         run: |
           cargo test -p grimoire_render --test pbr_stage_showcase --locked -- --ignored --nocapture render_pbr_stage_png_sequence
-          test -f target/wp28-pbr-stage-gif/frame_0000.png
+          test -f "$GRIMOIRE_PBR_STAGE_GIF_OUT_DIR/frame_0000.png"
       # ffmpeg ships preinstalled on GitHub-hosted runners; a two-pass palette (generate, then
       # apply) keeps an 8-bit GIF from banding the PBR spheres/gradients as badly as ffmpeg's
       # default fixed palette would.
       - name: Assemble the PNG sequence into a GIF
         run: |
           palette="$(mktemp --suffix=.png)"
-          ffmpeg -y -framerate 24 -i target/wp28-pbr-stage-gif/frame_%04d.png \
+          ffmpeg -y -framerate 24 -i "$GRIMOIRE_PBR_STAGE_GIF_OUT_DIR/frame_%04d.png" \
             -vf "palettegen" "$palette"
-          ffmpeg -y -framerate 24 -i target/wp28-pbr-stage-gif/frame_%04d.png -i "$palette" \
+          ffmpeg -y -framerate 24 -i "$GRIMOIRE_PBR_STAGE_GIF_OUT_DIR/frame_%04d.png" -i "$palette" \
             -lavfi "paletteuse" pbr_stage.gif
           ls -la pbr_stage.gif
       - name: Upload the showcase GIF
