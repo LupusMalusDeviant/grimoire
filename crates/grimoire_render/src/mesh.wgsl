@@ -8,19 +8,26 @@
 // specular term) dropped in favour of a physically normalised Cook-Torrance BRDF, since this pass
 // is not compared side-by-side against other looks the way the spike's three shaders were.
 //
-// The key light, the ambient term and the point lights in `Camera::lights` (contract §6) all use
-// the same `ggx_light`/`point_light_falloff` terms, so a point light and the key light shade
-// identically for the same incoming radiance. Point lights use the spike's shared falloff
-// (`saturate(1 - (d/r)^4)^2 / (1 + d^2)`) with a hard cutoff at `range` (contract §6 "range");
-// the light loop is a simple, unclustered P1 loop over `Camera::light_count` (at most
-// `MAX_POINT_LIGHTS`, see `mesh_pass.rs`) — clustered forward+ and the `Low 32`/`High 256` count
-// budget are WP3.4's job, not this pass's.
+// The key light, the ambient term and the point lights this shader reads from the cluster buffers
+// (group 4, WP3.4) all use the same `ggx_light`/`point_light_falloff` terms, so a point light and
+// the key light shade identically for the same incoming radiance. Point lights use the spike's
+// shared falloff (`saturate(1 - (d/r)^4)^2 / (1 + d^2)`) with a hard cutoff at `range` (contract §6
+// "range").
 //
-// `PointLight::is_bullet_light`/`BulletLightCap` (PRD-0003 rule 5 / FR-15) are deliberately not
-// applied here: contract §6 assigns *how* the cap limits the shading equation to the stylebook
-// (WP2.7) and *implementing* it to the PBR pass at WP3.4/WP3.5, once bullet-cloud lights actually
-// exist (WP3.5's bullet pass). This pass shades every valid point light identically regardless of
-// that flag.
+// Clustered forward+ (plan 0002 WP3.4, engine ADR-0015 "compute clustering"): a fragment looks up
+// its own froxel (`cluster_index_for` below, mirroring `cluster_pass.rs`/`cluster.wgsl`'s
+// assignment exactly) in `cluster_table` (group 4) and walks only the lights `cluster_index_list`
+// recorded for it, instead of the pre-WP3.4 fixed, unclustered array capped at 32. The configured
+// `Low 32`/`High 256` light budget (`crate::LightBudget`, contract §6's additive path for it) only
+// changes how large the group-4 buffers are — this shader has no compile-time knowledge of the
+// budget, since a storage buffer's runtime-sized array needs none.
+//
+// `PointLight::is_bullet_light`/`BulletLightCap` (PRD-0003 rule 5 / FR-15, PO decision 2026-09-16):
+// applied on the CPU side before a light ever reaches this shader — `mesh_pass::build_light_list`
+// multiplies a bullet light's uploaded `intensity` by `BulletLightCap::clamped_floor_contribution`
+// before upload, so this shader's `light.color * light.intensity` already carries the cap; no flag
+// or cap value is threaded through the GPU layout itself (`cluster_layout::GpuPointLight` — WP3.1,
+// engine ADR-0013 — stays exactly as frozen there, no new field).
 //
 // Textures (base colour, tangent-space normal, occlusion-roughness-metallic) are sampled if the
 // renderer has them registered (`WgpuRenderer::register_texture`), otherwise a 1x1 fallback
@@ -36,8 +43,10 @@
 // Winding is not assumed to be consistent (see procedural.rs); the pipeline disables back-face
 // culling, like the sprite pass.
 //
-// Layout must match `mesh_pass.rs`'s `CameraGpu`/`PointLightGpu` (1264 bytes) and
-// `MeshInstanceGpu` (112 bytes) exactly; both sides are hand-kept in sync (no shared codegen).
+// Layout must match `mesh_pass.rs`'s `CameraGpu` (304 bytes) and `MeshInstanceGpu` (112 bytes)
+// exactly, and this file's own `PointLightGpu` must match `cluster_layout::GpuPointLight` (32
+// bytes, WP3.1/engine ADR-0013, frozen and unchanged by WP3.4) exactly; every side is hand-kept in
+// sync (no shared codegen).
 //
 // Shadows (plan 0002 WP2.6, OF-3.2): `camera.light_view_proj`/`camera.shadow_params` (see
 // `mesh_pass.rs`'s `CameraGpu` doc comment for the packing) drive a PCF-filtered lookup into the
@@ -70,12 +79,33 @@ const INV_TWO_PI: f32 = 0.15915494;
 // fully rough.
 const MAX_SPECULAR_AA_WIDEN: f32 = 0.18;
 
+// Clustered forward+ froxel grid (plan 0002 WP3.4): must match
+// `grimoire_render::cluster_layout::{CLUSTER_GRID_X, CLUSTER_GRID_Y, CLUSTER_GRID_Z}` and
+// `cluster.wgsl`'s own copy of the same constants exactly (no shared codegen, see this file's
+// header comment).
+const CLUSTER_GRID_X: u32 = 16u;
+const CLUSTER_GRID_Y: u32 = 9u;
+const CLUSTER_GRID_Z: u32 = 24u;
+
+// One light in the group-4 light-list storage buffer. Matches
+// `cluster_layout::GpuPointLight` (WP3.1, engine ADR-0013) exactly: two 16-byte std430 elements,
+// `position`+`range` and `color`+`intensity`, no interior padding needed. `intensity` is
+// `PointLight::intensity` verbatim except for a bullet light, where it already carries
+// `BulletLightCap::clamped_floor_contribution` (`mesh_pass::build_light_list`, see this file's
+// header comment) — this shader always just multiplies `color * intensity`, never inspecting where
+// that factor came from.
 struct PointLightGpu {
     position: vec3<f32>,
     range: f32,
-    // Already colour * intensity (contract §6 `PointLight`).
     color: vec3<f32>,
-    _pad: f32,
+    intensity: f32,
+}
+
+// One froxel's slice of `cluster_index_list` (group 4): matches
+// `cluster_layout::GpuClusterLightRange` (8 bytes, WP3.1/engine ADR-0013) exactly.
+struct ClusterRange {
+    offset: u32,
+    count: u32,
 }
 
 struct Camera {
@@ -93,14 +123,23 @@ struct Camera {
     // rgb: ambient colour for surfaces facing straight down (normal.z = -1), already multiplied by
     // its intensity. w unused.
     ambient_ground: vec4<f32>,
-    // Number of entries in `lights` that are actually lit (0..=MAX_POINT_LIGHTS).
-    light_count: u32,
+    // Camera-local basis (WP3.4, mirrors `cluster_pass.rs`'s `ClusterCameraParams`/`cluster.wgsl`'s
+    // `Params` exactly — the same values, so a fragment's froxel and a light's froxel agree):
+    // `right`, `up`, `forward` are unit vectors, `w` unused on each.
+    right: vec4<f32>,
+    up: vec4<f32>,
+    forward: vec4<f32>,
+    // WP3.4 clustering projection scalars: x = f / aspect, y = f (f = 1 / tan(fov_y / 2)),
+    // z = near, w = far. Used by `cluster_index_for` below; matches `cluster.wgsl`'s `Params.proj`
+    // exactly (same per-frame values, uploaded once by `mesh_pass::render`).
+    cluster_proj: vec4<f32>,
     // 1.0 enables the OF-3.5 geometric specular-AA roughness widening below, 0.0 disables it
     // (`WgpuRenderer::render_stage_with_specular_aa`, a WP2.5/OF-3.5 measurement hook — production
     // rendering through `render_stage` always uses 1.0).
     specular_aa_strength: f32,
     _pad1: u32,
     _pad2: u32,
+    _pad3: u32,
     // World-to-light-space view-projection for the key-light shadow map
     // (`stage3d::key_light_view_projection`).
     light_view_proj: mat4x4<f32>,
@@ -108,7 +147,6 @@ struct Camera {
     // single tap). z: `1.0` to sample the shadow map this frame, `0.0` to skip it entirely. w
     // unused.
     shadow_params: vec4<f32>,
-    lights: array<PointLightGpu, 32>,
 }
 
 @group(0) @binding(0)
@@ -125,6 +163,15 @@ var<uniform> camera: Camera;
 // i.e. already "how lit is this point", not a raw depth value).
 @group(2) @binding(0) var shadow_map: texture_depth_2d;
 @group(2) @binding(1) var shadow_sampler: sampler_comparison;
+
+// Clustered forward+ (plan 0002 WP3.4, `cluster_pass.rs`): read-only view of the same three
+// `cluster_layout` storage buffers the compute pass (`cluster.wgsl`) writes. Bound at group 4 for
+// both the rigid (`pipeline`) and skinned (`skinned_pipeline`) mesh pipelines in `mesh_pass.rs`,
+// which share this `fs_main` — group 3 differs between them (bone matrices for the skinned
+// pipeline, unused/absent for the rigid one), but group 4 is identical for both.
+@group(4) @binding(0) var<storage, read> cluster_lights: array<PointLightGpu>;
+@group(4) @binding(1) var<storage, read> cluster_table: array<ClusterRange>;
+@group(4) @binding(2) var<storage, read> cluster_index_list: array<u32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -305,6 +352,43 @@ fn fresnel_schlick(v_dot_h: f32, f0: vec3<f32>) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * m5;
 }
 
+// Clustered forward+ (plan 0002 WP3.4): buckets `world_position` into the same 16x9x24 froxel grid
+// `cluster.wgsl`'s compute pass assigns lights into, using the identical camera-local-basis
+// projection (`camera.right`/`up`/`forward`/`cluster_proj`) and the identical flat-index formula
+// (`grimoire_render::cluster_layout::cluster_index`, copied by hand — this file's and
+// `cluster.wgsl`'s copies must agree, see both files' header comments). Screen tiles come from an
+// ordinary perspective projection (`ndc = camera_local_offset * cluster_proj.xy / forward_distance`
+// — the same relation `stage3d::view_projection` encodes in a full matrix, just inlined here since
+// only its two scale factors survive); depth slices are exponential between `cluster_proj.z`/`.w`
+// (near/far), matching the standard clustered-shading grid (Olsson & Assarsson 2011).
+// `clamp(..., near, far)` on the forward distance keeps `log` finite even for a fragment right at
+// (or, from floating-point noise, fractionally behind) the near plane; a fragment that
+// legitimately reached this shader is always within the view frustum's near/far range already.
+fn cluster_index_for(world_position: vec3<f32>) -> u32 {
+    let rel = world_position - camera.eye.xyz;
+    let w = clamp(dot(camera.forward.xyz, rel), camera.cluster_proj.z, camera.cluster_proj.w);
+    let u = dot(camera.right.xyz, rel);
+    let v = dot(camera.up.xyz, rel);
+
+    let ndc_x = clamp(u * camera.cluster_proj.x / w, -1.0, 1.0);
+    let ndc_y = clamp(v * camera.cluster_proj.y / w, -1.0, 1.0);
+    let tile_x = min(
+        u32((ndc_x * 0.5 + 0.5) * f32(CLUSTER_GRID_X)),
+        CLUSTER_GRID_X - 1u,
+    );
+    let tile_y = min(
+        u32((ndc_y * 0.5 + 0.5) * f32(CLUSTER_GRID_Y)),
+        CLUSTER_GRID_Y - 1u,
+    );
+
+    let near = camera.cluster_proj.z;
+    let far = camera.cluster_proj.w;
+    let slice = (log(w) - log(near)) / log(far / near) * f32(CLUSTER_GRID_Z);
+    let tile_z = min(u32(max(slice, 0.0)), CLUSTER_GRID_Z - 1u);
+
+    return tile_x + CLUSTER_GRID_X * (tile_y + CLUSTER_GRID_Y * tile_z);
+}
+
 // The look-dev spike's shared point-light falloff (`atten` in `world.wgsl`):
 // `saturate(1 - (d/r)^4)^2 / (1 + d^2)`, reaching exactly `0` at `d == r` (the caller applies the
 // hard `d >= r` cutoff itself, contract §6 "range").
@@ -453,8 +537,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     var direct = shadow_factor * ggx_light(n, v, camera.light_dir.xyz, base_color, f0, metallic, alpha_squared, camera.key_light.rgb);
 
-    for (var i = 0u; i < camera.light_count; i = i + 1u) {
-        let light = camera.lights[i];
+    // Clustered forward+ (plan 0002 WP3.4): only the lights this fragment's own froxel recorded,
+    // instead of the pre-WP3.4 fixed array. `cluster_index_for` and `cluster.wgsl`'s assignment
+    // use the identical camera basis and formula, so `range` is re-checked below purely as the
+    // existing hard cutoff (contract §6 "range"), not because the cluster lookup might have missed
+    // a light that truly belongs here (`cluster.wgsl`'s header comment: the assignment can only
+    // over-include a light for a froxel, never drop one that truly overlaps it).
+    let cluster = cluster_index_for(in.world_position);
+    let range = cluster_table[cluster];
+    for (var i = 0u; i < range.count; i = i + 1u) {
+        let light = cluster_lights[cluster_index_list[range.offset + i]];
         let to_light = light.position - in.world_position;
         let distance_squared = dot(to_light, to_light);
         if distance_squared >= light.range * light.range {
@@ -463,7 +555,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let distance = sqrt(distance_squared);
         let l = to_light / max(distance, 1e-6);
         let attenuation = point_light_falloff(distance, light.range);
-        direct = direct + ggx_light(n, v, l, base_color, f0, metallic, alpha_squared, light.color * attenuation);
+        let radiance = light.color * light.intensity * attenuation;
+        direct = direct + ggx_light(n, v, l, base_color, f0, metallic, alpha_squared, radiance);
     }
 
     // Analytic ambient (PRD-0003 FR-01): hemisphere diffuse split by the shading normal, plus a

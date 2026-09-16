@@ -13,8 +13,8 @@ use crate::sprite_pass::SpritePass;
 use crate::stage;
 use crate::texture::{TextureData, TextureError};
 use crate::{
-    MeshData, MeshError, MeshHandle, RenderError, RenderFrame, RenderStats, Renderer,
-    RendererConfig, StageFrame, StageStats, TextureHandle,
+    LightBudget, MeshData, MeshError, MeshHandle, RenderError, RenderFrame, RenderStats, Renderer,
+    RendererConfig, StageFrame, StageRendererConfig, StageStats, TextureHandle,
 };
 
 enum Target {
@@ -49,6 +49,10 @@ pub struct WgpuRenderer {
     height: u32,
     /// Error of the most recent `resize`; never `SurfaceLost`, which callers treat as a skip.
     resize_error: Option<RenderError>,
+    /// Configured clustered forward+ light budget (plan 0002 WP3.4), fixed since construction —
+    /// threaded into [`crate::StageStats::point_lights_over_budget`] on every `render_stage` call,
+    /// including the zero-size-skip paths (see `render_stage_impl`).
+    light_budget: LightBudget,
 }
 
 impl std::fmt::Debug for WgpuRenderer {
@@ -122,12 +126,36 @@ impl WgpuRenderer {
         window: Arc<dyn PlatformWindow>,
         config: RendererConfig,
     ) -> Result<Self, RenderError> {
-        let (context, surface) =
-            GpuContext::new_for_window(window, context_options(&config)).map_err(map_gpu_error)?;
+        Self::new_for_window_staged(
+            window,
+            StageRendererConfig {
+                base: config,
+                ..StageRendererConfig::default()
+            },
+        )
+    }
+
+    /// Creates a renderer presenting to `window`, additionally choosing the clustered forward+
+    /// light budget (plan 0002 WP3.4, [`crate::LightBudget`]) — see [`StageRendererConfig`]'s doc
+    /// comment for why this is a separate constructor rather than a new [`RendererConfig`] field.
+    /// [`WgpuRenderer::new_for_window`] is equivalent to
+    /// `new_for_window_staged(window, StageRendererConfig { base: config, ..Default::default() })`.
+    ///
+    /// # Errors
+    /// Same as [`WgpuRenderer::new_for_window`].
+    ///
+    /// # Panics
+    /// Same as [`WgpuRenderer::new_for_window`].
+    pub fn new_for_window_staged(
+        window: Arc<dyn PlatformWindow>,
+        config: StageRendererConfig,
+    ) -> Result<Self, RenderError> {
+        let (context, surface) = GpuContext::new_for_window(window, context_options(&config.base))
+            .map_err(map_gpu_error)?;
         let sprites = SpritePass::new(
             &context,
             surface.view_format(),
-            config.initial_sprite_capacity,
+            config.base.initial_sprite_capacity,
         )
         .map_err(map_gpu_error)?;
         let (width, height) = if surface.is_configured() {
@@ -135,8 +163,14 @@ impl WgpuRenderer {
         } else {
             (0, 0)
         };
-        let mesh_pass =
-            MeshPass::new(&context, surface.view_format(), width, height).map_err(map_gpu_error)?;
+        let mesh_pass = MeshPass::new(
+            &context,
+            surface.view_format(),
+            width,
+            height,
+            config.light_budget,
+        )
+        .map_err(map_gpu_error)?;
         Ok(Self {
             context,
             target: Target::Window(surface),
@@ -145,6 +179,7 @@ impl WgpuRenderer {
             width,
             height,
             resize_error: None,
+            light_budget: config.light_budget,
         })
     }
 
@@ -160,12 +195,46 @@ impl WgpuRenderer {
         height: u32,
         config: RendererConfig,
     ) -> Result<Self, RenderError> {
-        let context = GpuContext::new_offscreen(context_options(&config)).map_err(map_gpu_error)?;
+        Self::new_offscreen_staged(
+            width,
+            height,
+            StageRendererConfig {
+                base: config,
+                ..StageRendererConfig::default()
+            },
+        )
+    }
+
+    /// Creates an offscreen renderer, additionally choosing the clustered forward+ light budget
+    /// (plan 0002 WP3.4, [`crate::LightBudget`]) — see [`StageRendererConfig`]'s doc comment for
+    /// why this is a separate constructor rather than a new [`RendererConfig`] field.
+    /// [`WgpuRenderer::new_offscreen`] is equivalent to
+    /// `new_offscreen_staged(width, height, StageRendererConfig { base: config, ..Default::default() })`.
+    ///
+    /// # Errors
+    /// Same as [`WgpuRenderer::new_offscreen`].
+    pub fn new_offscreen_staged(
+        width: u32,
+        height: u32,
+        config: StageRendererConfig,
+    ) -> Result<Self, RenderError> {
+        let context =
+            GpuContext::new_offscreen(context_options(&config.base)).map_err(map_gpu_error)?;
         let target = OffscreenTarget::new(&context, width, height).map_err(map_gpu_error)?;
-        let sprites = SpritePass::new(&context, target.format(), config.initial_sprite_capacity)
-            .map_err(map_gpu_error)?;
-        let mesh_pass =
-            MeshPass::new(&context, target.format(), width, height).map_err(map_gpu_error)?;
+        let sprites = SpritePass::new(
+            &context,
+            target.format(),
+            config.base.initial_sprite_capacity,
+        )
+        .map_err(map_gpu_error)?;
+        let mesh_pass = MeshPass::new(
+            &context,
+            target.format(),
+            width,
+            height,
+            config.light_budget,
+        )
+        .map_err(map_gpu_error)?;
         Ok(Self {
             context,
             target: Target::Offscreen(target),
@@ -174,6 +243,7 @@ impl WgpuRenderer {
             width,
             height,
             resize_error: None,
+            light_budget: config.light_budget,
         })
     }
 
@@ -395,14 +465,16 @@ impl Renderer for WgpuRenderer {
     /// `marker_sprites` and `debug_sprites` are likewise only counted, not drawn (no pipeline for
     /// them yet). Point lights, the key light and ambient are validated and counted (as before
     /// WP2.3) and, from WP2.5, actually shaded — every valid point light through the same GGX term
-    /// as the key light, clamped to `mesh_pass::MAX_POINT_LIGHTS` (a smaller, internal
-    /// pre-clustering limit; the `Low 32`/`High 256` count budget and clustered forward+ stay
-    /// WP3.4's job, contract §6). `StageStats::base.draw_calls` counts every pass (contract §6:
-    /// "draw_calls: alle Pässe") — the mesh pass's draw calls plus the sprite pass's. A
-    /// structurally valid mesh instance whose `mesh` handle was never registered with this
-    /// renderer (`WgpuRenderer::register_mesh`) is not counted in [`StageStats::meshes_drawn`]
-    /// but in [`StageStats::meshes_rejected_unregistered`] instead (contract §6, PO decision V-20,
-    /// 2026-09-16).
+    /// as the key light. From WP3.4 (engine ADR-0015 "compute clustering"), shading is clustered
+    /// forward+: lights are clamped to this renderer's configured [`crate::LightBudget`] (the
+    /// `Low 32`/`High 256` count budget, contract §6), a bullet light's contribution is capped per
+    /// [`crate::BulletLightCap`] (PRD-0003 rule 5 / FR-15), and a GPU compute pass assigns lights
+    /// to froxels instead of every fragment scanning every light. `StageStats::base.draw_calls`
+    /// counts every pass (contract §6: "draw_calls: alle Pässe") — the mesh pass's draw calls plus
+    /// the sprite pass's. A structurally valid mesh instance whose `mesh` handle was never
+    /// registered with this renderer (`WgpuRenderer::register_mesh`) is not counted in
+    /// [`StageStats::meshes_drawn`] but in [`StageStats::meshes_rejected_unregistered`] instead
+    /// (contract §6, PO decision V-20, 2026-09-16).
     ///
     /// # Errors
     /// Same as [`Renderer::render`], applied across both passes.
@@ -432,6 +504,8 @@ impl WgpuRenderer {
                 skipped_frame(start),
                 frame,
                 Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
+                Some(self.light_budget.light_count()),
+                None,
             ));
         }
 
@@ -442,6 +516,8 @@ impl WgpuRenderer {
                     skipped_frame(start),
                     frame,
                     Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
+                    Some(self.light_budget.light_count()),
+                    None,
                 ));
             }
             Err(error) => return Err(map_gpu_error(error)),
@@ -456,7 +532,7 @@ impl WgpuRenderer {
         };
         let aspect = self.width as f32 / self.height as f32;
 
-        let mesh_draw_calls = self
+        let mesh_pass_stats = self
             .mesh_pass
             .render(
                 &self.context,
@@ -467,6 +543,7 @@ impl WgpuRenderer {
                 frame.key_light.as_ref(),
                 &frame.ambient,
                 &frame.point_lights,
+                &frame.bullet_light_cap,
                 &frame.meshes,
                 &frame.materials,
                 specular_aa,
@@ -486,13 +563,15 @@ impl WgpuRenderer {
 
         let base_stats = RenderStats {
             sprites_drawn: sprite_count,
-            draw_calls: sprite_draw_calls + mesh_draw_calls,
+            draw_calls: sprite_draw_calls + mesh_pass_stats.draw_calls,
             cpu_time: start.elapsed(),
         };
         Ok(stage::stage_stats_from_base(
             base_stats,
             frame,
             Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
+            Some(self.light_budget.light_count()),
+            Some(mesh_pass_stats.cluster),
         ))
     }
 

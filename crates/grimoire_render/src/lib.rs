@@ -38,6 +38,7 @@
 use std::time::Duration;
 
 pub mod cluster_layout;
+mod cluster_pass;
 pub mod figure_format;
 mod mesh;
 mod mesh_pass;
@@ -56,7 +57,7 @@ pub use stage::{
 pub use stage3d::{
     AlphaMode, AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, CameraFollow,
     DirectionalLight, MAX_SKIN_JOINTS, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial,
-    PointLight, ShadowConfig, ShadowMode, SkinBinding, TextureHandle,
+    PointLight, ShadowConfig, ShadowMode, SkinBinding, TextureHandle, point_light_from_bullet,
 };
 pub use texture::{TextureColorSpace, TextureData, TextureError};
 
@@ -215,6 +216,66 @@ impl Default for RendererConfig {
     }
 }
 
+/// Point-light budget for [`WgpuRenderer`]'s clustered forward+ pass (plan 0002 WP3.4, engine
+/// ADR-0015 "compute clustering"; PRD-0003 FR-11: "Low 32 / High 256"). Chosen once at
+/// construction ([`WgpuRenderer::new_for_window_staged`]/[`WgpuRenderer::new_offscreen_staged`])
+/// and fixed for the renderer's lifetime — it sizes `cluster_layout`'s storage buffers, not a
+/// per-frame value; [`crate::StageFrame::point_lights`] still carries whatever a game submits each
+/// frame, and the extra ones beyond this budget are dropped (frame order) and counted
+/// ([`StageStats::point_lights_over_budget`]), never silently ignored.
+///
+/// **Why an additive path here at all:** contract §6 explicitly defers this count budget to WP3.4
+/// and rules out a new [`RendererConfig`] field — that type carries no `#[non_exhaustive]`
+/// (contract §6: "`RendererConfig` bleibt unverändert ... ein neues Feld wäre inkompatibel"), so a
+/// new field would break every existing construction by struct literal (`examples/instancing.rs`,
+/// `tests/offscreen.rs`, a game's test renderer). [`StageRendererConfig`] is WP3.4's chosen
+/// additive path instead: a new, non-exhaustive neighbour type carrying a `base: RendererConfig`
+/// plus the new parameter, the same shape `StageFrame`/`StageStats` already established for the
+/// per-frame data channels (contract §6, WP2.2) — applied here to a *construction* parameter
+/// instead of a per-frame one. [`WgpuRenderer::new_for_window`]/[`WgpuRenderer::new_offscreen`]
+/// keep their existing signatures unchanged (so every caller above stays valid) and default to
+/// [`LightBudget::default`] internally.
+///
+/// Not `#[non_exhaustive]`: contract §2 rule 13 requires that only for structs with public fields
+/// and error enums, not plain data enums like [`RenderLayer`]/[`AlphaMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LightBudget {
+    /// 32 clustered point lights (`cluster_layout::LIGHT_BUDGET_LOW`): smaller storage buffers.
+    /// The default, so an existing renderer that only ever lit a handful of point lights keeps
+    /// paying for roughly the pre-WP3.4 internal limit's worth of GPU memory, not the full
+    /// 256-light worst case, unless it explicitly asks for [`LightBudget::High`].
+    #[default]
+    Low,
+    /// 256 clustered point lights (`cluster_layout::LIGHT_BUDGET_HIGH`).
+    High,
+}
+
+impl LightBudget {
+    /// The actual light count this budget allows (`cluster_layout::LIGHT_BUDGET_LOW`/`_HIGH`).
+    #[must_use]
+    pub const fn light_count(self) -> usize {
+        match self {
+            LightBudget::Low => cluster_layout::LIGHT_BUDGET_LOW,
+            LightBudget::High => cluster_layout::LIGHT_BUDGET_HIGH,
+        }
+    }
+}
+
+/// Additive construction parameters for [`WgpuRenderer`]'s clustered forward+ pass (plan 0002
+/// WP3.4) — see [`LightBudget`]'s doc comment for why this is a separate type layered over
+/// [`RendererConfig`] rather than a new field on it.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StageRendererConfig {
+    /// Every [`RendererConfig`] parameter, unchanged.
+    pub base: RendererConfig,
+    /// The point-light budget WP3.4's clustered forward+ pass sizes its buffers for.
+    pub light_budget: LightBudget,
+}
+
 /// Renderer failures.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -350,7 +411,11 @@ impl Renderer for NullRenderer {
     /// Same as [`Renderer::render`], applied to `frame.base`.
     fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
         let base = self.render(&frame.base)?;
-        Ok(stage::stage_stats_from_base(base, frame, None))
+        // `None`/`None` for the WP3.4 light-budget and cluster-stats parameters: this renderer
+        // has no configured `LightBudget` and never dispatches the clustering compute pass, the
+        // same "renderer-capability-gated counter stays 0" shape
+        // `meshes_rejected_unregistered` already established (contract §6, PO decision V-20).
+        Ok(stage::stage_stats_from_base(base, frame, None, None, None))
     }
 }
 

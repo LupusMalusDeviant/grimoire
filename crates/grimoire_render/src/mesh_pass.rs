@@ -22,13 +22,18 @@
 //! for [`crate::TextureHandle`], except an unregistered *texture* handle is never an error: a
 //! material's texture slot simply falls back to its factor (see `mesh.wgsl`'s header comment).
 //!
-//! **Point-light budget (WP2.5):** `mesh.wgsl`'s `Camera` uniform carries a fixed-size array of at
-//! most [`MAX_POINT_LIGHTS`] lights. This is *not* the `Low 32`/`High 256` count budget contract §6
-//! assigns to WP3.4's clustered forward+ pass (deliberately not part of this contract); it is a
-//! smaller, purely internal limit this pass's simple, unclustered P1 light loop needs regardless of
-//! any configured budget. [`clamp_light_budget`] keeps the first [`MAX_POINT_LIGHTS`] valid lights
-//! (frame order) and reports how many were dropped; [`MeshPass::render`] logs a warning if any
-//! were.
+//! **Point-light budget and clustered forward+ (plan 0002 WP3.4, engine ADR-0015 "compute
+//! clustering"):** [`crate::LightBudget`] (`Low` 32 / `High` 256, contract §6, PRD-0003 FR-11),
+//! chosen once at construction (`MeshPass::new`), sizes the `cluster_layout` storage buffers
+//! `cluster_pass::ClusterPass` owns. [`build_light_list`] filters `StageFrame::point_lights` to the
+//! valid ones (contract §6 `PointLight::is_valid`), clamps them to that budget (frame order,
+//! reporting how many were dropped for [`crate::StageStats::point_lights_over_budget`]), and
+//! applies [`crate::BulletLightCap`] to any `is_bullet_light` light's uploaded intensity (PRD-0003
+//! rule 5 / FR-15, PO decision 2026-09-16 — see [`build_light_list`]'s doc comment). The result
+//! goes to the GPU once per frame; [`ClusterPass::dispatch`] assigns lights to froxels on the GPU
+//! (never the CPU — engine ADR-0015 measured a CPU assignment loop overrunning the WP3.3 render-CPU
+//! budget at 256 lights) and `mesh.wgsl`'s fragment shader reads the result from group 4, replacing
+//! the pre-WP3.4 fixed, unclustered array capped at 32.
 //!
 //! **Shadows (plan 0002 WP2.6, OF-3.2):** two techniques, selected per frame by
 //! [`crate::StageFrame::shadow_config`]'s [`crate::ShadowMode`]. A depth-only shadow map for the
@@ -53,13 +58,15 @@ use std::collections::HashMap;
 
 use grimoire_gpu::{GpuContext, GpuError, wgpu};
 
+use crate::cluster_layout::GpuPointLight;
+use crate::cluster_pass::{ClusterCameraParams, ClusterFrameStats, ClusterPass};
 use crate::mesh::{MeshData, MeshError, MeshRegistry};
 use crate::shadow_pass::{ShadowCaster, ShadowPass};
 use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight, MAX_SKIN_JOINTS};
 use crate::texture::{TextureData, TextureError, TextureRegistry};
 use crate::{
-    BlobShadowInstance, MeshHandle, MeshInstance, PbrMaterial, PointLight, RenderLayer,
-    ShadowConfig, SkinBinding, TextureHandle,
+    BlobShadowInstance, BulletLightCap, LightBudget, MeshHandle, MeshInstance, PbrMaterial,
+    PointLight, RenderLayer, ShadowConfig, SkinBinding, TextureHandle,
 };
 
 /// Depth-buffer format of the mesh pass. Guaranteed renderable on every `wgpu` backend, including
@@ -80,12 +87,6 @@ const IDENTITY: [[f32; 4]; 4] = [
     [0.0, 0.0, 1.0, 0.0],
     [0.0, 0.0, 0.0, 1.0],
 ];
-
-/// Largest number of point lights `mesh.wgsl`'s `Camera.lights` array holds; must match the
-/// literal `32` in that file's `array<PointLightGpu, 32>` (no shared codegen between WGSL and
-/// Rust, like every other layout constant in this file). See this module's doc comment for why
-/// this is not the contract's `Low 32`/`High 256` budget.
-pub(crate) const MAX_POINT_LIGHTS: usize = 32;
 
 /// Minimum clamped roughness, matching `mesh.wgsl`'s `MIN_ROUGHNESS`. A texture- or factor-sourced
 /// roughness of exactly `0` would divide by zero in the shader's height-correlated Smith
@@ -159,21 +160,6 @@ mod camera_gpu {
     // bytemuck's derive macros expand to `unsafe impl` blocks, like `MeshInstanceGpu` above.
     #![allow(unsafe_code)]
 
-    use super::MAX_POINT_LIGHTS;
-
-    /// One point light as uploaded to `mesh.wgsl`'s `Camera.lights` array. `color` is already
-    /// pre-multiplied by [`crate::PointLight::intensity`], matching the existing key-light
-    /// convention. `_pad` mirrors WGSL's uniform-address-space alignment of `vec3<f32>` (16
-    /// bytes), which the hand-written `PointLightGpu` struct in `mesh.wgsl` also carries.
-    #[repr(C)]
-    #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-    pub(super) struct PointLightGpu {
-        pub position: [f32; 3],
-        pub range: f32,
-        pub color: [f32; 3],
-        pub _pad: f32,
-    }
-
     /// Per-frame camera and lighting uniform consumed by `mesh.wgsl`'s `Camera` struct. Field
     /// order and padding mirror the WGSL struct exactly (a unit test below freezes the byte size);
     /// see this file's `camera_uniform` for how it is filled in.
@@ -184,6 +170,14 @@ mod camera_gpu {
     /// a single hard-edged tap), `z` = `1.0` if the shadow map should be sampled at all this frame
     /// (`0.0` otherwise, in which case `mesh.wgsl` skips the texture read entirely rather than
     /// sampling a possibly-stale map), `w` unused.
+    ///
+    /// `right`/`up`/`forward`/`cluster_proj` are WP3.4's addition (engine ADR-0015): the same
+    /// camera-local basis and projection scalars `cluster_pass::ClusterCameraParams` carries,
+    /// mirrored here so `mesh.wgsl`'s fragment shader can bucket a shaded point into the same
+    /// froxel `cluster.wgsl`'s compute pass assigned each light into (`cluster_index_for` in both
+    /// files, kept in sync by hand like the rest of this layout). Replaces the pre-WP3.4
+    /// `light_count`/fixed-size `lights` array — lights now live in group 4's storage buffers,
+    /// which need no compile-time count.
     #[repr(C)]
     #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub(super) struct CameraGpu {
@@ -193,16 +187,21 @@ mod camera_gpu {
         pub key_light: [f32; 4],
         pub ambient_sky: [f32; 4],
         pub ambient_ground: [f32; 4],
-        pub light_count: u32,
+        pub right: [f32; 4],
+        pub up: [f32; 4],
+        pub forward: [f32; 4],
+        /// `x` = `f_over_aspect`, `y` = `f`, `z` = `near`, `w` = `far` — see
+        /// `cluster_pass::ClusterCameraParams`.
+        pub cluster_proj: [f32; 4],
         pub specular_aa_strength: f32,
         pub _pad1: u32,
         pub _pad2: u32,
+        pub _pad3: u32,
         pub light_view_proj: [[f32; 4]; 4],
         pub shadow_params: [f32; 4],
-        pub lights: [PointLightGpu; MAX_POINT_LIGHTS],
     }
 }
-use camera_gpu::{CameraGpu, PointLightGpu};
+use camera_gpu::CameraGpu;
 
 /// GPU-side geometry of one registered mesh: static vertex and index buffers, uploaded once at
 /// [`MeshPass::register`] and never rewritten.
@@ -486,10 +485,8 @@ fn ambient_terms(ambient: &AmbientLight) -> ([f32; 3], [f32; 3]) {
     }
 }
 
-/// Splits `lights` into the ones the mesh pass's fixed-size shader array can hold (at most
-/// `budget`, kept in frame order) and how many were dropped because there were more. Never
-/// panics. See this module's doc comment on why `budget` is [`MAX_POINT_LIGHTS`] here and not
-/// contract §6's `Low 32`/`High 256` (WP3.4's job).
+/// Splits `lights` into the ones the configured light budget can hold (at most `budget`, kept in
+/// frame order) and how many were dropped because there were more. Never panics.
 pub(crate) fn clamp_light_budget<T>(lights: &[T], budget: usize) -> (&[T], usize) {
     if lights.len() <= budget {
         (lights, 0)
@@ -498,47 +495,55 @@ pub(crate) fn clamp_light_budget<T>(lights: &[T], budget: usize) -> (&[T], usize
     }
 }
 
-/// Filters `point_lights` to the valid ones (contract §6 `PointLight::is_valid`) and clamps them
-/// to [`MAX_POINT_LIGHTS`] (frame order), returning the fixed-size GPU array `mesh.wgsl` expects,
-/// how many of it are actually lit, and how many valid lights were dropped for budget reasons
-/// (`0` unless the frame really does exceed [`MAX_POINT_LIGHTS`]).
-fn build_light_array(
+/// Filters `point_lights` to the valid ones (contract §6 `PointLight::is_valid`), clamps them to
+/// `light_budget` (frame order, plan 0002 WP3.4's [`crate::LightBudget`]) and converts each
+/// survivor into [`cluster_layout::GpuPointLight`] (WP3.1, engine ADR-0013's frozen layout — see
+/// this module's doc comment) for [`ClusterPass::dispatch`]. Returns the list and how many valid
+/// lights were dropped for budget reasons (`0` unless the frame really exceeds `light_budget`; see
+/// [`crate::StageStats::point_lights_over_budget`]).
+///
+/// **Bullet-light cap (PRD-0003 rule 5 / FR-15, PO decision 2026-09-16):** a light with
+/// [`PointLight::is_bullet_light`] set has its uploaded `intensity` multiplied by
+/// `bullet_light_cap`'s [`BulletLightCap::clamped_floor_contribution`] before conversion — the
+/// *only* place this cap is applied (`mesh.wgsl`'s shading equation reads the already-capped
+/// intensity and does not know which lights were bullet lights at all). Scaling `intensity` rather
+/// than `color` is equivalent (the shading equation only ever uses their product,
+/// `light.color * light.intensity`) and keeps `cluster_layout::GpuPointLight::color` exactly
+/// [`PointLight::color`], matching that type's own doc comment.
+fn build_light_list(
     point_lights: &[PointLight],
-) -> ([PointLightGpu; MAX_POINT_LIGHTS], u32, usize) {
+    light_budget: usize,
+    bullet_light_cap: &BulletLightCap,
+) -> (Vec<GpuPointLight>, usize) {
     let valid: Vec<&PointLight> = point_lights
         .iter()
         .filter(|light| light.is_valid())
         .collect();
-    let (used, dropped) = clamp_light_budget(&valid, MAX_POINT_LIGHTS);
-    const ZERO_LIGHT: PointLightGpu = PointLightGpu {
-        position: [0.0; 3],
-        range: 0.0,
-        color: [0.0; 3],
-        _pad: 0.0,
-    };
-    let mut lights = [ZERO_LIGHT; MAX_POINT_LIGHTS];
-    for (slot, light) in lights.iter_mut().zip(used.iter()) {
-        *slot = PointLightGpu {
+    let (used, dropped) = clamp_light_budget(&valid, light_budget);
+    let cap = bullet_light_cap.clamped_floor_contribution();
+    let lights = used
+        .iter()
+        .map(|light| GpuPointLight {
             position: light.position,
             range: light.range,
-            color: [
-                light.color[0] * light.intensity,
-                light.color[1] * light.intensity,
-                light.color[2] * light.intensity,
-            ],
-            _pad: 0.0,
-        };
-    }
-    let light_count = u32::try_from(used.len()).unwrap_or(0);
-    (lights, light_count, dropped)
+            color: light.color,
+            intensity: if light.is_bullet_light {
+                light.intensity * cap
+            } else {
+                light.intensity
+            },
+        })
+        .collect();
+    (lights, dropped)
 }
 
 /// Builds the uniform `mesh.wgsl` reads: the view-projection matrix, the eye position, the key
-/// light and ambient term flattened into GPU-friendly vectors, the point-light array and count,
-/// the OF-3.5 specular-AA toggle, and (WP2.6) the key-light shadow map's light-space
-/// view-projection plus its `shadow_params` (see [`CameraGpu`]'s doc comment for the packing). An
-/// invalid or missing key light (contract §6 `DirectionalLight::is_valid`) falls back to no
-/// directional contribution at all, consistent with `StageStats::key_light_rejected_invalid`
+/// light and ambient term flattened into GPU-friendly vectors, the WP3.4 clustering camera basis
+/// (`cluster_camera`, matching what [`ClusterPass::dispatch`] uploads to the compute pass so both
+/// agree on every froxel), the OF-3.5 specular-AA toggle, and (WP2.6) the key-light shadow map's
+/// light-space view-projection plus its `shadow_params` (see [`CameraGpu`]'s doc comment for the
+/// packing). An invalid or missing key light (contract §6 `DirectionalLight::is_valid`) falls back
+/// to no directional contribution at all, consistent with `StageStats::key_light_rejected_invalid`
 /// already flagging it elsewhere.
 #[allow(clippy::too_many_arguments)]
 fn camera_uniform(
@@ -546,8 +551,7 @@ fn camera_uniform(
     eye: [f32; 3],
     key_light: Option<&DirectionalLight>,
     ambient: &AmbientLight,
-    lights: [PointLightGpu; MAX_POINT_LIGHTS],
-    light_count: u32,
+    cluster_camera: &ClusterCameraParams,
     specular_aa: bool,
     light_view_proj: [[f32; 4]; 4],
     shadow_params: [f32; 4],
@@ -579,14 +583,53 @@ fn camera_uniform(
         key_light: [key_color[0], key_color[1], key_color[2], 0.0],
         ambient_sky: [sky[0], sky[1], sky[2], 0.0],
         ambient_ground: [ground[0], ground[1], ground[2], 0.0],
-        light_count,
+        right: [
+            cluster_camera.right[0],
+            cluster_camera.right[1],
+            cluster_camera.right[2],
+            0.0,
+        ],
+        up: [
+            cluster_camera.up[0],
+            cluster_camera.up[1],
+            cluster_camera.up[2],
+            0.0,
+        ],
+        forward: [
+            cluster_camera.forward[0],
+            cluster_camera.forward[1],
+            cluster_camera.forward[2],
+            0.0,
+        ],
+        cluster_proj: [
+            cluster_camera.f_over_aspect,
+            cluster_camera.f,
+            cluster_camera.near,
+            cluster_camera.far,
+        ],
         specular_aa_strength: if specular_aa { 1.0 } else { 0.0 },
         _pad1: 0,
         _pad2: 0,
+        _pad3: 0,
         light_view_proj,
         shadow_params,
-        lights,
     }
+}
+
+/// Return value of [`MeshPass::render`] (plan 0002 WP3.4 grew this from a plain draw-call count):
+/// everything [`crate::WgpuRenderer::render_stage_impl`] needs to fill in
+/// [`crate::StageStats`]'s base and WP3.4 fields. `StageStats::point_lights_over_budget` is
+/// deliberately not here: `crate::stage::stage_stats_from_base` derives it from the already
+/// structurally-computed `point_lights_drawn` count and the renderer's configured light budget, the
+/// same "single source of truth, no duplicated validation" shape `meshes_rejected_unregistered`
+/// already uses (contract §6, PO decision V-20).
+pub(crate) struct MeshPassStats {
+    /// Draw calls issued across every sub-pass this call touched; see [`MeshPass::render`]'s doc
+    /// comment.
+    pub draw_calls: u32,
+    /// The clustered forward+ pass's own frame stats (WP3.4) —
+    /// [`crate::StageStats::clusters_with_lights`]/[`crate::StageStats::light_cluster_index_entries`].
+    pub cluster: ClusterFrameStats,
 }
 
 /// GPU mesh pipeline, depth buffer, mesh registry and texture registry, owned by
@@ -646,6 +689,14 @@ pub(crate) struct MeshPass {
     bone_bind_group: wgpu::BindGroup,
     /// Capacity of `bone_buffer` in bone matrices (at least 1, see [`create_bone_buffer`]).
     bone_capacity: u32,
+    /// Clustered forward+ light assignment (plan 0002 WP3.4, engine ADR-0015): owns the
+    /// `cluster_layout` storage buffers (sized once for `light_budget`) and group 4's bind group,
+    /// bound identically by `pipeline` and `skinned_pipeline` (both share `mesh.wgsl`'s `fs_main`).
+    cluster_pass: ClusterPass,
+    /// Configured light budget (`crate::LightBudget::light_count`), fixed for this pass's
+    /// lifetime — WP3.4 does not support changing it after construction, matching how
+    /// `RendererConfig`'s other construction-time parameters work.
+    light_budget: usize,
 }
 
 /// One `texture_2d<f32>` binding entry of the texture bind group layout (group 1), all four
@@ -765,6 +816,7 @@ fn create_bone_bind_group(
 /// vertex position directly. An instance with `skin == None` never touches this pipeline or its
 /// bone buffer (this module's `render` groups instances by `MeshInstance::skin` before choosing a
 /// pipeline), so it costs nothing extra, as the contract requires.
+#[allow(clippy::too_many_arguments)]
 fn create_skinned_pipeline(
     context: &GpuContext,
     shader: &wgpu::ShaderModule,
@@ -772,6 +824,7 @@ fn create_skinned_pipeline(
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     shadow_bind_group_layout: &wgpu::BindGroupLayout,
     bone_bind_group_layout: &wgpu::BindGroupLayout,
+    cluster_bind_group_layout: &wgpu::BindGroupLayout,
     color_format: wgpu::TextureFormat,
 ) -> Result<wgpu::RenderPipeline, GpuError> {
     let device = context.device();
@@ -782,6 +835,9 @@ fn create_skinned_pipeline(
             Some(texture_bind_group_layout),
             Some(shadow_bind_group_layout),
             Some(bone_bind_group_layout),
+            // Group 4 (plan 0002 WP3.4): read-only cluster/light buffers, shared with the rigid
+            // pipeline's layout below at the same group index — both feed the same `fs_main`.
+            Some(cluster_bind_group_layout),
         ],
         immediate_size: 0,
     });
@@ -971,6 +1027,7 @@ impl MeshPass {
         color_format: wgpu::TextureFormat,
         width: u32,
         height: u32,
+        light_budget: LightBudget,
     ) -> Result<Self, GpuError> {
         let device = context.device();
         let shader = context.capture_errors(|device| {
@@ -1059,12 +1116,23 @@ impl MeshPass {
 
         let shadow_bind_group_layout = create_shadow_bind_group_layout(context);
 
+        // Clustered forward+ (plan 0002 WP3.4, engine ADR-0015): built before the pipeline
+        // layouts below so both can bind its group-4 layout at the same index. `light_budget`
+        // (`crate::LightBudget::light_count`) sizes its storage buffers for this pass's lifetime.
+        let cluster_pass = ClusterPass::new(context, light_budget.light_count())?;
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("grimoire mesh layout"),
             bind_group_layouts: &[
                 Some(&camera_bind_group_layout),
                 Some(&texture_bind_group_layout),
                 Some(&shadow_bind_group_layout),
+                // No group 3 for the rigid pipeline (that is the skinned pipeline's bone matrix
+                // buffer, `vs_main`/`fs_main` never reference it) — `None` keeps group 4 (cluster
+                // buffers, read by `fs_main`, shared with `skinned_pipeline`'s layout below) at
+                // the same index in both pipelines.
+                None,
+                Some(cluster_pass.fragment_bind_group_layout()),
             ],
             immediate_size: 0,
         });
@@ -1163,6 +1231,7 @@ impl MeshPass {
             &texture_bind_group_layout,
             &shadow_bind_group_layout,
             &bone_bind_group_layout,
+            cluster_pass.fragment_bind_group_layout(),
             color_format,
         )?;
         let skinned_instance_capacity =
@@ -1206,6 +1275,8 @@ impl MeshPass {
             bone_buffer,
             bone_bind_group,
             bone_capacity,
+            cluster_pass,
+            light_budget: light_budget.light_count(),
         })
     }
 
@@ -1368,9 +1439,11 @@ impl MeshPass {
     /// instances reference it. An instance with `skin == None` never touches the skinned pipeline,
     /// its buffers, or an extra draw call.
     ///
-    /// `point_lights` are shaded through the same GGX term as the key light, clamped to
-    /// [`MAX_POINT_LIGHTS`] (see this module's doc comment); `specular_aa` is the OF-3.5 toggle
-    /// (production rendering always passes `true`, see
+    /// `point_lights` are shaded through the same GGX term as the key light, clamped to this
+    /// pass's configured [`crate::LightBudget`] and clustered on the GPU (plan 0002 WP3.4, see
+    /// this module's doc comment and [`build_light_list`]); `bullet_light_cap` is applied to any
+    /// `is_bullet_light` light's uploaded intensity before clustering. `specular_aa` is the OF-3.5
+    /// toggle (production rendering always passes `true`, see
     /// [`crate::WgpuRenderer::render_stage_with_specular_aa`]).
     ///
     /// **Shadows (WP2.6):** if `shadow_config` is valid, its mode wants a key-light shadow map,
@@ -1384,9 +1457,11 @@ impl MeshPass {
     /// `shadow_config`'s mode wants them, in the *same* render pass right after the opaque meshes —
     /// depth-tested against them but never depth-writing (`blob_shadow.wgsl`'s header comment).
     ///
-    /// Returns the number of draw calls issued across every sub-pass this call touches (`0` if
-    /// there is no usable camera or nothing to draw), for [`crate::StageStats::base`]'s
-    /// `draw_calls` (contract §6: "all passes").
+    /// Returns [`MeshPassStats`]: the number of draw calls issued across every sub-pass this call
+    /// touches (`0` if there is no usable camera or nothing to draw, for
+    /// [`crate::StageStats::base`]'s `draw_calls`, contract §6: "all passes"), how many valid
+    /// point lights this frame exceeded the configured light budget (WP3.4), and the clustered
+    /// forward+ pass's own frame stats.
     ///
     /// # Errors
     /// [`GpuError`] if uploading the per-frame uniform/instance data or submitting a render pass
@@ -1402,13 +1477,14 @@ impl MeshPass {
         key_light: Option<&DirectionalLight>,
         ambient: &AmbientLight,
         point_lights: &[PointLight],
+        bullet_light_cap: &BulletLightCap,
         meshes: &[MeshInstance],
         materials: &[PbrMaterial],
         specular_aa: bool,
         shadow_config: &ShadowConfig,
         blob_shadows: &[BlobShadowInstance],
         joint_matrices: &[[[f32; 4]; 4]],
-    ) -> Result<u32, GpuError> {
+    ) -> Result<MeshPassStats, GpuError> {
         let view_proj =
             camera.map(|camera| stage3d::view_projection(camera, aspect, NEAR_PLANE, FAR_PLANE));
         let usable_view_proj =
@@ -1496,13 +1572,30 @@ impl MeshPass {
         }
 
         let eye = camera.map_or([0.0; 3], stage3d::eye_position);
-        let (lights, light_count, dropped) = build_light_array(point_lights);
-        if dropped > 0 {
-            let total_valid = dropped + light_count as usize;
+        let (gpu_lights, point_lights_over_budget) =
+            build_light_list(point_lights, self.light_budget, bullet_light_cap);
+        if point_lights_over_budget > 0 {
+            let total_valid = point_lights_over_budget + gpu_lights.len();
             log::warn!(
-                "point light budget exceeded: {total_valid} valid point lights this frame, shading only the first {MAX_POINT_LIGHTS} (WP3.4 replaces this with clustered forward+ and a configurable Low 32 / High 256 budget)"
+                "point light budget exceeded: {total_valid} valid point lights this frame, clustering only the first {} (crate::LightBudget, contract §6)",
+                self.light_budget
             );
         }
+        // Clustered forward+ camera basis (plan 0002 WP3.4): the same values, computed once, feed
+        // both `mesh.wgsl`'s uniform below and the compute dispatch further down, so a fragment's
+        // froxel and a light's froxel agree by construction. Degenerate (but finite) when there is
+        // no usable camera this frame — nothing is drawn in that case (`usable_view_proj.is_none()`
+        // already empties `order`/`skinned_order` above), so which froxel a light lands in cannot
+        // affect the picture.
+        let cluster_camera = match (camera, usable_view_proj) {
+            (Some(camera), Some(_)) => {
+                stage3d::cluster_camera_params(camera, aspect, NEAR_PLANE, FAR_PLANE)
+            }
+            _ => ClusterCameraParams::degenerate(NEAR_PLANE, FAR_PLANE),
+        };
+        let cluster_stats = self
+            .cluster_pass
+            .dispatch(context, &gpu_lights, &cluster_camera)?;
 
         // Key-light shadow map (WP2.6): skipped entirely (no `configure`/render cost) unless the
         // mode wants it and there is a valid key light and camera to fit it around.
@@ -1547,8 +1640,7 @@ impl MeshPass {
             eye,
             key_light,
             ambient,
-            lights,
-            light_count,
+            &cluster_camera,
             specular_aa,
             light_view_proj,
             shadow_params,
@@ -1713,6 +1805,10 @@ impl MeshPass {
         let skinned_instance_buffer = &self.skinned_instance_buffer;
         let bone_bind_group = &self.bone_bind_group;
         let blob_instance_buffer = &self.blob_instance_buffer;
+        // Clustered forward+ (plan 0002 WP3.4): group 4, identical for the rigid and skinned
+        // pipelines below (both share `mesh.wgsl`'s `fs_main`), already refreshed by
+        // `self.cluster_pass.dispatch` above this frame.
+        let cluster_fragment_bind_group = self.cluster_pass.fragment_bind_group();
         context.capture_errors(move |device| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("grimoire mesh encoder"),
@@ -1745,6 +1841,7 @@ impl MeshPass {
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, camera_bind_group, &[]);
                     pass.set_bind_group(2, shadow_sampling_bind_group, &[]);
+                    pass.set_bind_group(4, cluster_fragment_bind_group, &[]);
                     pass.set_vertex_buffer(
                         1,
                         instance_buffer.slice(..u64::from(count) * MESH_INSTANCE_SIZE),
@@ -1770,6 +1867,7 @@ impl MeshPass {
                     pass.set_bind_group(0, camera_bind_group, &[]);
                     pass.set_bind_group(2, shadow_sampling_bind_group, &[]);
                     pass.set_bind_group(3, bone_bind_group, &[]);
+                    pass.set_bind_group(4, cluster_fragment_bind_group, &[]);
                     pass.set_vertex_buffer(
                         1,
                         skinned_instance_buffer
@@ -1806,7 +1904,10 @@ impl MeshPass {
             context.queue().submit([encoder.finish()]);
         })?;
 
-        Ok(draw_calls)
+        Ok(MeshPassStats {
+            draw_calls,
+            cluster: cluster_stats,
+        })
     }
 
     /// Whether `mesh` is drawable this frame under contract §6's shared mesh acceptance rules:
@@ -1894,6 +1995,7 @@ mod tests {
     use std::mem::offset_of;
 
     use super::*;
+    use crate::cluster_layout;
     use crate::mesh::MeshVertex;
 
     #[test]
@@ -1902,14 +2004,12 @@ mod tests {
     }
 
     #[test]
-    fn camera_gpu_is_1264_bytes() {
-        // WP2.5's 1184 bytes plus WP2.6's `light_view_proj` (64) and `shadow_params` (16).
-        assert_eq!(std::mem::size_of::<CameraGpu>(), 1264);
-    }
-
-    #[test]
-    fn point_light_gpu_is_32_bytes() {
-        assert_eq!(std::mem::size_of::<PointLightGpu>(), 32);
+    fn camera_gpu_is_304_bytes() {
+        // WP3.4 dropped the fixed 32-light array (1024 bytes) and `light_count` (4 bytes) in
+        // favour of group 4's storage buffers, adding the camera-local basis and clustering
+        // projection scalars (4 `vec4`s, 64 bytes) plus one more `u32` pad (keeping the
+        // `specular_aa_strength` block a 16-byte multiple): 1264 - 1024 - 4 + 64 + 4 = 304.
+        assert_eq!(std::mem::size_of::<CameraGpu>(), 304);
     }
 
     #[test]
@@ -2076,11 +2176,14 @@ mod tests {
         assert_eq!(mesh_instance_capacity(u64::MAX), u32::MAX);
     }
 
+    /// Shared stand-in camera basis for `camera_uniform` tests below that do not care about the
+    /// WP3.4 clustering fields themselves.
+    fn test_cluster_camera() -> ClusterCameraParams {
+        ClusterCameraParams::degenerate(NEAR_PLANE, FAR_PLANE)
+    }
+
     #[test]
     fn camera_uniform_falls_back_to_no_light_or_ambient_when_invalid() {
-        let (lights, count, dropped) = build_light_array(&[]);
-        assert_eq!(count, 0);
-        assert_eq!(dropped, 0);
         let uniform = camera_uniform(
             IDENTITY,
             [0.0, 0.0, 0.0],
@@ -2093,8 +2196,7 @@ mod tests {
                 color: [1.0, 1.0, 1.0],
                 intensity: -1.0, // AmbientLight::is_valid() rejects a negative intensity.
             },
-            lights,
-            count,
+            &test_cluster_camera(),
             true,
             IDENTITY,
             [0.0; 4],
@@ -2113,7 +2215,6 @@ mod tests {
         // Exactly representable in binary floating point, so the assertion below needs no
         // tolerance.
         let color = [0.25, 0.5, 0.75];
-        let (lights, count, _) = build_light_array(&[]);
         let uniform = camera_uniform(
             IDENTITY,
             [0.0, 0.0, 0.0],
@@ -2122,8 +2223,7 @@ mod tests {
                 color,
                 intensity: 1.0,
             },
-            lights,
-            count,
+            &test_cluster_camera(),
             true,
             IDENTITY,
             [0.0; 4],
@@ -2138,7 +2238,6 @@ mod tests {
 
     #[test]
     fn camera_uniform_points_light_dir_towards_the_light() {
-        let (lights, count, _) = build_light_array(&[]);
         let uniform = camera_uniform(
             IDENTITY,
             [0.0, 0.0, 0.0],
@@ -2151,8 +2250,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0],
                 intensity: 0.0,
             },
-            lights,
-            count,
+            &test_cluster_camera(),
             true,
             IDENTITY,
             [0.0; 4],
@@ -2170,7 +2268,6 @@ mod tests {
             [9.0, 10.0, 11.0, 12.0],
             [13.0, 14.0, 15.0, 16.0],
         ];
-        let (lights, count, _) = build_light_array(&[]);
         let uniform = camera_uniform(
             matrix,
             [0.0, 0.0, 0.0],
@@ -2179,8 +2276,7 @@ mod tests {
                 color: [0.0, 0.0, 0.0],
                 intensity: 0.0,
             },
-            lights,
-            count,
+            &test_cluster_camera(),
             true,
             IDENTITY,
             [0.0; 4],
@@ -2190,14 +2286,12 @@ mod tests {
 
     #[test]
     fn camera_uniform_carries_the_eye_position_and_specular_aa_toggle() {
-        let (lights, count, _) = build_light_array(&[]);
         let uniform = camera_uniform(
             IDENTITY,
             [1.0, 2.0, 3.0],
             None,
             &AmbientLight::default(),
-            lights,
-            count,
+            &test_cluster_camera(),
             false,
             IDENTITY,
             [0.0; 4],
@@ -2208,7 +2302,6 @@ mod tests {
 
     #[test]
     fn camera_uniform_carries_the_shadow_matrix_and_params_through() {
-        let (lights, count, _) = build_light_array(&[]);
         let light_view_proj = [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 2.0, 0.0, 0.0],
@@ -2221,8 +2314,7 @@ mod tests {
             [0.0, 0.0, 0.0],
             None,
             &AmbientLight::default(),
-            lights,
-            count,
+            &test_cluster_camera(),
             true,
             light_view_proj,
             shadow_params,
@@ -2231,7 +2323,35 @@ mod tests {
         assert_eq!(uniform.shadow_params, shadow_params);
     }
 
-    // --- clamp_light_budget / build_light_array (WP2.5) --------------------------------------
+    #[test]
+    fn camera_uniform_carries_the_cluster_camera_basis_through() {
+        let cluster_camera = ClusterCameraParams {
+            eye: [1.0, 2.0, 3.0],
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            forward: [0.0, 1.0, 0.0],
+            f_over_aspect: 1.5,
+            f: 2.0,
+            near: 0.1,
+            far: 500.0,
+        };
+        let uniform = camera_uniform(
+            IDENTITY,
+            [0.0, 0.0, 0.0],
+            None,
+            &AmbientLight::default(),
+            &cluster_camera,
+            true,
+            IDENTITY,
+            [0.0; 4],
+        );
+        assert_eq!(&uniform.right[..3], [1.0, 0.0, 0.0]);
+        assert_eq!(&uniform.up[..3], [0.0, 0.0, 1.0]);
+        assert_eq!(&uniform.forward[..3], [0.0, 1.0, 0.0]);
+        assert_eq!(uniform.cluster_proj, [1.5, 2.0, 0.1, 500.0]);
+    }
+
+    // --- clamp_light_budget / build_light_list (WP2.5, WP3.4) --------------------------------
 
     #[test]
     fn clamp_light_budget_keeps_everything_under_budget() {
@@ -2273,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn build_light_array_drops_invalid_lights_without_counting_them_as_budget_drops() {
+    fn build_light_list_drops_invalid_lights_without_counting_them_as_budget_drops() {
         let lights = vec![
             light_at(1.0),
             PointLight {
@@ -2282,9 +2402,10 @@ mod tests {
             },
             light_at(3.0),
         ];
-        let (gpu_lights, count, dropped) = build_light_array(&lights);
+        let (gpu_lights, dropped) = build_light_list(&lights, 32, &BulletLightCap::default());
         assert_eq!(
-            count, 2,
+            gpu_lights.len(),
+            2,
             "the NaN-intensity light is invalid, not budget-dropped"
         );
         assert_eq!(dropped, 0);
@@ -2293,45 +2414,87 @@ mod tests {
     }
 
     #[test]
-    fn build_light_array_clamps_to_max_point_lights_and_reports_the_rest_dropped() {
-        let lights: Vec<PointLight> = (0..MAX_POINT_LIGHTS + 5)
-            .map(|i| light_at(i as f32))
-            .collect();
-        let (gpu_lights, count, dropped) = build_light_array(&lights);
-        assert_eq!(count as usize, MAX_POINT_LIGHTS);
+    fn build_light_list_clamps_to_the_configured_budget_and_reports_the_rest_dropped() {
+        let lights: Vec<PointLight> = (0..37).map(|i| light_at(i as f32)).collect();
+        let (gpu_lights, dropped) = build_light_list(&lights, 32, &BulletLightCap::default());
+        assert_eq!(gpu_lights.len(), 32);
         assert_eq!(dropped, 5);
         assert_eq!(gpu_lights[0].position, [0.0, 0.0, 0.0]);
+        assert_eq!(gpu_lights[31].position, [31.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn build_light_list_handles_the_full_high_budget_of_256_lights() {
+        // Plan 0002 WP3.4 / PRD-0003 FR-11's "High 256" preset: every one of 256 valid lights
+        // survives (frame order, nothing dropped) once the budget is configured to match —
+        // demonstrating this layer actually carries the full contract budget through, not just
+        // the pre-WP3.4 internal 32-light limit `mesh.wgsl`'s old fixed array capped at.
+        let lights: Vec<PointLight> = (0..cluster_layout::LIGHT_BUDGET_HIGH)
+            .map(|i| light_at(i as f32))
+            .collect();
+        let (gpu_lights, dropped) = build_light_list(
+            &lights,
+            cluster_layout::LIGHT_BUDGET_HIGH,
+            &BulletLightCap::default(),
+        );
+        assert_eq!(gpu_lights.len(), cluster_layout::LIGHT_BUDGET_HIGH);
+        assert_eq!(dropped, 0);
         assert_eq!(
-            gpu_lights[MAX_POINT_LIGHTS - 1].position,
-            [(MAX_POINT_LIGHTS - 1) as f32, 0.0, 0.0]
+            gpu_lights[cluster_layout::LIGHT_BUDGET_HIGH - 1].position,
+            [(cluster_layout::LIGHT_BUDGET_HIGH - 1) as f32, 0.0, 0.0]
         );
     }
 
     #[test]
-    fn build_light_array_premultiplies_color_by_intensity() {
+    fn build_light_list_keeps_color_and_intensity_separate() {
+        // Unlike the pre-WP3.4 fixed array (which pre-multiplied colour by intensity for
+        // `mesh.wgsl`'s old uniform layout), `cluster_layout::GpuPointLight` carries
+        // `PointLight::intensity` verbatim (its own doc comment) so the bullet-light cap below
+        // can scale intensity alone.
         let lights = [PointLight {
             color: [0.5, 0.25, 1.0],
             intensity: 2.0,
             ..PointLight::default()
         }];
-        let (gpu_lights, count, _) = build_light_array(&lights);
-        assert_eq!(count, 1);
-        assert_eq!(gpu_lights[0].color, [1.0, 0.5, 2.0]);
+        let (gpu_lights, _) = build_light_list(&lights, 32, &BulletLightCap::default());
+        assert_eq!(gpu_lights.len(), 1);
+        assert_eq!(gpu_lights[0].color, [0.5, 0.25, 1.0]);
+        assert_eq!(gpu_lights[0].intensity, 2.0);
     }
 
     #[test]
-    fn build_light_array_zero_fills_unused_slots() {
-        let (gpu_lights, count, _) = build_light_array(&[light_at(1.0)]);
-        assert_eq!(count, 1);
+    fn build_light_list_applies_the_bullet_light_cap_only_to_bullet_lights() {
+        // PRD-0003 rule 5 / FR-15, PO decision 2026-09-16: `is_bullet_light` lights have their
+        // uploaded intensity scaled by `BulletLightCap::clamped_floor_contribution`; every other
+        // light is unaffected.
+        let lights = [
+            PointLight {
+                intensity: 4.0,
+                is_bullet_light: true,
+                ..light_at(1.0)
+            },
+            PointLight {
+                intensity: 4.0,
+                is_bullet_light: false,
+                ..light_at(2.0)
+            },
+        ];
+        let cap = BulletLightCap {
+            floor_contribution: 0.25,
+        };
+        let (gpu_lights, _) = build_light_list(&lights, 32, &cap);
+        assert_eq!(gpu_lights[0].intensity, 1.0, "bullet light: 4.0 * 0.25 cap");
         assert_eq!(
-            gpu_lights[1],
-            PointLightGpu {
-                position: [0.0; 3],
-                range: 0.0,
-                color: [0.0; 3],
-                _pad: 0.0,
-            }
+            gpu_lights[1].intensity, 4.0,
+            "non-bullet light: cap does not apply"
         );
+    }
+
+    #[test]
+    fn build_light_list_of_no_lights_is_empty() {
+        let (gpu_lights, dropped) = build_light_list(&[], 32, &BulletLightCap::default());
+        assert!(gpu_lights.is_empty());
+        assert_eq!(dropped, 0);
     }
 
     // --- Reference implementation of `mesh.wgsl`'s shading maths, for GPU-free unit tests -----

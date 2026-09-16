@@ -271,6 +271,23 @@ pub struct StageStats {
     /// [`crate::ShadowMode::KeyLightPlusPoints`]'s doc comment): always `0` in this version,
     /// regardless of how many [`PointLight`]s have [`PointLight::casts_shadow`] set.
     pub point_shadow_casters_drawn: u32,
+    /// Of [`StageStats::point_lights_drawn`] (structurally valid lights), how many exceeded the
+    /// renderer's configured [`crate::LightBudget`] this frame and were dropped (frame order)
+    /// before clustering (plan 0002 WP3.4). Always `0` for a renderer with no configured light
+    /// budget ([`crate::NullRenderer`] — it never clusters, the same capability-gated-counter
+    /// shape [`StageStats::meshes_rejected_unregistered`] already established).
+    pub point_lights_over_budget: u32,
+    /// Of [`crate::cluster_layout::CLUSTER_COUNT`] froxels, how many had at least one light
+    /// assigned this frame, as of the clustered forward+ pass's most recently completed
+    /// (non-blocking) readback (plan 0002 WP3.4, engine ADR-0015; see `cluster_pass.rs`'s module
+    /// doc comment for why this lags the true GPU state by roughly a frame under normal load).
+    /// Always `0` for a renderer that never clusters ([`crate::NullRenderer`]).
+    pub clusters_with_lights: u32,
+    /// Total light-cluster assignments across every froxel this frame (sum of each cluster's
+    /// light count), same readback caveat as [`StageStats::clusters_with_lights`]. Always
+    /// `<= cluster_layout::light_index_list_worst_case_len` for the configured budget, usually far
+    /// below it (engine ADR-0013's module doc comment on why the worst case is pessimistic).
+    pub light_cluster_index_entries: u32,
 }
 
 /// Outcome of classifying a [`StageFrame::bullets`] channel against the bullet pass rules.
@@ -291,18 +308,31 @@ struct BulletExtraction {
 /// exists yet in P1), the bullet counters come from [`extract_bullets`], and the mesh/material/
 /// light counters come from [`extract_stage3d`].
 ///
-/// `is_mesh_registered` is the one part of this shared function that is deliberately *not*
-/// identical for every caller (contract §6, PO decision V-20, 2026-09-16): the structural mesh
-/// checks in [`extract_stage3d`] are shared code, but only a renderer with its own mesh registry
-/// can say whether a `mesh` handle is actually known. Pass `None` for a renderer without a
-/// registry ([`crate::NullRenderer`]) — every structurally valid mesh instance then counts as
-/// drawn, exactly as before WP2.3 — or `Some(&is_registered)` for one that owns a registry
-/// ([`crate::WgpuRenderer`]), which moves an otherwise-drawable but unregistered instance from
-/// [`StageStats::meshes_drawn`] into [`StageStats::meshes_rejected_unregistered`].
+/// `is_mesh_registered` is deliberately *not* identical for every caller (contract §6, PO decision
+/// V-20, 2026-09-16): the structural mesh checks in [`extract_stage3d`] are shared code, but only
+/// a renderer with its own mesh registry can say whether a `mesh` handle is actually known. Pass
+/// `None` for a renderer without a registry ([`crate::NullRenderer`]) — every structurally valid
+/// mesh instance then counts as drawn, exactly as before WP2.3 — or `Some(&is_registered)` for one
+/// that owns a registry ([`crate::WgpuRenderer`]), which moves an otherwise-drawable but
+/// unregistered instance from [`StageStats::meshes_drawn`] into
+/// [`StageStats::meshes_rejected_unregistered`].
+///
+/// `light_budget`/`cluster_stats` (plan 0002 WP3.4) follow the identical capability-gated shape:
+/// `None` for a renderer with no configured [`crate::LightBudget`] or clustering pass
+/// ([`crate::NullRenderer`]) leaves [`StageStats::point_lights_over_budget`],
+/// [`StageStats::clusters_with_lights`] and [`StageStats::light_cluster_index_entries`] at `0`;
+/// `Some` for [`crate::WgpuRenderer`] fills them in.
+/// [`StageStats::point_lights_over_budget`] is derived here from the already-computed
+/// `stage3d.point_lights_drawn` (every structurally valid light, contract §6
+/// `PointLight::is_valid`) rather than recomputed by the caller, so the mesh pass's own budget
+/// clamp (`mesh_pass::build_light_list`) and this counter can never disagree about which lights
+/// count as valid in the first place.
 pub(crate) fn stage_stats_from_base(
     base: RenderStats,
     frame: &StageFrame,
     is_mesh_registered: Option<&dyn Fn(MeshHandle) -> bool>,
+    light_budget: Option<usize>,
+    cluster_stats: Option<crate::cluster_pass::ClusterFrameStats>,
 ) -> StageStats {
     let bullets = extract_bullets(&frame.bullets);
     let stage3d = extract_stage3d(frame, is_mesh_registered);
@@ -318,6 +348,11 @@ pub(crate) fn stage_stats_from_base(
     } else {
         0
     };
+    let point_lights_over_budget = light_budget.map_or(0, |budget| {
+        let budget = u32::try_from(budget).unwrap_or(u32::MAX);
+        stage3d.point_lights_drawn.saturating_sub(budget)
+    });
+    let cluster_stats = cluster_stats.unwrap_or_default();
     StageStats {
         base: RenderStats {
             sprites_drawn: base.sprites_drawn + u32::try_from(sprite_channels).unwrap_or(u32::MAX),
@@ -343,6 +378,9 @@ pub(crate) fn stage_stats_from_base(
         shadow_config_invalid,
         shadow_casters_drawn,
         point_shadow_casters_drawn: 0,
+        point_lights_over_budget,
+        clusters_with_lights: cluster_stats.clusters_with_lights,
+        light_cluster_index_entries: cluster_stats.light_cluster_index_entries,
     }
 }
 
@@ -955,6 +993,70 @@ mod tests {
         assert!(result.bullet_light_cap_invalid);
     }
 
+    // --- WP3.4: light budget / cluster stats capability gating --------------------------------
+
+    #[test]
+    fn stage_stats_from_base_without_a_light_budget_never_reports_point_lights_over_budget() {
+        // `None` is what `NullRenderer` passes (it never clusters): even with far more valid
+        // lights than any real budget, the counter stays 0, the same capability-gated shape as
+        // `meshes_rejected_unregistered`.
+        let mut frame = StageFrame::new();
+        for _ in 0..40 {
+            frame.point_lights.push(PointLight::default());
+        }
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        assert_eq!(stats.point_lights_drawn, 40);
+        assert_eq!(stats.point_lights_over_budget, 0);
+    }
+
+    #[test]
+    fn stage_stats_from_base_derives_point_lights_over_budget_from_the_valid_count() {
+        let mut frame = StageFrame::new();
+        for _ in 0..40 {
+            frame.point_lights.push(PointLight::default());
+        }
+        // One structurally invalid light: must not count towards the budget either way.
+        frame.point_lights.push(PointLight {
+            intensity: f32::NAN,
+            ..PointLight::default()
+        });
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, Some(32), None);
+        assert_eq!(
+            stats.point_lights_drawn, 40,
+            "the NaN light is invalid, not counted here"
+        );
+        assert_eq!(
+            stats.point_lights_over_budget, 8,
+            "40 valid lights, budget 32"
+        );
+    }
+
+    #[test]
+    fn stage_stats_from_base_without_cluster_stats_reports_zero() {
+        let frame = StageFrame::new();
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, Some(32), None);
+        assert_eq!(stats.clusters_with_lights, 0);
+        assert_eq!(stats.light_cluster_index_entries, 0);
+    }
+
+    #[test]
+    fn stage_stats_from_base_copies_cluster_stats_through_when_given() {
+        let frame = StageFrame::new();
+        let cluster_stats = crate::cluster_pass::ClusterFrameStats {
+            clusters_with_lights: 12,
+            light_cluster_index_entries: 34,
+        };
+        let stats = stage_stats_from_base(
+            RenderStats::default(),
+            &frame,
+            None,
+            Some(32),
+            Some(cluster_stats),
+        );
+        assert_eq!(stats.clusters_with_lights, 12);
+        assert_eq!(stats.light_cluster_index_entries, 34);
+    }
+
     #[test]
     fn extract_stage3d_default_frame_has_no_rejections() {
         let frame = StageFrame::new();
@@ -1034,7 +1136,7 @@ mod tests {
     #[test]
     fn shadow_casters_drawn_matches_meshes_drawn_when_key_light_shadows_are_wanted() {
         let frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
         assert_eq!(stats.meshes_drawn, 1);
         assert_eq!(stats.shadow_casters_drawn, 1);
         assert_eq!(
@@ -1047,7 +1149,7 @@ mod tests {
     fn shadow_casters_drawn_is_zero_when_the_mode_does_not_want_key_light_shadows() {
         for mode in [ShadowMode::None, ShadowMode::Blob] {
             let frame = frame_with_one_valid_mesh_and_key_light(mode);
-            let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+            let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
             assert_eq!(stats.meshes_drawn, 1);
             assert_eq!(stats.shadow_casters_drawn, 0, "mode {mode:?}");
         }
@@ -1057,7 +1159,7 @@ mod tests {
     fn shadow_casters_drawn_is_zero_without_a_valid_key_light() {
         let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
         frame.key_light = None;
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
         assert_eq!(stats.shadow_casters_drawn, 0, "no key light at all");
 
         let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
@@ -1065,7 +1167,7 @@ mod tests {
             direction: [0.0, 0.0, 0.0], // zero-length: DirectionalLight::is_valid rejects it
             ..DirectionalLight::default()
         });
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
         assert_eq!(stats.shadow_casters_drawn, 0, "invalid key light");
     }
 
@@ -1073,7 +1175,7 @@ mod tests {
     fn shadow_casters_drawn_is_zero_with_an_invalid_shadow_config() {
         let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
         frame.shadow_config.map_size = 0; // ShadowConfig::is_valid rejects a zero map size
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
         assert!(stats.shadow_config_invalid);
         assert_eq!(
             stats.shadow_casters_drawn, 0,
@@ -1089,7 +1191,7 @@ mod tests {
             radius: -1.0,
             ..valid_blob()
         });
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
         assert_eq!(stats.blob_shadows_drawn, 1);
         assert_eq!(stats.blob_shadows_rejected_invalid, 1);
         assert!(!stats.shadow_config_invalid, "default config is valid");

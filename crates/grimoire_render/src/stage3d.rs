@@ -25,14 +25,16 @@
 //! [`MeshInstance`] with GGX microfacet specular, height-correlated Smith visibility, Schlick
 //! Fresnel, an analytic ambient term and geometric specular anti-aliasing (OF-3.5), consuming
 //! [`PointLight`], [`DirectionalLight`] and [`AmbientLight`] for real; this module still owns only
-//! their data contract, plus [`eye_position`] (added for the shading's view vector) and
-//! [`view_projection`] below. [`PointLight::is_bullet_light`]/[`BulletLightCap`] are validated and
-//! counted (as before) but not yet applied to the shading equation — contract §6 assigns that to
-//! WP3.4/WP3.5, once bullet-cloud lights exist. The point-light *count* budget (`Low 32` /
-//! `High 256`) together with clustered forward+ lighting is WP3.4's job; `mesh_pass`'s simple P1
-//! light loop uses a smaller, internal pre-clustering limit instead (see
-//! `mesh_pass::MAX_POINT_LIGHTS`). Mesh geometry and its GPU upload are WP2.3's job (see
-//! [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this module
+//! their data contract, plus [`eye_position`]/[`cluster_camera_params`] (added for the shading's
+//! view vector and, from WP3.4, its clustering basis) and [`view_projection`] below.
+//!
+//! **WP3.4 (clustered forward+, engine ADR-0015):** the point-light *count* budget (`Low 32` /
+//! `High 256`, `crate::LightBudget`) and [`PointLight::is_bullet_light`]/[`BulletLightCap`]'s
+//! actual effect on the shading equation are both wired in by `mesh_pass::build_light_list` and
+//! `cluster_pass.rs`/`cluster.wgsl`, replacing the earlier smaller, internal, unclustered
+//! pre-WP3.4 light-array limit. [`point_light_from_bullet`] is the PO-decided (2026-09-16) only
+//! permitted way to create a bullet-cloud light. Mesh geometry and its GPU upload are WP2.3's job
+//! (see [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this module
 //! still owns only the data contract those steps consume, plus the `view_projection` helper
 //! WP2.3's mesh pass builds on ([`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`]
 //! stay ray-casts, not a matrix, so both keep working without a GPU) and that [`CameraFollow`] now
@@ -230,6 +232,34 @@ fn is_positive_and_finite(value: f32) -> bool {
 /// same camera).
 pub(crate) fn eye_position(camera: &Camera25D) -> [f32; 3] {
     camera_basis(camera).eye
+}
+
+/// Clustered forward+ camera basis (plan 0002 WP3.4, engine ADR-0015): the same orthonormal basis
+/// [`view_projection`]/[`eye_position`] use, flattened into
+/// [`crate::cluster_pass::ClusterCameraParams`] so `mesh_pass::render` can feed one shared value
+/// into both the compute cluster-assignment pass and `mesh.wgsl`'s per-fragment froxel lookup —
+/// built once per frame, from the same [`camera_basis`] call, so both always agree on every
+/// froxel. `near`/`far` are the mesh pass's own clip planes (`mesh_pass::NEAR_PLANE`/`FAR_PLANE`),
+/// passed through unchanged; not part of the crate's public API, for the same reason as
+/// [`view_projection`].
+pub(crate) fn cluster_camera_params(
+    camera: &Camera25D,
+    aspect: f32,
+    near: f32,
+    far: f32,
+) -> crate::cluster_pass::ClusterCameraParams {
+    let basis = camera_basis(camera);
+    let f = 1.0 / basis.tan_half_fov_y;
+    crate::cluster_pass::ClusterCameraParams {
+        eye: basis.eye,
+        right: basis.right,
+        up: basis.up,
+        forward: basis.forward,
+        f_over_aspect: f / aspect,
+        f,
+        near,
+        far,
+    }
 }
 
 /// Builds the column-major view-projection matrix for `camera` (plan 0002 WP2.3): a perspective
@@ -858,8 +888,11 @@ impl AmbientLight {
 /// the ground and environment". One per frame ([`crate::StageFrame::bullet_light_cap`]).
 ///
 /// This type only carries the parameter through the contract; *how* it is mixed into the shading
-/// equation is decided by the stylebook (WP2.7, `docs/art/stilbibel.md`) and implemented in the
-/// PBR pass (WP3.4/WP3.5) — deliberately not part of this contract.
+/// equation is decided by the stylebook (WP2.7, `docs/art/stilbibel.md`) and implemented (plan
+/// 0002 WP3.4) in `mesh_pass::build_light_list`: a bullet light's uploaded intensity is multiplied
+/// by [`BulletLightCap::clamped_floor_contribution`] before it ever reaches the shading equation
+/// mesh.wgsl runs for the environment; the light's contribution to the bullet's own glow (WP3.5's
+/// bullet pass, not built yet) is unaffected, since that pass is not this one.
 ///
 /// The point-light *count* budget (`Low 32` / `High 256`, PRD-0003 FR-11) is a separate concept
 /// (how many lights the frame may contain in total) and belongs to WP3.4 per plan 0002, not here.
@@ -878,7 +911,15 @@ pub struct BulletLightCap {
 impl Default for BulletLightCap {
     fn default() -> Self {
         Self {
-            floor_contribution: 1.0,
+            // Stilbibel v0's proposed value ("Bullet-Licht-Obergrenze", `docs/art/stilbibel.md`):
+            // 25% of full cluster-light intensity, the strongest single lever the game's look-dev
+            // comparison found for keeping bullet contrast above the WCAG-style 4.5:1 target
+            // (13-22% of bullets reached it uncapped, 33% at this cap in the Blender comparison).
+            // Explicitly a *proposal*, not a freeze ("Vorschlag, keine Festlegung — Bestätigung am
+            // Look-Review, P-11"): a game or a future default may still override it per frame via
+            // `StageFrame::bullet_light_cap`; only *this* inert fallback changed, from the earlier
+            // "no cap" placeholder chosen before the stylebook had a number.
+            floor_contribution: 0.25,
         }
     }
 }
@@ -902,6 +943,60 @@ impl BulletLightCap {
         } else {
             0.0
         }
+    }
+}
+
+/// Linear-RGB colour every bullet-cloud light uses (`docs/art/stilbibel.md`, "Bullet-Licht-
+/// Obergrenze"): a desaturated warm glow, `#B07850` sRGB, deliberately **not** the bullet's own
+/// protected palette colour (magenta/lime, contract §6 `palette_space`). Tinting the environment
+/// toward the bullet colour space would itself lower bullet-vs-background contrast — the same
+/// failure mode [`BulletLightCap`] exists to limit — even if `BulletInstance::palette_space`
+/// itself stays formally untouched. `bullet_light_color_matches_stilbibel_hex_value` (below)
+/// cross-checks these literals against the standard sRGB transfer function so the hex source stays
+/// verifiable, not just asserted in a comment.
+const BULLET_LIGHT_COLOR: [f32; 3] = [0.434_154, 0.187_907, 0.080_202];
+
+/// Bullet-cloud light intensity at full glow (`BulletInstance::glow == 255`); scales linearly with
+/// `glow` below. Provisional, like [`BULLET_LIGHT_RANGE_PER_RADIUS`] and the stylebook's own
+/// floor-contribution cap ([`BulletLightCap::default`]'s doc comment) — no look-dev measurement
+/// yet ties a specific radiance to a given glow byte; flagged for confirmation at the same
+/// look-review (P-11).
+const BULLET_LIGHT_BASE_INTENSITY: f32 = 2.0;
+
+/// Bullet-cloud light range as a multiple of `BulletInstance::radius`: how far past the visible
+/// glow the light reaches. Provisional, see [`BULLET_LIGHT_BASE_INTENSITY`].
+const BULLET_LIGHT_RANGE_PER_RADIUS: f32 = 6.0;
+
+/// The **only** permitted way to create a bullet-cloud [`PointLight`] (PO decision, 2026-09-16,
+/// resolving the "how binding is `is_bullet_light` for bullet-cloud lights" question contract §6
+/// left open before WP3.4/WP3.5): bullet-cloud lights arise exclusively in the engine, from the
+/// bullet channel, and always through this function. A game never constructs one by hand, and
+/// nothing else in this crate ever sets [`PointLight::is_bullet_light`] to `true` — a property
+/// `point_light_from_bullet_always_sets_is_bullet_light` (this module's tests) fixes for arbitrary
+/// inputs. WP3.5's bullet pass (plan 0002, not built yet) is expected to route every bullet that
+/// contributes a light to the ground through this function, so the flag the PO decision requires
+/// is structural, not a convention a caller must remember to apply.
+///
+/// The bullet's ground position becomes the light's `position`, lifted by its own `radius` (a
+/// small, deliberately simple height offset — this crate has no other notion of a bullet's visual
+/// centre height); `range` scales with `radius` and `intensity` with `glow`
+/// ([`BulletInstance::glow`] `/ 255`); `color` is always [`BULLET_LIGHT_COLOR`], never derived from
+/// the bullet's own palette. A structurally degenerate bullet (for example `radius <= 0`) produces
+/// a `PointLight` that fails [`PointLight::is_valid`] downstream and is rejected and counted like
+/// any other invalid light (contract §6) — this function itself never panics or validates.
+///
+/// Every numeric constant here besides the flag itself is provisional (see
+/// [`BULLET_LIGHT_BASE_INTENSITY`]'s doc comment); only *that* [`PointLight::is_bullet_light`] is
+/// always `true` is the firm part of today's PO decision.
+#[must_use]
+pub fn point_light_from_bullet(bullet: &crate::stage::BulletInstance) -> PointLight {
+    PointLight {
+        position: [bullet.position[0], bullet.position[1], bullet.radius],
+        color: BULLET_LIGHT_COLOR,
+        intensity: BULLET_LIGHT_BASE_INTENSITY * (f32::from(bullet.glow) / 255.0),
+        range: bullet.radius * BULLET_LIGHT_RANGE_PER_RADIUS,
+        is_bullet_light: true,
+        casts_shadow: false,
     }
 }
 
@@ -1888,6 +1983,115 @@ mod tests {
             0.0,
             "non-finite cap fails closed to 0.0, the safe side of PRD-0003 rule 5"
         );
+    }
+
+    // --- point_light_from_bullet (WP3.4, PO decision 2026-09-16) -----------------------------
+
+    fn sample_bullet() -> crate::stage::BulletInstance {
+        crate::stage::BulletInstance {
+            position: [3.0, -1.0],
+            radius: 0.5,
+            rotation: 0.0,
+            silhouette: 0,
+            palette: 0,
+            palette_space: crate::stage::BULLET_PASS_PALETTE_SPACE,
+            glow: 128,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn point_light_from_bullet_always_sets_is_bullet_light() {
+        // The one invariant the PO decision actually fixes (this function's doc comment): every
+        // `PointLight` this function returns has the flag set, for any input, including
+        // structurally degenerate ones (checked separately below for `is_valid`, not this flag).
+        for bullet in [
+            sample_bullet(),
+            crate::stage::BulletInstance::default(),
+            crate::stage::BulletInstance {
+                glow: 0,
+                ..sample_bullet()
+            },
+            crate::stage::BulletInstance {
+                glow: 255,
+                ..sample_bullet()
+            },
+            crate::stage::BulletInstance {
+                radius: -1.0, // structurally invalid; still must carry the flag
+                ..sample_bullet()
+            },
+        ] {
+            assert!(point_light_from_bullet(&bullet).is_bullet_light);
+        }
+    }
+
+    #[test]
+    fn point_light_from_bullet_places_the_light_above_the_bullets_ground_position() {
+        let bullet = sample_bullet();
+        let light = point_light_from_bullet(&bullet);
+        assert_eq!(light.position, [3.0, -1.0, 0.5]);
+    }
+
+    #[test]
+    fn point_light_from_bullet_scales_intensity_with_glow() {
+        let dim = point_light_from_bullet(&crate::stage::BulletInstance {
+            glow: 0,
+            ..sample_bullet()
+        });
+        let bright = point_light_from_bullet(&crate::stage::BulletInstance {
+            glow: 255,
+            ..sample_bullet()
+        });
+        assert_eq!(dim.intensity, 0.0);
+        assert!(bright.intensity > dim.intensity);
+    }
+
+    #[test]
+    fn point_light_from_bullet_never_uses_the_bullets_own_palette_colour() {
+        // The colour is fixed (`BULLET_LIGHT_COLOR`) regardless of `palette`/`palette_space` —
+        // stilbibel.md's whole point is that a bullet-cloud light must not tint the environment
+        // towards the protected bullet colour space.
+        let light = point_light_from_bullet(&sample_bullet());
+        assert_eq!(light.color, BULLET_LIGHT_COLOR);
+    }
+
+    #[test]
+    fn point_light_from_bullet_produces_a_valid_light_for_a_well_formed_bullet() {
+        assert!(point_light_from_bullet(&sample_bullet()).is_valid());
+    }
+
+    #[test]
+    fn point_light_from_bullet_of_a_degenerate_bullet_fails_is_valid_not_a_panic() {
+        // A non-positive radius makes `range <= 0`, which `PointLight::is_valid` rejects — the
+        // same "reject and count, never guess or crash" contract discipline every other light
+        // source in this crate already follows; this adapter does not special-case it.
+        let light = point_light_from_bullet(&crate::stage::BulletInstance {
+            radius: 0.0,
+            ..sample_bullet()
+        });
+        assert!(!light.is_valid());
+    }
+
+    /// Reference sRGB-to-linear transfer function (IEC 61966-2-1), used only to cross-check
+    /// [`BULLET_LIGHT_COLOR`]'s literals against their documented hex source.
+    fn srgb_to_linear(channel: f32) -> f32 {
+        if channel <= 0.040_45 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    #[test]
+    fn bullet_light_color_matches_the_stilbibel_hex_value() {
+        let srgb = [0xB0_u8, 0x78_u8, 0x50_u8].map(|byte| f32::from(byte) / 255.0);
+        for (linear, srgb) in BULLET_LIGHT_COLOR.into_iter().zip(srgb) {
+            assert!(
+                (linear - srgb_to_linear(srgb)).abs() < 1e-3,
+                "{linear} vs {}",
+                srgb_to_linear(srgb)
+            );
+        }
     }
 
     // --- MeshInstance defaults ----------------------------------------------------------------
