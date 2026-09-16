@@ -8,7 +8,8 @@
 //! the `tcp` feature, plus their conformance suite behind `conformance`), the message catalogue's
 //! payload types and dispatch ([`Message`]), and the handshake state machine
 //! ([`accept_handshake`]/[`connect_handshake`], yielding a [`Session`] whose
-//! [`Session::dispatch_frame`] applies [`handle_post_handshake_frame`]'s rules).
+//! [`Session::dispatch_frame`] applies the "Nach dem Handshake" dispatch rules — the only way
+//! anything outside `handshake.rs` can reach them).
 //!
 //! ## Scope (WP1.3 vs. WP8.1 vs. WP8.2 vs. later)
 //!
@@ -27,10 +28,10 @@
 //! - **WP8.2** (this crate's current state): the [`Message`] enum and its
 //!   [`Message::id`]/[`Message::to_frame`]/[`Message::from_frame`] dispatch, plus the handshake
 //!   state machine (contract §13 "Handshake", PO decision V-13) and the "Nach dem Handshake"
-//!   dispatch rules ([`handle_post_handshake_frame`]) — all hand-written on top of the payload
-//!   types above, since they are control flow with only a few fields each, not a wire-format
-//!   vocabulary a schema compiler earns its keep describing (project ADR-0011 "Vorschlag" point
-//!   1). [`accept_handshake`] and [`connect_handshake`] are written purely against
+//!   dispatch rules (reachable only via [`Session::dispatch_frame`]) — all hand-written on top of
+//!   the payload types above, since they are control flow with only a few fields each, not a
+//!   wire-format vocabulary a schema compiler earns its keep describing (project ADR-0011
+//!   "Vorschlag" point 1). [`accept_handshake`] and [`connect_handshake`] are written purely against
 //!   [`DebugTransport`], so they are exercised in this crate's own tests only through
 //!   [`InProcessTransport`]; wiring them into [`TcpServerTransport`]'s connection-handling thread
 //!   (with the tighter, pre-allocation byte-level defenses contract §13 "TCP" describes for a
@@ -59,7 +60,7 @@ pub use generated::debug_protocol::{
 };
 pub use handshake::{
     AcceptedHandshake, EngineIdentity, HandshakeError, PostHandshakeOutcome, Session, ToolIdentity,
-    accept_handshake, connect_handshake, handle_post_handshake_frame,
+    accept_handshake, connect_handshake,
 };
 pub use message::Message;
 pub use transport::{

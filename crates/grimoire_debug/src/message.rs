@@ -22,7 +22,7 @@ use crate::generated::debug_protocol::{
 /// non-Sigil asset hot-swap) and the application-defined range have no payload type yet and so no
 /// variant here; a later protocol version adds them additively (§2b) once something produces
 /// them. A v1 peer's own behaviour for those ids today is `Error(UnknownMessage)` /
-/// `Error(NotSupported)`, handled by [`crate::handle_post_handshake_frame`] without ever needing
+/// `Error(NotSupported)`, handled by the session dispatch in `handshake.rs` without ever needing
 /// a `Message` variant for them.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Debug)]
@@ -161,8 +161,8 @@ impl Message {
     /// range, and the application-defined range — the contract text names all four as producing
     /// this single case ("liefert ... `ProtocolError::UnknownMessage(id)`"); picking the specific
     /// [`crate::ErrorCode`] to reply with (`Malformed`/`UnknownMessage`/`NotSupported`) is
-    /// session-level dispatch, done by [`crate::handle_post_handshake_frame`] via this module's
-    /// own (private) `classify`, not here. A *decode failure* of a known id's payload is a
+    /// session-level dispatch, done by the crate-private dispatch in `handshake.rs` via this
+    /// module's own (private) `classify`, not here. A *decode failure* of a known id's payload is a
     /// different case entirely: it surfaces as whatever [`ProtocolError`] the payload's own
     /// `decode` returned, which the session layer maps to `Malformed`. Never panics on any input.
     pub fn from_frame(frame: &Frame) -> Result<Message, ProtocolError> {

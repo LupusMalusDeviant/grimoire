@@ -293,8 +293,9 @@ fn io_err(error: io::Error) -> TransportError {
 pub struct TcpConfig {
     /// The address to bind. Must be exactly `127.0.0.1` (port `0` is allowed for tests).
     pub addr: SocketAddrV4,
-    /// Shared-secret token for the (not yet implemented, WP8.2) handshake. Carried through by
-    /// this transport but not validated by it.
+    /// Shared-secret token for the handshake (`crate::handshake`, implemented in WP8.2). Carried
+    /// through by this transport but not yet validated by it — wiring the generic handshake into
+    /// this transport's own IO thread is WP8.4's job (see the module docs above).
     pub token: [u8; 32],
 }
 

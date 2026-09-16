@@ -27,6 +27,7 @@
 //! [`crate::MAX_HELLO_FRAME_LEN`] and the timeout *semantically* (closing the connection and
 //! returning the right [`HandshakeError`]) for whatever [`Frame`] a transport does hand it.
 
+use std::collections::VecDeque;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,10 @@ const POLL_SLEEP: Duration = Duration::from_millis(1);
 
 /// What this build considers its own identity when accepting a connection as the engine
 /// (contract §13 "Handshake" step 7-8).
+///
+/// `#[non_exhaustive]`: built via [`EngineIdentity::new`] plus field assignment (§2 rule 13), so
+/// adding a field later is not a breaking change, following [`crate::TcpConfig`]'s pattern.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EngineIdentity {
     /// This build's `ENGINE_VERSION` (contract §8.1). Compared byte-for-byte against the
@@ -58,7 +63,22 @@ pub struct EngineIdentity {
     pub token: [u8; 32],
 }
 
+impl EngineIdentity {
+    /// Builds an engine identity from its three fields (contract §13 "Handshake" step 7-8).
+    pub fn new(engine_version: String, build_hash: String, token: [u8; 32]) -> Self {
+        Self {
+            engine_version,
+            build_hash,
+            token,
+        }
+    }
+}
+
 /// What this build presents when connecting as a tool (contract §13 "Handshake").
+///
+/// `#[non_exhaustive]`: built via [`ToolIdentity::new`] plus field assignment (§2 rule 13), so
+/// adding a field later is not a breaking change, following [`crate::TcpConfig`]'s pattern.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ToolIdentity {
     /// The engine version this tool build targets (project ADR-0011/contract §13: "Werkzeuge
@@ -73,10 +93,32 @@ pub struct ToolIdentity {
     pub stats_interval_frames: u16,
 }
 
+impl ToolIdentity {
+    /// Builds a tool identity from its four fields (contract §13 "Handshake").
+    pub fn new(
+        engine_version: String,
+        build_hash: String,
+        token: [u8; 32],
+        stats_interval_frames: u16,
+    ) -> Self {
+        Self {
+            engine_version,
+            build_hash,
+            token,
+            stats_interval_frames,
+        }
+    }
+}
+
 /// Successful outcome of [`accept_handshake`]: the tool's `Hello`, plus whether either side's
 /// build hash was `"unknown"` (contract §13 "Handshake" step 7: accepted, but logged as a
 /// warning by the caller — this crate has no logging dependency of its own, so it only reports
 /// the fact).
+///
+/// `#[non_exhaustive]`: built via [`AcceptedHandshake::new`] plus field assignment (§2 rule 13),
+/// following [`crate::TcpConfig`]'s pattern, though in practice only [`accept_handshake`] itself
+/// ever needs to construct one.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Debug)]
 pub struct AcceptedHandshake {
     /// The connecting tool's full `Hello` payload.
@@ -84,6 +126,16 @@ pub struct AcceptedHandshake {
     /// `true` if this engine's or the tool's `build_hash` was `"unknown"` (contract §13: "wird
     /// die Verbindung angenommen und eine Warnung protokolliert").
     pub build_hash_unknown_warning: bool,
+}
+
+impl AcceptedHandshake {
+    /// Builds an accepted-handshake outcome from its two fields.
+    pub fn new(peer_hello: Hello, build_hash_unknown_warning: bool) -> Self {
+        Self {
+            peer_hello,
+            build_hash_unknown_warning,
+        }
+    }
 }
 
 /// Every way [`accept_handshake`] or [`connect_handshake`] can fail (contract §13 "Handshake"),
@@ -148,30 +200,55 @@ fn tokens_match(a: &[u8; 32], b: &[u8; 32]) -> bool {
 /// triggering frame's own `seq` (or `0` for a failure detected before any frame arrived, i.e.
 /// [`HandshakeError::Timeout`]).
 fn error_frame(code: ErrorCode, in_reply_to: u32, message: impl Into<String>) -> Frame {
-    // `ErrorMsg::encode` only fails on an overlong `message` field (max 1024 bytes); every
-    // message this module builds is a short, fixed, ASCII string far under that limit, so this
-    // is a proven invariant, not a user-controlled value that could panic here (§2 rule 6).
+    // `ErrorMsg::encode` only fails on an overlong `message` field (max 1024 bytes). Every literal
+    // message this module writes is short and far under that limit, but several of them (steps
+    // 7's version/build-hash mismatches) interpolate `identity.engine_version`/`build_hash` and
+    // the peer's own `Hello` fields, none of which this module bounds itself — an operator or a
+    // future caller could configure a pathologically long one. Rather than `.expect`-ing that away
+    // as a proven invariant (§2 rule 9: never panic on a value this module does not fully
+    // control), fall back to a short, fixed message on the rare encode failure.
     Message::Error(ErrorMsg {
         code,
         in_reply_to,
         message: message.into(),
     })
     .to_frame(0)
-    .expect("a short, hand-written handshake error message never exceeds ErrorMsg's limits")
+    .unwrap_or_else(|_| {
+        Message::Error(ErrorMsg {
+            code,
+            in_reply_to,
+            message: "handshake rejected (error detail omitted: too long to encode)".to_owned(),
+        })
+        .to_frame(0)
+        .expect("this fixed fallback message is far under ErrorMsg's length limit")
+    })
 }
 
 /// Polls `transport` in a bounded loop until it yields at least one inbound frame or `deadline`
 /// passes. Returns `Ok(None)` on timeout, never blocks past `deadline` by more than one
 /// [`POLL_SLEEP`] tick.
+///
+/// Both [`crate::InProcessTransport`] and [`crate::TcpServerTransport`] drain every frame they
+/// have buffered into a single `poll` call, so the peer's first frame can arrive alongside
+/// others it pipelined right behind it (a tool that sends `Hello` and, without waiting for a
+/// reply, immediately sends another message). Returning only the first and discarding the rest
+/// would lose that second frame permanently, so any surplus frames from the same `poll` call come
+/// back too, in the order the transport produced them, for the caller to queue on the resulting
+/// [`Session`].
 fn poll_for_first_frame(
     transport: &mut dyn DebugTransport,
     deadline: Instant,
-) -> Result<Option<Frame>, TransportError> {
+) -> Result<Option<(Frame, Vec<Frame>)>, TransportError> {
     loop {
         let mut inbox = Vec::new();
         transport.poll(&mut inbox)?;
-        if let Some(frame) = inbox.into_iter().next() {
-            return Ok(Some(frame));
+        if !inbox.is_empty() {
+            let mut frames = inbox.into_iter();
+            // `inbox` was just checked non-empty, so this `Vec`-drop-checked first element
+            // always exists.
+            let first = frames.next().expect("inbox is non-empty");
+            let rest = frames.collect();
+            return Ok(Some((first, rest)));
         }
         if Instant::now() >= deadline {
             return Ok(None);
@@ -182,21 +259,29 @@ fn poll_for_first_frame(
 
 /// Proof that a handshake completed successfully, for one side of one connection (contract §13
 /// "Handshake"): the only way to obtain one is a successful [`accept_handshake`] or
-/// [`connect_handshake`], and [`Self::dispatch_frame`] is the only way to reach
-/// [`handle_post_handshake_frame`]'s dispatch rules. "State machine that cannot be skipped" is
-/// therefore a type-level guarantee, not just a documented calling convention: nothing in this
-/// crate's public API lets a caller apply the "Nach dem Handshake" rules without first holding a
-/// `Session`, and the only way to hold one is to have completed the handshake steps above.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// [`connect_handshake`], and [`Self::dispatch_frame`] is the only way to reach the
+/// `handle_post_handshake_frame` dispatch rules — that free function is `pub(crate)`, not
+/// exported from this crate at all. "State machine that cannot be skipped" is therefore a
+/// type-level guarantee, not just a documented calling convention: nothing in this crate's public
+/// API lets a caller apply the "Nach dem Handshake" rules without first holding a `Session`, and
+/// the only way to hold one is to have completed the handshake steps above.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Session {
     local_role: PeerRole,
+    /// Frames that arrived pipelined with the frame that completed this handshake (the accepted
+    /// `Hello`, or, on the tool side, the engine's reply): both transports in this crate drain
+    /// every buffered frame per `poll`, so a peer that writes `Hello` immediately followed by
+    /// another message can hand `poll_for_first_frame` more than one frame in the same call.
+    /// Dropping the surplus silently would lose it forever, so it is queued here instead and
+    /// handed back in order by [`Self::take_pending_frames`].
+    pending: VecDeque<Frame>,
 }
 
 impl Session {
     /// Applies the "Nach dem Handshake" dispatch rules (contract §13) to one inbound `frame`, as
-    /// this session's own role. Delegates to [`handle_post_handshake_frame`], which stays a free
-    /// function too (with no session state of its own) so its per-case behaviour can be unit
-    /// tested directly, without going through a full handshake first.
+    /// this session's own role. Delegates to the crate-private `handle_post_handshake_frame`,
+    /// which stays a free function too (with no session state of its own) so its per-case
+    /// behaviour can be unit tested directly, without going through a full handshake first.
     pub fn dispatch_frame(&self, frame: &Frame) -> PostHandshakeOutcome {
         handle_post_handshake_frame(self.local_role, frame)
     }
@@ -205,20 +290,37 @@ impl Session {
     pub fn local_role(&self) -> PeerRole {
         self.local_role
     }
+
+    /// Returns any frames that were already buffered by the transport alongside the frame that
+    /// completed this handshake, in the order they arrived, and clears the queue.
+    ///
+    /// A tool is free to pipeline a message right after its `Hello` instead of waiting for the
+    /// engine's reply first, and a transport's `poll` can likewise hand the engine both in one
+    /// call; without this, that trailing message would be silently discarded before a `Session`
+    /// even existed to dispatch it through [`Self::dispatch_frame`]. Call this once right after a
+    /// successful [`accept_handshake`]/[`connect_handshake`] and dispatch each returned frame, in
+    /// order, before polling the transport again. Returns an empty `Vec` in the common case where
+    /// nothing was pipelined.
+    pub fn take_pending_frames(&mut self) -> Vec<Frame> {
+        self.pending.drain(..).collect()
+    }
 }
 
 /// Runs the engine side of the handshake (contract §13 "Handshake" steps 1-8, PO decision V-13)
 /// over `transport`, blocking the calling thread for up to `timeout`.
 ///
-/// On any rejection, sends the matching `Error` (contract §13) and calls
-/// [`DebugTransport::disconnect`] before returning `Err`; the one exception is
-/// [`HandshakeError::Timeout`], where nothing has been received to reply to, so only
-/// `Error(HandshakeRequired)` is attempted (best-effort: a transport that never connected, like
-/// [`crate::NullTransport`], simply fails that send, which this function ignores) before
-/// disconnecting.
+/// On *every* rejection, including a failure to encode or send this engine's own `Hello` at step
+/// 8, calls [`DebugTransport::disconnect`] before returning `Err` — there is no path that returns
+/// `Err` while leaving the transport connected. Every case but [`HandshakeError::Timeout`] also
+/// sends the matching `Error` first (contract §13); `Timeout` has nothing to reply to, so it
+/// instead attempts `Error(HandshakeRequired)` best-effort (a transport that never connected,
+/// like [`crate::NullTransport`], simply fails that send, which this function ignores).
 ///
 /// On success, has already sent this engine's own `Hello` (`role = Engine`, `token` all zero,
-/// frame `seq = 1`); the connection is left open and ready for the returned [`Session`].
+/// frame `seq = 1`); the connection is left open and ready for the returned [`Session`]. If the
+/// transport had already buffered further frames behind the accepted `Hello` in the same `poll`
+/// (a tool pipelining a message right after its `Hello`), those frames are not lost: they are
+/// queued on the returned `Session` and retrievable via [`Session::take_pending_frames`].
 pub fn accept_handshake(
     transport: &mut dyn DebugTransport,
     identity: &EngineIdentity,
@@ -226,8 +328,8 @@ pub fn accept_handshake(
 ) -> Result<(AcceptedHandshake, Session), HandshakeError> {
     let deadline = Instant::now() + timeout;
 
-    let first = match poll_for_first_frame(transport, deadline)? {
-        Some(frame) => frame,
+    let (first, pending) = match poll_for_first_frame(transport, deadline)? {
+        Some(pair) => pair,
         None => {
             let _ = transport.send(&error_frame(
                 ErrorCode::HandshakeRequired,
@@ -348,7 +450,9 @@ pub fn accept_handshake(
 
     // Step 8: the engine replies with its own Hello. `stats_interval_frames` is meaningless
     // coming from the engine (it only expresses what a *tool* requests), so it is `0`; `token`
-    // is all zero (contract §13: "Token nur Nullen").
+    // is all zero (contract §13: "Token nur Nullen"). Both the encode and the send below are
+    // disconnected explicitly on failure rather than via a bare `?`, so this step keeps the same
+    // "always disconnect before returning Err" guarantee as every step above it.
     let reply = Message::Hello(Hello {
         protocol_version: crate::PROTOCOL_VERSION,
         role: PeerRole::Engine,
@@ -357,15 +461,23 @@ pub fn accept_handshake(
         token: [0u8; 32],
         stats_interval_frames: 0,
     });
-    transport.send(&reply.to_frame(1)?)?;
+    let reply_frame = match reply.to_frame(1) {
+        Ok(frame) => frame,
+        Err(error) => {
+            transport.disconnect();
+            return Err(HandshakeError::from(error));
+        }
+    };
+    if let Err(error) = transport.send(&reply_frame) {
+        transport.disconnect();
+        return Err(HandshakeError::from(error));
+    }
 
     Ok((
-        AcceptedHandshake {
-            peer_hello: hello,
-            build_hash_unknown_warning,
-        },
+        AcceptedHandshake::new(hello, build_hash_unknown_warning),
         Session {
             local_role: PeerRole::Engine,
+            pending: pending.into(),
         },
     ))
 }
@@ -373,9 +485,12 @@ pub fn accept_handshake(
 /// Runs the tool side of the handshake: sends this tool's `Hello` first (frame `seq = 1`), then
 /// blocks up to `timeout` for the engine's reply.
 ///
-/// Returns the engine's `Hello` and a [`Session`] on success. On an `Error` reply, maps
-/// well-known codes to their matching [`HandshakeError`] variant (`Busy`, `Unauthorized`,
-/// `VersionMismatch`, `HandshakeRequired`, `TooLarge` all round-trip to the same-named variant)
+/// Returns the engine's `Hello` and a [`Session`] on success; any further frames the transport
+/// had already buffered behind that reply in the same `poll` are queued on the returned `Session`
+/// and retrievable via [`Session::take_pending_frames`], rather than being lost. On an `Error`
+/// reply, maps well-known codes to their matching [`HandshakeError`] variant (`Busy`,
+/// `Unauthorized`, `VersionMismatch`, `HandshakeRequired`, `TooLarge` all round-trip to the
+/// same-named variant)
 /// and anything else to [`HandshakeError::Rejected`]. Never sends anything after the initial
 /// `Hello` — a rejected handshake is the engine's job to close, not this function's.
 pub fn connect_handshake(
@@ -394,8 +509,8 @@ pub fn connect_handshake(
     transport.send(&hello.to_frame(1)?)?;
 
     let deadline = Instant::now() + timeout;
-    let reply = match poll_for_first_frame(transport, deadline)? {
-        Some(frame) => frame,
+    let (reply, pending) = match poll_for_first_frame(transport, deadline)? {
+        Some(pair) => pair,
         None => return Err(HandshakeError::Timeout),
     };
 
@@ -406,6 +521,7 @@ pub fn connect_handshake(
                 hello,
                 Session {
                     local_role: PeerRole::Tool,
+                    pending: pending.into(),
                 },
             ))
         }
@@ -426,6 +542,11 @@ pub fn connect_handshake(
 
 /// What a peer does with one frame received after the handshake has completed (contract §13
 /// "Nach dem Handshake").
+///
+/// `#[non_exhaustive]`: a new outcome kind (e.g. once a later protocol version gives the
+/// application-defined range a receiver) is additive (§2b), matching [`Message`]'s own
+/// `#[non_exhaustive]`.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Debug)]
 pub enum PostHandshakeOutcome {
     /// A correctly addressed, successfully decoded catalogue message: hand it to whatever
@@ -445,8 +566,13 @@ pub enum PostHandshakeOutcome {
 ///
 /// Must only be called once a handshake has completed successfully
 /// ([`accept_handshake`]/[`connect_handshake`] returned `Ok`); nothing before that point should
-/// be reaching this function at all ("state machine that cannot be skipped").
-pub fn handle_post_handshake_frame(local_role: PeerRole, frame: &Frame) -> PostHandshakeOutcome {
+/// be reaching this function at all ("state machine that cannot be skipped"). `pub(crate)`, not
+/// exported: [`Session::dispatch_frame`] is the only way anything outside this module can reach
+/// these rules, which is what makes that guarantee hold rather than just documenting it.
+pub(crate) fn handle_post_handshake_frame(
+    local_role: PeerRole,
+    frame: &Frame,
+) -> PostHandshakeOutcome {
     match classify(frame.id.0) {
         IdClass::Zero => PostHandshakeOutcome::Reply(ErrorMsg {
             code: ErrorCode::Malformed,
@@ -565,6 +691,59 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_pipelined_right_behind_hello_survives_and_dispatches_in_order() {
+        // A tool need not wait for the engine's reply before sending its next message, and both
+        // `InProcessTransport` and `TcpServerTransport` drain every frame they have buffered into
+        // a single `poll` call. So the very `poll_for_first_frame` call that accepts the `Hello`
+        // can also hand back a second, already-buffered frame right behind it — which must not be
+        // silently dropped.
+        let (engine, tool) = identities();
+        let (mut engine_side, mut client_side) = InProcessTransport::pair();
+
+        let hello = Message::Hello(Hello {
+            protocol_version: crate::PROTOCOL_VERSION,
+            role: PeerRole::Tool,
+            engine_version: tool.engine_version.clone(),
+            build_hash: tool.build_hash.clone(),
+            token: tool.token,
+            stats_interval_frames: tool.stats_interval_frames,
+        })
+        .to_frame(1)
+        .unwrap();
+        let pipelined = Message::SwapSigilUnit(crate::SwapSigilUnit {
+            unit_path: "sigils/basic_bolt.sigil".to_owned(),
+            unit_bytes: vec![9, 9, 9],
+        })
+        .to_frame(2)
+        .unwrap();
+
+        // Both frames are fully written into the shared channel *before* the engine ever polls,
+        // so the first (and only, here) call to `InProcessTransport::poll` inside
+        // `accept_handshake` is guaranteed to decode and return both at once, reproducing the
+        // pipelining scenario deterministically instead of racing two threads against each other.
+        client_side.send(&hello).unwrap();
+        client_side.send(&pipelined).unwrap();
+
+        let (_, mut session) = accept_handshake(&mut engine_side, &engine, Duration::from_secs(2))
+            .expect("engine must accept a matching Hello");
+
+        let pending = session.take_pending_frames();
+        assert_eq!(pending.len(), 1, "the pipelined frame must not be dropped");
+        assert_eq!(pending[0].seq, 2);
+
+        // Dispatching it through the same `Session` applies the normal post-handshake rules, in
+        // order, exactly as if it had arrived on a later `poll`.
+        let outcome = session.dispatch_frame(&pending[0]);
+        assert!(matches!(
+            outcome,
+            PostHandshakeOutcome::Message(Message::SwapSigilUnit(_))
+        ));
+
+        // The queue is drained, not merely peeked: a second call finds nothing left.
+        assert!(session.take_pending_frames().is_empty());
+    }
+
+    #[test]
     fn mismatched_engine_version_is_rejected_on_both_sides() {
         let (engine, mut tool) = identities();
         tool.engine_version = "0.1.2".to_owned();
@@ -572,6 +751,47 @@ mod tests {
 
         assert_eq!(engine_result.unwrap_err(), HandshakeError::VersionMismatch);
         assert_eq!(tool_result.unwrap_err(), HandshakeError::VersionMismatch);
+    }
+
+    #[test]
+    fn an_oversized_configured_identity_string_does_not_panic_the_error_frame() {
+        // A misconfigured build script or environment variable could hand this module an
+        // `engine_version` long enough that the mismatch message `error_frame` builds from it
+        // (interpolating both sides' `engine_version`) would, on its own, overflow `ErrorMsg`'s
+        // 1024-byte `message` limit. `error_frame` must fall back to a short static message
+        // instead of panicking on that encode failure (contract §2 rule 9).
+        let (mut engine, tool) = identities();
+        engine.engine_version = "9".repeat(2000);
+        let (mut engine_side, mut client_side) = InProcessTransport::pair();
+
+        let hello = Message::Hello(Hello {
+            protocol_version: crate::PROTOCOL_VERSION,
+            role: PeerRole::Tool,
+            engine_version: tool.engine_version.clone(),
+            build_hash: tool.build_hash.clone(),
+            token: tool.token,
+            stats_interval_frames: 0,
+        })
+        .to_frame(1)
+        .unwrap();
+        client_side.send(&hello).unwrap();
+
+        let result = accept_handshake(&mut engine_side, &engine, Duration::from_secs(2));
+        assert_eq!(result.unwrap_err(), HandshakeError::VersionMismatch);
+
+        // The engine must still reply with *some* Error frame and disconnect, rather than
+        // panicking mid-handshake and leaving the client hanging.
+        let mut inbox = Vec::new();
+        for _ in 0..64 {
+            client_side.poll(&mut inbox).unwrap();
+            if !inbox.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(inbox.len(), 1);
+        let error = crate::ErrorMsg::decode(&inbox[0].payload).unwrap();
+        assert_eq!(error.code, ErrorCode::VersionMismatch);
     }
 
     #[test]
@@ -961,15 +1181,18 @@ mod tests {
         }
 
         /// `accept_handshake` must never panic on an arbitrary first frame, well-formed or not
-        /// (contract §2 rule 9). A short timeout keeps this fast: almost every case is rejected
-        /// immediately (wrong id, or a `Hello`-shaped payload that fails to decode/match), so the
-        /// timeout path is exercised only in the vanishingly rare case a random `u16` lands on
-        /// `0x0001` *and* the random payload happens to strictly prefix a valid `Hello` (`Ok(None)`
-        /// from `peek_hello_version` needs `payload.len() < 2`, otherwise every other rejection is
-        /// immediate).
+        /// (contract §2 rule 9). `id` is biased to land on `catalogue::HELLO` about half the time
+        /// (`prop_oneof!`): drawing it uniformly over `u16` instead reaches the Hello path (steps
+        /// 3-8: version peek, strict decode, role, token, engine version, build hash) only with
+        /// probability ~1/65536, so almost every case would be rejected at step 2 before any of
+        /// that logic ever ran. Fixing `id` on every run would lose coverage of steps 1-2 (a
+        /// wrong id, or a too-large frame) instead, so the other half keeps `id` fully arbitrary.
         #[test]
         fn accept_handshake_never_panics_on_an_arbitrary_first_frame(
-            id in proptest::prelude::any::<u16>(),
+            id in proptest::prop_oneof![
+                proptest::prelude::Just(catalogue::HELLO),
+                proptest::prelude::any::<u16>(),
+            ],
             seq in proptest::prelude::any::<u32>(),
             payload in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..300),
         ) {

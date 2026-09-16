@@ -285,11 +285,7 @@ fn accept_handshake_reproduces_the_hello_exchange_fixture_byte_for_byte() {
     let request_frame = decoder.next_frame().unwrap().unwrap();
     wire_side.send(&request_frame).unwrap();
 
-    let identity = EngineIdentity {
-        engine_version: "0.1.1".to_owned(),
-        build_hash: "unknown".to_owned(),
-        token: [0x11; 32],
-    };
+    let identity = EngineIdentity::new("0.1.1".to_owned(), "unknown".to_owned(), [0x11; 32]);
     accept_handshake(&mut engine_side, &identity, Duration::from_secs(2))
         .expect("a Hello matching the engine's own identity must be accepted");
 
