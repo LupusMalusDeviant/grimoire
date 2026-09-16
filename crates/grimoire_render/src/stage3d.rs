@@ -234,6 +234,15 @@ pub(crate) fn eye_position(camera: &Camera25D) -> [f32; 3] {
     camera_basis(camera).eye
 }
 
+/// World-space `right` and `up` vectors of `camera` (plan 0002 WP3.5): the plane the bullet pass's
+/// camera-facing billboards lie in, from the same [`camera_basis`] as [`view_projection`], so a
+/// billboard's centre and its extent agree with the mesh pass's projection by construction. Not
+/// part of the crate's public API, for the same reason as [`view_projection`].
+pub(crate) fn billboard_axes(camera: &Camera25D) -> ([f32; 3], [f32; 3]) {
+    let basis = camera_basis(camera);
+    (basis.right, basis.up)
+}
+
 /// Clustered forward+ camera basis (plan 0002 WP3.4, engine ADR-0015): the same orthonormal basis
 /// [`view_projection`]/[`eye_position`] use, flattened into
 /// [`crate::cluster_pass::ClusterCameraParams`] so `mesh_pass::render` can feed one shared value
@@ -891,8 +900,8 @@ impl AmbientLight {
 /// equation is decided by the stylebook (WP2.7, `docs/art/stilbibel.md`) and implemented (plan
 /// 0002 WP3.4) in `mesh_pass::build_light_list`: a bullet light's uploaded intensity is multiplied
 /// by [`BulletLightCap::clamped_floor_contribution`] before it ever reaches the shading equation
-/// mesh.wgsl runs for the environment; the light's contribution to the bullet's own glow (WP3.5's
-/// bullet pass, not built yet) is unaffected, since that pass is not this one.
+/// mesh.wgsl runs for the environment; the bullet's own glow (drawn by WP3.5's bullet pass,
+/// `bullet_pass.rs`) is unaffected, since that pass is not this one.
 ///
 /// The point-light *count* budget (`Low 32` / `High 256`, PRD-0003 FR-11) is a separate concept
 /// (how many lights the frame may contain in total) and belongs to WP3.4 per plan 0002, not here.
@@ -965,7 +974,7 @@ const BULLET_LIGHT_BASE_INTENSITY: f32 = 2.0;
 
 /// Bullet-cloud light range as a multiple of `BulletInstance::radius`: how far past the visible
 /// glow the light reaches. Provisional, see [`BULLET_LIGHT_BASE_INTENSITY`].
-const BULLET_LIGHT_RANGE_PER_RADIUS: f32 = 6.0;
+pub(crate) const BULLET_LIGHT_RANGE_PER_RADIUS: f32 = 6.0;
 
 /// The **only** permitted way to create a bullet-cloud [`PointLight`] (PO decision, 2026-09-16,
 /// resolving the "how binding is `is_bullet_light` for bullet-cloud lights" question contract §6
@@ -973,9 +982,10 @@ const BULLET_LIGHT_RANGE_PER_RADIUS: f32 = 6.0;
 /// bullet channel, and always through this function. A game never constructs one by hand, and
 /// nothing else in this crate ever sets [`PointLight::is_bullet_light`] to `true` — a property
 /// `point_light_from_bullet_always_sets_is_bullet_light` (this module's tests) fixes for arbitrary
-/// inputs. WP3.5's bullet pass (plan 0002, not built yet) is expected to route every bullet that
-/// contributes a light to the ground through this function, so the flag the PO decision requires
-/// is structural, not a convention a caller must remember to apply.
+/// inputs. WP3.5 routes the bullet channel through this function (`bullet_lights.rs`: one
+/// representative instance per bullet cloud), so the flag the PO decision requires is structural,
+/// not a convention a caller must remember to apply; `only_point_light_from_bullet_sets_is_bullet_light_in_crate_code`
+/// (that module's tests) checks that no other production code in this crate sets the flag.
 ///
 /// The bullet's ground position becomes the light's `position`, lifted by its own `radius` (a
 /// small, deliberately simple height offset — this crate has no other notion of a bullet's visual

@@ -5,12 +5,16 @@
 //! ADR-0010's WP6.2 addendum ("Entscheidung: roh bleibt, vorerst") measured both paths for these
 //! same two benches and chose to keep reading Callgrind's own summary line directly.
 //!
+//! Plan 0002 WP5.3 adds a third bench body, `sigil_extract` (`sigil_extract_10k`: the Sigil -> Render
+//! extraction adapter over 10,000 bullets), for `baseline` and `params`; the calibration proof
+//! keeps calibrating the two P0 benches only.
+//!
 //! Usage:
-//!   `ir_probe <ecs|sim> baseline`            — the real, uninjected candidate measurement.
+//!   `ir_probe <ecs|sim|sigil_extract> baseline` — the real, uninjected candidate measurement.
 //!   `ir_probe <ecs|sim> calibrated <units>`   — baseline body plus `units` calibration units
 //!                                               (see `grimoire_bench::scenarios::run_calibration_units`
 //!                                               and `scripts/calibrate_injection.sh`).
-//!   `ir_probe <ecs|sim> params`               — prints this bench's `BenchResult::params` as
+//!   `ir_probe <ecs|sim|sigil_extract> params` — prints this bench's `BenchResult::params` as
 //!                                               `key=value,key=value` and exits immediately,
 //!                                               run *without* Valgrind. Exists so
 //!                                               `scripts/measure_ir.sh` reads the entity/round
@@ -23,8 +27,9 @@ use std::hint::black_box;
 use std::process::ExitCode;
 
 use grimoire_bench::scenarios::{
-    ECS_ENTITIES, ECS_IR_ROUNDS, SIM_ENTITIES, SIM_IR_TICKS, build_ecs_world, build_sim,
-    run_calibration_units, run_ecs_rounds, run_sim_ticks,
+    ECS_ENTITIES, ECS_IR_ROUNDS, EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, SIM_ENTITIES, SIM_IR_TICKS,
+    build_ecs_world, build_sigil_extract, build_sim, run_calibration_units, run_ecs_rounds,
+    run_sigil_extract_rounds, run_sim_ticks,
 };
 
 fn main() -> ExitCode {
@@ -61,8 +66,9 @@ fn print_params(bench: &str) -> ExitCode {
     match bench {
         "ecs" => println!("entities={ECS_ENTITIES},rounds={ECS_IR_ROUNDS}"),
         "sim" => println!("entities={SIM_ENTITIES},ticks={SIM_IR_TICKS}"),
+        "sigil_extract" => println!("bullets={EXTRACT_BULLETS},rounds={EXTRACT_IR_ROUNDS}"),
         other => {
-            eprintln!("unknown bench {other:?}, expected 'ecs' or 'sim'");
+            eprintln!("unknown bench {other:?}, expected 'ecs', 'sim' or 'sigil_extract'");
             return ExitCode::FAILURE;
         }
     }
@@ -79,8 +85,12 @@ fn run_baseline(bench: &str) -> ExitCode {
             let mut sim = build_sim(0xB5_11_C1_0C_C0_FF_EE_00);
             run_sim_ticks(&mut sim, SIM_IR_TICKS, 0);
         }
+        "sigil_extract" => {
+            let mut bench = build_sigil_extract(0xB5_11_C1_0C_C0_FF_EE_00);
+            black_box(run_sigil_extract_rounds(&mut bench, EXTRACT_IR_ROUNDS, 0));
+        }
         other => {
-            eprintln!("unknown bench {other:?}, expected 'ecs' or 'sim'");
+            eprintln!("unknown bench {other:?}, expected 'ecs', 'sim' or 'sigil_extract'");
             return ExitCode::FAILURE;
         }
     }

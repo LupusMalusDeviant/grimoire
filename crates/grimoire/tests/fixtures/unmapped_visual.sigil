@@ -1,0 +1,95 @@
+sigil 1
+// unmapped_visual: four silhouettes and three palettes, one more of each than the bullet pass
+// tables hold (plan 0002 WP3.5: 3 silhouettes, 2 hostile palettes). Compiled by sigilc into
+// unmapped_visual_unit_v1.bin; used by crates/grimoire/tests/sigil_render.rs to prove that the
+// Sigil -> Render adapter counts and skips visuals it cannot map (contract §6 "Kennungen").
+// Per-unit alphabetical indices: silhouettes orb 0, rice 1, shard 2, wisp 3 (unmapped);
+// palettes hex_magenta 0, poison_lime 1, violet 2 (unmapped).
+
+meta {
+  name = "Unmapped Visual"
+  difficulty = [test]
+  density = 16
+}
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.5
+  radius = 0.3u
+  damage = 1
+  flags = []
+}
+
+bullet rice {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.5
+  radius = 0.3u
+  damage = 1
+  flags = []
+}
+
+// Maps silhouette-wise (index 2) but its palette index 2 is outside the table.
+bullet shard {
+  silhouette = shard
+  palette = enemy.violet
+  glow = 0.5
+  radius = 0.3u
+  damage = 1
+  flags = []
+}
+
+// Silhouette index 3 is outside the table.
+bullet wisp {
+  silhouette = wisp
+  palette = enemy.hex_magenta
+  glow = 0.5
+  radius = 0.3u
+  damage = 1
+  flags = []
+}
+
+emitter orbs {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.05u/t
+  block ring {
+    count = 4
+    start = 0deg
+  }
+}
+
+emitter rices {
+  bullet = rice
+  repeat = 1
+  interval = 1t
+  speed = 0.05u/t
+  block ring {
+    count = 4
+    start = 45deg
+  }
+}
+
+emitter shards {
+  bullet = shard
+  repeat = 1
+  interval = 1t
+  speed = 0.05u/t
+  block ring {
+    count = 4
+    start = 22.5deg
+  }
+}
+
+emitter wisps {
+  bullet = wisp
+  repeat = 1
+  interval = 1t
+  speed = 0.05u/t
+  block ring {
+    count = 4
+    start = 67.5deg
+  }
+}

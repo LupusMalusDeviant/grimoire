@@ -785,6 +785,7 @@ version = "0.2.0"
 name = "grimoire_bench"
 version = "0.2.0"
 dependencies = [
+ "grimoire",
  "grimoire_core",
  "grimoire_ecs",
  "grimoire_sigil",

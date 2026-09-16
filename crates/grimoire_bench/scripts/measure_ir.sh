@@ -84,5 +84,9 @@ measure_one() {
 
 measure_one ecs ecs_query_10k
 measure_one sim sim_step_600
+# Plan 0002 WP5.3: the Sigil -> Render extraction adapter over 10,000 bullets. Enters the gate in
+# its current mode like the two P0 benches; until an accepted basis exists for it, `compare`
+# reports it as "no accepted basis" without a verdict.
+measure_one sigil_extract sigil_extract_10k
 
 cat "$OUT"

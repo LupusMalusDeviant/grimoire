@@ -13,9 +13,9 @@ deliberately carries no `clippy.toml`. Nothing depends on it.
 |---|---|
 | `src/schema.rs` | The `BenchResult` JSON Lines schema v1 (contract §15.1): strict read/write, size limits, median recomputation, hex-encoded hashes. |
 | `src/gate.rs` | The regression gate (engine ADR-0010 §4.3): the exact-integer `10*candidate > 11*baseline` rule for red, and the sliding warning threshold. |
-| `src/scenarios.rs` | The two P0 baseline bench bodies (`ecs_query_10k`, `sim_step_600`) and the calibrated regression injector. |
+| `src/scenarios.rs` | The two P0 baseline bench bodies (`ecs_query_10k`, `sim_step_600`), the calibrated regression injector, the WP5.1 `sigil_update_6k` body (not gated yet) and the WP5.3 extraction body `sigil_extract_10k` (the facade's Sigil -> Render adapter over 10,000 bullets, measured by `wallclock` and `ir_probe` like the P0 benches). |
 | `src/bin/ir_probe.rs` | Runs one bench body once; meant to be invoked under `valgrind --tool=callgrind` by `scripts/measure_ir.sh` / `scripts/calibrate_injection.sh`. |
-| `src/bin/wallclock.rs` | Wall-clock trend measurement (never gated) for both benches; prints `BenchResult` lines. |
+| `src/bin/wallclock.rs` | Wall-clock trend measurement (never gated) for the P0 benches and `sigil_extract_10k`; prints `BenchResult` lines, plus the per-extraction median against the plan's 0.5 ms budget on stderr. |
 | `src/bin/bench_result.rs` | Builds one contract-compliant `BenchResult` line from CLI flags, so the bash scripts driving Callgrind never hand-format JSON. |
 | `src/bin/compare.rs` | The comparator: gates `instructions`-metric candidates against an accepted basis, reports `wall_time` as trend only. `--self-test` proves the gate math on synthetic inputs. |
 | `src/bin/calibration_check.rs` | Verifies the calibration proof produced by `scripts/calibrate_injection.sh` (accuracy within ±1 percentage point, correct red/not-red verdicts). |

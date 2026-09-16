@@ -1,0 +1,89 @@
+sigil 1
+// bullet_showcase: the Sigil unit behind the facade's bullet-pass offscreen proof
+// (crates/grimoire/tests/sigil_render.rs, plan 0002 WP3.5/WP5.3). Compiled by sigilc into
+// bullet_showcase_unit_v1.bin next to this file; grimoire_sigilc's tests/unit_fixtures.rs checks
+// the compiled bytes stay current.
+// Three bullet types, one per silhouette of the bullet pass, in both hostile palettes.
+// The silhouette and palette names are chosen so the compiler's per-unit, alphabetical index
+// (docs/formats/sigil.md, section 11, open point 5) lands on the bullet pass tables under the
+// identity mapping: orb 0, rice 1, shard 2 (the diamond); hex_magenta 0, poison_lime 1.
+
+meta {
+  name = "Bullet Pass Showcase"
+  difficulty = [normal, showcase]
+  density = 420
+}
+
+// Round orb in a slowly turning ring: the densest, brightest glow.
+bullet orb {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.85
+  radius = 0.34u
+  damage = 1
+  flags = [grazeable]
+}
+
+// Rice grain on a three-armed spiral: long along its flight direction.
+bullet rice {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.5
+  radius = 0.3u
+  damage = 1
+  flags = [grazeable]
+}
+
+// Diamond shard in an accelerating fan towards the viewer.
+bullet shard {
+  silhouette = shard
+  palette = enemy.hex_magenta
+  glow = 0.35
+  radius = 0.32u
+  damage = 2
+  flags = []
+}
+
+emitter bloom {
+  bullet = orb
+  repeat = forever
+  interval = 20t
+  speed = 0.05u/t
+  block ring {
+    count = 16
+    start = 0deg
+  }
+  modifier rotate {
+    rate = 0.35deg/t // the ring curls as it expands
+  }
+}
+
+emitter coil {
+  bullet = rice
+  delay = 5t
+  repeat = forever
+  interval = 3t
+  speed = 0.085u/t
+  block spiral {
+    arms = 3
+    step = 11deg
+    start = 90deg
+  }
+}
+
+emitter fork {
+  bullet = shard
+  delay = 10t
+  repeat = forever
+  interval = 16t
+  speed = 0.06u/t
+  block fan {
+    count = 5
+    spread = 64deg
+    center = 270deg // towards the bottom of the screen, i.e. the viewer
+  }
+  modifier accelerate {
+    rate = 0.0015u/t2
+    max_speed = 0.14u/t
+  }
+}

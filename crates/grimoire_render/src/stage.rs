@@ -37,11 +37,14 @@ mod bullet_instance {
         pub radius: f32,
         /// Counter-clockwise rotation in radians; `0` points along `+X`.
         pub rotation: f32,
-        /// Index into the bullet pass's silhouette table. P1 has no silhouette table yet, so no
-        /// range is enforced.
+        /// Index into the bullet pass's silhouette table, [`crate::bullet_silhouette`] (plan 0002
+        /// WP3.5). An index at or beyond [`crate::bullet_silhouette::COUNT`] is rejected and
+        /// counted in [`crate::StageStats::bullets_rejected_invalid`].
         pub silhouette: u16,
-        /// Index into the palette of `palette_space`. P1 has no palette table yet, so no range is
-        /// enforced.
+        /// Index into the palette of `palette_space`, [`crate::bullet_palette`] for the only
+        /// space the bullet pass draws (plan 0002 WP3.5). An index at or beyond
+        /// [`crate::bullet_palette::COUNT`] is rejected and counted in
+        /// [`crate::StageStats::bullets_rejected_invalid`].
         pub palette: u16,
         /// One of the constants in [`crate::palette_space`]. The bullet pass only draws instances
         /// with [`crate::BULLET_PASS_PALETTE_SPACE`]; every other value is rejected.
@@ -74,6 +77,38 @@ pub mod palette_space {
 /// different `palette_space` is rejected and counted in
 /// [`StageStats::bullets_rejected_palette_space`].
 pub const BULLET_PASS_PALETTE_SPACE: u8 = palette_space::HOSTILE;
+
+/// Silhouette table of the bullet pass (plan 0002 WP3.5, engine ADR-0014, stylebook v0
+/// "Bullets"): the values of [`BulletInstance::silhouette`].
+///
+/// PRD-0003 rule 3 requires bullet types to differ in silhouette, never in colour alone. A
+/// billboard quad always has the same outline, so the pass reads each silhouette from a signed
+/// distance atlas instead of from geometry (engine ADR-0014, "Textur-Atlas statt Geometrie"). The
+/// three shapes are the stylebook's v0 base forms; a new bullet type needs a new, clearly
+/// distinguishable silhouette here before it gets another colour.
+pub mod bullet_silhouette {
+    /// Round orb: a disc filling the visible radius.
+    pub const ORB: u16 = 0;
+    /// Rice grain: an elongated capsule along the flight direction (`BulletInstance::rotation`).
+    pub const RICE: u16 = 1;
+    /// Diamond: a rhombus pointing along the flight direction.
+    pub const DIAMOND: u16 = 2;
+    /// Number of silhouettes in the table; valid indices are `0..COUNT`.
+    pub const COUNT: u16 = 3;
+}
+
+/// Palette table of the bullet pass's palette space, [`BULLET_PASS_PALETTE_SPACE`] (plan 0002
+/// WP3.5, stylebook v0 "Bullets", table "Gegnerisch (HOSTILE)"): the values of
+/// [`BulletInstance::palette`]. Every entry has a body colour, a white-hot core and the shared dark
+/// rim; the colours themselves are provisional until the look review (P-11).
+pub mod bullet_palette {
+    /// H0 "Hexenmagenta": body `#FF2FB4`, core `#FFE3F4`.
+    pub const HEX_MAGENTA: u16 = 0;
+    /// H1 "Giftlimette": body `#B6FF2E`, core `#F6FFE0`.
+    pub const POISON_LIME: u16 = 1;
+    /// Number of palettes in the table; valid indices are `0..COUNT`.
+    pub const COUNT: u16 = 2;
+}
 
 /// Fixed draw order of the stage renderer (contract §6). Not configurable: [`RenderLayer::ORDER`]
 /// lists layers earliest first, later layers are drawn on top of earlier ones, and within one
@@ -207,7 +242,8 @@ pub struct StageStats {
     /// [`BULLET_PASS_PALETTE_SPACE`].
     pub bullets_rejected_palette_space: u32,
     /// Number of bullet instances rejected because they were structurally invalid: non-finite
-    /// `position`, `radius` or `rotation`, or `radius <= 0`.
+    /// `position`, `radius` or `rotation`, `radius <= 0`, or (from WP3.5) `silhouette`/`palette`
+    /// outside [`bullet_silhouette`]/[`bullet_palette`].
     pub bullets_rejected_invalid: u32,
     /// Number of mesh instances accepted: finite `transform`, `material` in range and pointing at
     /// a valid [`PbrMaterial`], `layer == RenderLayer::World`, and — in a renderer that owns a
@@ -234,12 +270,16 @@ pub struct StageStats {
     pub meshes_rejected_unregistered: u32,
     /// Number of materials in [`StageFrame::materials`] that failed [`PbrMaterial::is_valid`].
     pub materials_rejected_invalid: u32,
-    /// Number of point lights accepted (see [`PointLight::is_valid`]).
+    /// Number of point lights accepted (see [`PointLight::is_valid`]): every valid light of
+    /// [`StageFrame::point_lights`] plus, from plan 0002 WP3.5, every bullet-cloud light the
+    /// renderer derived from [`StageFrame::bullets`] through [`crate::point_light_from_bullet`].
     pub point_lights_drawn: u32,
     /// Number of point lights rejected because [`PointLight::is_valid`] returned `false`.
     pub point_lights_rejected_invalid: u32,
     /// Of [`StageStats::point_lights_drawn`], how many had [`PointLight::is_bullet_light`] set
-    /// (PRD-0003 rule 5 / FR-15 visibility, no cap is applied by this crate yet).
+    /// (PRD-0003 rule 5 / FR-15 visibility): lights of [`StageFrame::point_lights`] carrying the
+    /// flag plus every bullet-cloud light derived from [`StageFrame::bullets`] (WP3.5). Their
+    /// contribution to the environment is capped by [`StageFrame::bullet_light_cap`] (WP3.4).
     pub bullet_point_lights_drawn: u32,
     /// Whether [`StageFrame::key_light`] was present but failed
     /// [`DirectionalLight::is_valid`].
@@ -327,15 +367,32 @@ struct BulletExtraction {
 /// `PointLight::is_valid`) rather than recomputed by the caller, so the mesh pass's own budget
 /// clamp (`mesh_pass::build_light_list`) and this counter can never disagree about which lights
 /// count as valid in the first place.
+///
+/// `derived_bullet_lights` (plan 0002 WP3.5) are the bullet-cloud lights the caller derived from
+/// `frame.bullets` with [`crate::bullet_lights::derive_bullet_lights`] — the same slice the
+/// caller shades, appended after `frame.point_lights`, so the light counters and the budget clamp
+/// see exactly the lights the mesh pass receives. The derivation depends only on `frame`, never on
+/// the renderer, so [`crate::NullRenderer`] and [`crate::WgpuRenderer`] count identically.
 pub(crate) fn stage_stats_from_base(
     base: RenderStats,
     frame: &StageFrame,
     is_mesh_registered: Option<&dyn Fn(MeshHandle) -> bool>,
     light_budget: Option<usize>,
     cluster_stats: Option<crate::cluster_pass::ClusterFrameStats>,
+    derived_bullet_lights: &[PointLight],
 ) -> StageStats {
     let bullets = extract_bullets(&frame.bullets);
-    let stage3d = extract_stage3d(frame, is_mesh_registered);
+    let mut stage3d = extract_stage3d(frame, is_mesh_registered);
+    for light in derived_bullet_lights {
+        if light.is_valid() {
+            stage3d.point_lights_drawn += 1;
+            if light.is_bullet_light {
+                stage3d.bullet_point_lights_drawn += 1;
+            }
+        } else {
+            stage3d.point_lights_rejected_invalid += 1;
+        }
+    }
     let blob_shadows = extract_blob_shadows(&frame.blob_shadows);
     let sprite_channels = frame.marker_sprites.len() + frame.debug_sprites.len();
     let shadow_config_invalid = !frame.shadow_config.is_valid();
@@ -408,13 +465,37 @@ fn extract_blob_shadows(blob_shadows: &[BlobShadowInstance]) -> BlobShadowExtrac
     }
 }
 
+/// Whether `bullet` is structurally drawable by the bullet pass (contract §6 "Gültigkeit"): finite
+/// `position`, `radius` and `rotation`, `radius > 0`, and `silhouette`/`palette` inside the pass's
+/// tables ([`bullet_silhouette::COUNT`], [`bullet_palette::COUNT`], plan 0002 WP3.5). Says nothing
+/// about the palette space, which [`is_accepted_bullet`] checks first.
+pub(crate) fn is_structurally_valid_bullet(bullet: &BulletInstance) -> bool {
+    bullet.position[0].is_finite()
+        && bullet.position[1].is_finite()
+        && bullet.radius.is_finite()
+        && bullet.rotation.is_finite()
+        && bullet.radius > 0.0
+        && bullet.silhouette < bullet_silhouette::COUNT
+        && bullet.palette < bullet_palette::COUNT
+}
+
+/// Whether the bullet pass draws `bullet`: palette space [`BULLET_PASS_PALETTE_SPACE`] and
+/// [`is_structurally_valid_bullet`]. Unlike [`extract_bullets`] this never asserts; the GPU
+/// staging and the bullet-light derivation use it to filter, while the counting (and the
+/// debug-build assertion on a foreign palette space) stays in [`extract_bullets`] alone, so one
+/// frame never asserts twice.
+pub(crate) fn is_accepted_bullet(bullet: &BulletInstance) -> bool {
+    bullet.palette_space == BULLET_PASS_PALETTE_SPACE && is_structurally_valid_bullet(bullet)
+}
+
 /// Applies the bullet pass's palette-space and validity rules (contract §6) to `bullets`; used by
 /// [`stage_stats_from_base`].
 ///
 /// The palette-space check runs first: an instance in a foreign palette space is rejected (and,
 /// in debug builds, additionally triggers a `debug_assert!` — the one documented exception to
 /// "null implementations never panic", contract §2a) without being checked for validity. Only
-/// instances in the accepted palette space are checked for finiteness and a positive radius.
+/// instances in the accepted palette space are checked for finiteness, a positive radius and (from
+/// WP3.5) silhouette and palette indices inside the pass's tables.
 fn extract_bullets(bullets: &[BulletInstance]) -> BulletExtraction {
     let mut drawn = 0u32;
     let mut rejected_palette_space = 0u32;
@@ -429,12 +510,7 @@ fn extract_bullets(bullets: &[BulletInstance]) -> BulletExtraction {
             rejected_palette_space += 1;
             continue;
         }
-        let valid = bullet.position[0].is_finite()
-            && bullet.position[1].is_finite()
-            && bullet.radius.is_finite()
-            && bullet.rotation.is_finite()
-            && bullet.radius > 0.0;
-        if valid {
+        if is_structurally_valid_bullet(bullet) {
             drawn += 1;
         } else {
             rejected_invalid += 1;
@@ -733,6 +809,99 @@ mod tests {
         assert_eq!(result.rejected_invalid, 0);
     }
 
+    // --- WP3.5: silhouette and palette tables, accepted-bullet classification -----------------
+
+    #[test]
+    fn extract_bullets_accepts_every_table_entry() {
+        let mut bullets = Vec::new();
+        for silhouette in 0..bullet_silhouette::COUNT {
+            for palette in 0..bullet_palette::COUNT {
+                bullets.push(BulletInstance {
+                    silhouette,
+                    palette,
+                    ..valid_bullet()
+                });
+            }
+        }
+        let result = extract_bullets(&bullets);
+        assert_eq!(
+            result.drawn as usize,
+            usize::from(bullet_silhouette::COUNT) * usize::from(bullet_palette::COUNT)
+        );
+        assert_eq!(result.rejected_invalid, 0);
+    }
+
+    #[test]
+    fn extract_bullets_rejects_silhouette_or_palette_outside_the_tables() {
+        let bullets = vec![
+            BulletInstance {
+                silhouette: bullet_silhouette::COUNT,
+                ..valid_bullet()
+            },
+            BulletInstance {
+                palette: bullet_palette::COUNT,
+                ..valid_bullet()
+            },
+            BulletInstance {
+                silhouette: u16::MAX,
+                palette: u16::MAX,
+                ..valid_bullet()
+            },
+        ];
+        let result = extract_bullets(&bullets);
+        assert_eq!(result.drawn, 0);
+        assert_eq!(result.rejected_invalid, 3);
+        assert_eq!(result.rejected_palette_space, 0);
+    }
+
+    #[test]
+    fn is_accepted_bullet_matches_extract_bullets_without_asserting() {
+        // A foreign palette space must be classified as "not accepted" silently: the GPU staging
+        // and the bullet-light derivation call this, and only `extract_bullets` may assert.
+        let foreign = BulletInstance {
+            palette_space: palette_space::FRIENDLY,
+            ..valid_bullet()
+        };
+        assert!(!is_accepted_bullet(&foreign));
+        assert!(is_structurally_valid_bullet(&foreign));
+        assert!(is_accepted_bullet(&valid_bullet()));
+        assert!(!is_accepted_bullet(&BulletInstance {
+            palette: bullet_palette::COUNT,
+            ..valid_bullet()
+        }));
+    }
+
+    #[test]
+    fn derived_bullet_lights_are_counted_as_drawn_bullet_lights() {
+        let frame = StageFrame::new();
+        let derived = [
+            crate::point_light_from_bullet(&BulletInstance {
+                glow: 255,
+                ..valid_bullet()
+            }),
+            // Degenerate on purpose: zero glow is still valid (intensity 0), zero radius is not.
+            crate::point_light_from_bullet(&BulletInstance {
+                radius: 0.0,
+                ..valid_bullet()
+            }),
+        ];
+        let stats = stage_stats_from_base(
+            RenderStats::default(),
+            &frame,
+            None,
+            Some(1),
+            None,
+            &derived,
+        );
+        assert_eq!(stats.point_lights_drawn, 1);
+        assert_eq!(stats.bullet_point_lights_drawn, 1);
+        assert_eq!(stats.point_lights_rejected_invalid, 1);
+        assert_eq!(
+            stats.point_lights_over_budget, 0,
+            "one valid light, budget 1"
+        );
+    }
+
     // --- extract_stage3d: meshes, materials, lights (WP2.2) ----------------------------------
 
     #[test]
@@ -1004,7 +1173,7 @@ mod tests {
         for _ in 0..40 {
             frame.point_lights.push(PointLight::default());
         }
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
         assert_eq!(stats.point_lights_drawn, 40);
         assert_eq!(stats.point_lights_over_budget, 0);
     }
@@ -1020,7 +1189,8 @@ mod tests {
             intensity: f32::NAN,
             ..PointLight::default()
         });
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, Some(32), None);
+        let stats =
+            stage_stats_from_base(RenderStats::default(), &frame, None, Some(32), None, &[]);
         assert_eq!(
             stats.point_lights_drawn, 40,
             "the NaN light is invalid, not counted here"
@@ -1034,7 +1204,8 @@ mod tests {
     #[test]
     fn stage_stats_from_base_without_cluster_stats_reports_zero() {
         let frame = StageFrame::new();
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, Some(32), None);
+        let stats =
+            stage_stats_from_base(RenderStats::default(), &frame, None, Some(32), None, &[]);
         assert_eq!(stats.clusters_with_lights, 0);
         assert_eq!(stats.light_cluster_index_entries, 0);
     }
@@ -1052,6 +1223,7 @@ mod tests {
             None,
             Some(32),
             Some(cluster_stats),
+            &[],
         );
         assert_eq!(stats.clusters_with_lights, 12);
         assert_eq!(stats.light_cluster_index_entries, 34);
@@ -1136,7 +1308,7 @@ mod tests {
     #[test]
     fn shadow_casters_drawn_matches_meshes_drawn_when_key_light_shadows_are_wanted() {
         let frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
         assert_eq!(stats.meshes_drawn, 1);
         assert_eq!(stats.shadow_casters_drawn, 1);
         assert_eq!(
@@ -1149,7 +1321,8 @@ mod tests {
     fn shadow_casters_drawn_is_zero_when_the_mode_does_not_want_key_light_shadows() {
         for mode in [ShadowMode::None, ShadowMode::Blob] {
             let frame = frame_with_one_valid_mesh_and_key_light(mode);
-            let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+            let stats =
+                stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
             assert_eq!(stats.meshes_drawn, 1);
             assert_eq!(stats.shadow_casters_drawn, 0, "mode {mode:?}");
         }
@@ -1159,7 +1332,7 @@ mod tests {
     fn shadow_casters_drawn_is_zero_without_a_valid_key_light() {
         let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
         frame.key_light = None;
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
         assert_eq!(stats.shadow_casters_drawn, 0, "no key light at all");
 
         let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
@@ -1167,7 +1340,7 @@ mod tests {
             direction: [0.0, 0.0, 0.0], // zero-length: DirectionalLight::is_valid rejects it
             ..DirectionalLight::default()
         });
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
         assert_eq!(stats.shadow_casters_drawn, 0, "invalid key light");
     }
 
@@ -1175,7 +1348,7 @@ mod tests {
     fn shadow_casters_drawn_is_zero_with_an_invalid_shadow_config() {
         let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
         frame.shadow_config.map_size = 0; // ShadowConfig::is_valid rejects a zero map size
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
         assert!(stats.shadow_config_invalid);
         assert_eq!(
             stats.shadow_casters_drawn, 0,
@@ -1191,7 +1364,7 @@ mod tests {
             radius: -1.0,
             ..valid_blob()
         });
-        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None, None, None, &[]);
         assert_eq!(stats.blob_shadows_drawn, 1);
         assert_eq!(stats.blob_shadows_rejected_invalid, 1);
         assert!(!stats.shadow_config_invalid, "default config is valid");
