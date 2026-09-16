@@ -26,17 +26,30 @@
 //! Fresnel, an analytic ambient term and geometric specular anti-aliasing (OF-3.5), consuming
 //! [`PointLight`], [`DirectionalLight`] and [`AmbientLight`] for real; this module still owns only
 //! their data contract, plus [`eye_position`] (added for the shading's view vector) and
-//! [`view_projection`] below. Shadows (OF-3.2) stay WP2.6's job. [`PointLight::is_bullet_light`]/
-//! [`BulletLightCap`] are validated and counted (as before) but not yet applied to the shading
-//! equation — contract §6 assigns that to WP3.4/WP3.5, once bullet-cloud lights exist. The
-//! point-light *count* budget (`Low 32` / `High 256`) together with clustered forward+ lighting is
-//! WP3.4's job; `mesh_pass`'s simple P1 light loop uses a smaller, internal pre-clustering limit
-//! instead (see `mesh_pass::MAX_POINT_LIGHTS`). Mesh geometry and its GPU upload are WP2.3's job
-//! (see [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this
-//! module still owns only the data contract those steps consume, plus the `view_projection` helper
+//! [`view_projection`] below. [`PointLight::is_bullet_light`]/[`BulletLightCap`] are validated and
+//! counted (as before) but not yet applied to the shading equation — contract §6 assigns that to
+//! WP3.4/WP3.5, once bullet-cloud lights exist. The point-light *count* budget (`Low 32` /
+//! `High 256`) together with clustered forward+ lighting is WP3.4's job; `mesh_pass`'s simple P1
+//! light loop uses a smaller, internal pre-clustering limit instead (see
+//! `mesh_pass::MAX_POINT_LIGHTS`). Mesh geometry and its GPU upload are WP2.3's job (see
+//! [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this module
+//! still owns only the data contract those steps consume, plus the `view_projection` helper
 //! WP2.3's mesh pass builds on ([`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`]
 //! stay ray-casts, not a matrix, so both keep working without a GPU) and that [`CameraFollow`] now
 //! keeps fed with a followed [`Camera25D::target`] every frame.
+//!
+//! **WP2.6 (shadows, OF-3.2):** two switchable techniques, selected per frame by
+//! [`ShadowConfig::mode`] ([`StageFrame::shadow_config`], persists across `clear()` like the other
+//! scene-level fields): a depth-only shadow map for [`StageFrame::key_light`], fitted with an
+//! orthographic frustum around the camera's ground target ([`key_light_view_projection`], consumed
+//! by `mesh_pass`/a new `shadow_pass` module), and cheap blob shadows
+//! ([`BlobShadowInstance`], drawn as soft darkening decals on the ground). Both are data contracts
+//! only here; rendering them is `mesh_pass`'s/`shadow_pass`'s job, mirroring how this module never
+//! rasterises meshes or lights itself. [`PointLight::casts_shadow`] and
+//! [`ShadowConfig::max_point_shadow_casters`] prepare the interface for a limited number of
+//! point-light shadow casters (PRD-0003 OF-3.2's "begrenzte Punktlicht-Schattenwerfer"); **actually
+//! rendering point-light shadows is deferred** past this work package (see the WP2.6 ADR) —
+//! [`ShadowMode::KeyLightPlusPoints`] currently shades identically to [`ShadowMode::KeyLight`].
 
 use grimoire_core::math::dmath;
 
@@ -665,6 +678,14 @@ pub struct PointLight {
     /// the light's contribution to the bullet's own glow is unaffected. The shading itself is not
     /// part of this contract.
     pub is_bullet_light: bool,
+    /// Reserved interface for point-light shadow casters (plan 0002 WP2.6, OF-3.2): whether this
+    /// light should cast a shadow once [`ShadowMode::KeyLightPlusPoints`] actually renders
+    /// point-light shadow maps. **Not yet consumed**: WP2.6 ships the key-light shadow map and
+    /// blob shadows only (see this crate's WP2.6 ADR for what is deferred and why); the mesh pass
+    /// validates and would, in a future work package, clamp the number of lights with this flag
+    /// set to [`ShadowConfig::max_point_shadow_casters`], but it does not render point-light
+    /// shadows yet. Defaults to `false`.
+    pub casts_shadow: bool,
 }
 
 impl Default for PointLight {
@@ -675,6 +696,7 @@ impl Default for PointLight {
             intensity: 1.0,
             range: 1.0,
             is_bullet_light: false,
+            casts_shadow: false,
         }
     }
 }
@@ -843,6 +865,336 @@ impl BulletLightCap {
             0.0
         }
     }
+}
+
+/// Shadow technique selected for a frame (plan 0002 WP2.6, OF-3.2). Switchable at runtime so a
+/// graphics preset can pick the technique it can afford; not `#[non_exhaustive]` (contract §2 rule
+/// 13 applies only to structs with public fields and error enums, like [`AlphaMode`] above).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShadowMode {
+    /// No shadows at all.
+    #[default]
+    None,
+    /// Cheap blob shadows only ([`crate::StageFrame::blob_shadows`]), the stylebook's recommended
+    /// preset "Low" technique (`docs/art/stilbibel.md`).
+    Blob,
+    /// A depth-only shadow map for [`crate::StageFrame::key_light`] (`key_light_view_projection`,
+    /// `shadow_pass`), PCF-filtered in `mesh.wgsl`. No blob shadows on top.
+    KeyLight,
+    /// [`ShadowMode::KeyLight`] plus a limited number of point-light shadow casters
+    /// ([`PointLight::casts_shadow`], [`ShadowConfig::max_point_shadow_casters`]).
+    ///
+    /// **Deferred (plan 0002 WP2.6, see the WP2.6 ADR):** point-light shadow casters are not
+    /// rendered yet — this variant currently shades identically to [`ShadowMode::KeyLight`]. The
+    /// data-side interface ([`PointLight::casts_shadow`], [`ShadowConfig::max_point_shadow_casters`])
+    /// is in place so a later work package can add the rendering without another contract change.
+    KeyLightPlusPoints,
+}
+
+impl ShadowMode {
+    /// Whether this mode wants the key-light shadow map built and sampled.
+    #[must_use]
+    pub fn wants_key_light_shadow_map(self) -> bool {
+        matches!(self, ShadowMode::KeyLight | ShadowMode::KeyLightPlusPoints)
+    }
+
+    /// Whether this mode wants [`crate::StageFrame::blob_shadows`] drawn.
+    #[must_use]
+    pub fn wants_blob_shadows(self) -> bool {
+        matches!(self, ShadowMode::Blob)
+    }
+}
+
+/// Parameters of the WP2.6 shadow techniques for one frame ([`crate::StageFrame::shadow_config`]).
+/// Persists across [`crate::StageFrame::clear`], like [`crate::StageFrame::camera_25d`]: it
+/// describes the current scene/preset, not a per-frame instance list.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShadowConfig {
+    /// Which technique(s) to render this frame.
+    pub mode: ShadowMode,
+    /// Side length, in texels, of the (square) key-light shadow map. Rebuilt by the renderer
+    /// whenever this changes; keep it stable across frames to avoid needless GPU reallocation.
+    /// Must be non-zero; validated by [`ShadowConfig::is_valid`].
+    pub map_size: u32,
+    /// Constant depth bias applied when rendering the key-light shadow map (`wgpu`'s
+    /// `DepthBiasState::constant`, in units of the smallest value representable by the shadow
+    /// map's depth format), fighting shadow acne on surfaces roughly facing the light.
+    pub depth_bias_constant: i32,
+    /// Slope-scaled depth bias applied on top of [`ShadowConfig::depth_bias_constant`] (`wgpu`'s
+    /// `DepthBiasState::slope_scale`), growing the bias for surfaces at a grazing angle to the
+    /// light, where acne is worst. Must be finite.
+    pub depth_bias_slope_scale: f32,
+    /// PCF kernel radius in shadow-map texels: a radius of `1` samples a `3x3` neighbourhood, `2` a
+    /// `5x5` one, and so on. `0` disables filtering (a single hard-edged tap). Clamped to a small
+    /// maximum by [`ShadowConfig::is_valid`] to keep the per-fragment tap count bounded.
+    pub pcf_radius: u32,
+    /// Half-width/-depth, in world units, of the orthographic frustum fitted around the camera's
+    /// ground target ([`Camera25D::target`]) for the key-light shadow map. Must be finite and
+    /// strictly positive.
+    pub frustum_radius: f32,
+    /// Vertical extent, in world units above the ground plane (`Z = 0`), the fitted frustum must
+    /// cover. Must be finite and strictly positive.
+    pub frustum_height: f32,
+    /// Upper bound on how many [`PointLight`]s with [`PointLight::casts_shadow`] set may cast a
+    /// shadow at once, once [`ShadowMode::KeyLightPlusPoints`] actually renders them (plan 0002
+    /// WP2.6, deferred — see [`ShadowMode::KeyLightPlusPoints`]'s doc comment). Carried here so the
+    /// interface is complete even though nothing consumes it yet.
+    pub max_point_shadow_casters: u32,
+}
+
+impl Default for ShadowConfig {
+    fn default() -> Self {
+        Self {
+            mode: ShadowMode::None,
+            map_size: 1024,
+            // Loosely modelled on common engine defaults for a `Depth32Float` shadow map; the
+            // WP2.6 ADR records the measured acne/peter-panning trade-off on the software adapter.
+            depth_bias_constant: 3,
+            depth_bias_slope_scale: 2.0,
+            pcf_radius: 1,
+            frustum_radius: 25.0,
+            frustum_height: 20.0,
+            max_point_shadow_casters: 0,
+        }
+    }
+}
+
+impl ShadowConfig {
+    /// Largest accepted [`ShadowConfig::map_size`] (`8192`) and [`ShadowConfig::pcf_radius`] (`4`,
+    /// a `9x9` kernel): both bound the per-frame GPU/CPU cost an untrusted or misconfigured value
+    /// could otherwise force, without editing this contract. An out-of-range or non-finite
+    /// [`ShadowConfig`] falls back to shadows off (`StageStats::shadow_config_invalid`, see
+    /// `mesh_pass`), never to clamping silently — the same "invalid data is rejected and counted,
+    /// not guessed at" rule contract §6 already applies to [`PbrMaterial`] and the light types.
+    const MAX_MAP_SIZE: u32 = 8192;
+    /// See [`ShadowConfig::MAX_MAP_SIZE`].
+    const MAX_PCF_RADIUS: u32 = 4;
+
+    /// Whether every field is finite and within its documented range (never panics).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.map_size > 0
+            && self.map_size <= Self::MAX_MAP_SIZE
+            && self.depth_bias_slope_scale.is_finite()
+            && self.pcf_radius <= Self::MAX_PCF_RADIUS
+            && is_positive_and_finite(self.frustum_radius)
+            && is_positive_and_finite(self.frustum_height)
+    }
+}
+
+mod blob_shadow_instance {
+    // bytemuck's derive macros expand to `unsafe impl` blocks, like `BulletInstance` elsewhere in
+    // this crate.
+    #![allow(unsafe_code)]
+
+    /// One blob shadow (plan 0002 WP2.6, OF-3.2): a soft, dark decal on the ground plane
+    /// (`Z = 0`) under an actor, the stylebook's cheap alternative to the key-light shadow map
+    /// (`docs/art/stilbibel.md`, preset "Low"). Drawn by `mesh_pass` after the opaque meshes, depth
+    /// tested against them (so a wall or prop between the disc and the camera still occludes it)
+    /// but never depth-written, alpha-blended so it darkens whatever ground colour is already
+    /// there. Layout is `#[repr(C)]`, 20 bytes, no padding, uploaded to the GPU verbatim.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct BlobShadowInstance {
+        /// Ground-plane centre (`Z = 0`), same convention as [`crate::BulletInstance::position`].
+        pub position: [f32; 2],
+        /// Outer radius of the disc, world units. Must be finite and strictly positive.
+        pub radius: f32,
+        /// Fraction of `radius`, counted inward from the rim, over which the disc fades from fully
+        /// transparent to [`BlobShadowInstance::strength`]. `0.0` is a hard edge, `1.0` fades from
+        /// the very centre. Must be finite and in `0.0..=1.0`.
+        pub softness: f32,
+        /// Maximum darkening at the disc's centre: `0.0` is invisible, `1.0` is fully opaque black.
+        /// Must be finite and in `0.0..=1.0`.
+        pub strength: f32,
+    }
+}
+pub use blob_shadow_instance::BlobShadowInstance;
+
+impl BlobShadowInstance {
+    /// Whether every field is finite and within its documented range (never panics). Invalid
+    /// instances are rejected and counted, never drawn
+    /// (`StageStats::blob_shadows_rejected_invalid`).
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let unit_range = |c: f32| c.is_finite() && (0.0..=1.0).contains(&c);
+        self.position.iter().all(|c| c.is_finite())
+            && is_positive_and_finite(self.radius)
+            && unit_range(self.softness)
+            && unit_range(self.strength)
+    }
+}
+
+/// Builds a world-to-light-space view matrix looking along `direction` (a directional light's
+/// travel direction, same convention as [`DirectionalLight::direction`]) with its eye placed at
+/// `eye`. Picks an up hint automatically (world `+Z`, falling back to world `+Y` when `direction`
+/// is too close to vertical for `+Z` to give a stable basis), so callers never have to reason about
+/// the degenerate case themselves.
+///
+/// Not part of the crate's public API, for the same reason as [`view_projection`]: `wgpu`'s
+/// clip-space convention stays out of this module's data contract (engine ADR-0002).
+fn light_view_matrix(direction: [f32; 3], eye: [f32; 3]) -> [[f32; 4]; 4] {
+    let length =
+        (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2])
+            .sqrt();
+    let forward = if is_positive_and_finite(length) {
+        [
+            direction[0] / length,
+            direction[1] / length,
+            direction[2] / length,
+        ]
+    } else {
+        [0.0, 0.0, -1.0]
+    };
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let normalize = |v: [f32; 3]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if is_positive_and_finite(l) {
+            [v[0] / l, v[1] / l, v[2] / l]
+        } else {
+            [1.0, 0.0, 0.0]
+        }
+    };
+    // World `+Z` is the natural up hint for a mostly-downward light (the common case: a "moon" or
+    // "sun" key light); fall back to world `+Y` once `forward` is close enough to vertical that
+    // `+Z` would produce a near-zero cross product.
+    let up_hint = if forward[0].abs() < 1e-3 && forward[1].abs() < 1e-3 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let right = normalize(cross(up_hint, forward));
+    let up = cross(forward, right);
+    let (rx, ry, rz) = (right[0], right[1], right[2]);
+    let (ux, uy, uz) = (up[0], up[1], up[2]);
+    let (fx, fy, fz) = (forward[0], forward[1], forward[2]);
+    [
+        [rx, ux, fx, 0.0],
+        [ry, uy, fy, 0.0],
+        [rz, uz, fz, 0.0],
+        [
+            -(rx * eye[0] + ry * eye[1] + rz * eye[2]),
+            -(ux * eye[0] + uy * eye[1] + uz * eye[2]),
+            -(fx * eye[0] + fy * eye[1] + fz * eye[2]),
+            1.0,
+        ],
+    ]
+}
+
+/// Builds the column-major light-space view-projection matrix for [`crate::StageFrame::key_light`]
+/// (plan 0002 WP2.6, OF-3.2): an orthographic frustum fitted tightly around a box centred on
+/// `target` (the camera's ground point, [`Camera25D::target`]), `config.frustum_radius` wide/deep
+/// on the ground plane and covering `Z` from `0` to `config.frustum_height`.
+///
+/// "Fitted" means the box's eight corners are projected into light space and the orthographic
+/// bounds are taken from their exact min/max extents, rather than a fixed guessed size — the
+/// frustum is only ever as large as the scene volume it must cover, which keeps the shadow map's
+/// texel density (and therefore its effective softness/aliasing) stable as the config's frustum
+/// size changes.
+///
+/// Returns a matrix with only finite entries whenever `direction` is finite and non-zero and
+/// `config` is valid ([`ShadowConfig::is_valid`]); callers treat a non-finite result the same as
+/// "no shadow map" (skip sampling), matching [`view_projection`]'s own contract.
+pub(crate) fn key_light_view_projection(
+    direction: [f32; 3],
+    target: [f32; 2],
+    config: &ShadowConfig,
+) -> [[f32; 4]; 4] {
+    let half_height = config.frustum_height * 0.5;
+    let center = [target[0], target[1], half_height];
+    let half_extent = [
+        config.frustum_radius,
+        config.frustum_radius,
+        half_height + config.frustum_radius, // generous margin so tall props are never clipped
+    ];
+    let mut corners = [[0.0f32; 3]; 8];
+    let mut i = 0;
+    for &sx in &[-1.0f32, 1.0] {
+        for &sy in &[-1.0f32, 1.0] {
+            for &sz in &[-1.0f32, 1.0] {
+                corners[i] = [
+                    center[0] + sx * half_extent[0],
+                    center[1] + sy * half_extent[1],
+                    center[2] + sz * half_extent[2],
+                ];
+                i += 1;
+            }
+        }
+    }
+    // A distant eye along `-direction` from the box centre (far enough to sit outside the box for
+    // any `frustum_radius`/`frustum_height` this contract accepts), so every corner ends up with a
+    // positive light-space "forward" coordinate below.
+    let far_guess = (half_extent[0] * half_extent[0]
+        + half_extent[1] * half_extent[1]
+        + half_extent[2] * half_extent[2])
+        .sqrt()
+        * 2.0
+        + 1.0;
+    let length =
+        (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2])
+            .sqrt();
+    let unit_direction = if is_positive_and_finite(length) {
+        [
+            direction[0] / length,
+            direction[1] / length,
+            direction[2] / length,
+        ]
+    } else {
+        [0.0, 0.0, -1.0]
+    };
+    let eye = [
+        center[0] - unit_direction[0] * far_guess,
+        center[1] - unit_direction[1] * far_guess,
+        center[2] - unit_direction[2] * far_guess,
+    ];
+    let view = light_view_matrix(direction, eye);
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for corner in corners {
+        let world = [corner[0], corner[1], corner[2], 1.0];
+        for axis in 0..3 {
+            let value: f32 = (0..4).map(|k| view[k][axis] * world[k]).sum();
+            min[axis] = min[axis].min(value);
+            max[axis] = max[axis].max(value);
+        }
+    }
+
+    // Right-handed orthographic projection onto `wgpu`'s zero-to-one clip-space depth, from the
+    // light-space bounding box computed above (`x`/`y` = left/right/bottom/top, `z` = near/far
+    // along the light's forward axis).
+    let (left, right_bound) = (min[0], max[0]);
+    let (bottom, top) = (min[1], max[1]);
+    let (near, far) = (min[2], max[2]);
+    let dx = right_bound - left;
+    let dy = top - bottom;
+    let dz = far - near;
+    if !(dx.is_finite() && dy.is_finite() && dz.is_finite()) || dx <= 0.0 || dy <= 0.0 || dz <= 0.0
+    {
+        return IDENTITY_TRANSFORM;
+    }
+    let proj: [[f32; 4]; 4] = [
+        [2.0 / dx, 0.0, 0.0, 0.0],
+        [0.0, 2.0 / dy, 0.0, 0.0],
+        [0.0, 0.0, 1.0 / dz, 0.0],
+        [
+            -(right_bound + left) / dx,
+            -(top + bottom) / dy,
+            -near / dz,
+            1.0,
+        ],
+    ];
+    multiply(proj, view)
 }
 
 #[cfg(test)]
@@ -1507,5 +1859,253 @@ mod tests {
         let mesh = MeshInstance::default();
         assert_eq!(mesh.transform, IDENTITY_TRANSFORM);
         assert_eq!(mesh.layer, RenderLayer::World);
+    }
+
+    // --- ShadowMode / ShadowConfig (WP2.6) ----------------------------------------------------
+
+    #[test]
+    fn shadow_mode_default_is_none_and_wants_nothing() {
+        assert_eq!(ShadowMode::default(), ShadowMode::None);
+        assert!(!ShadowMode::None.wants_key_light_shadow_map());
+        assert!(!ShadowMode::None.wants_blob_shadows());
+    }
+
+    #[test]
+    fn shadow_mode_wants_matrix() {
+        assert!(!ShadowMode::Blob.wants_key_light_shadow_map());
+        assert!(ShadowMode::Blob.wants_blob_shadows());
+        assert!(ShadowMode::KeyLight.wants_key_light_shadow_map());
+        assert!(!ShadowMode::KeyLight.wants_blob_shadows());
+        assert!(ShadowMode::KeyLightPlusPoints.wants_key_light_shadow_map());
+        assert!(!ShadowMode::KeyLightPlusPoints.wants_blob_shadows());
+    }
+
+    #[test]
+    fn shadow_config_default_is_valid() {
+        assert!(ShadowConfig::default().is_valid());
+    }
+
+    #[test]
+    fn shadow_config_rejects_zero_or_oversized_map_size() {
+        assert!(
+            !ShadowConfig {
+                map_size: 0,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ShadowConfig {
+                map_size: 8193,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            ShadowConfig {
+                map_size: 8192,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn shadow_config_rejects_excessive_pcf_radius_and_non_finite_or_non_positive_frustum() {
+        assert!(
+            !ShadowConfig {
+                pcf_radius: 5,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            ShadowConfig {
+                pcf_radius: 4,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ShadowConfig {
+                frustum_radius: 0.0,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ShadowConfig {
+                frustum_radius: f32::NAN,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ShadowConfig {
+                frustum_height: -1.0,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ShadowConfig {
+                depth_bias_slope_scale: f32::NAN,
+                ..ShadowConfig::default()
+            }
+            .is_valid()
+        );
+    }
+
+    // --- BlobShadowInstance validation (WP2.6) ------------------------------------------------
+
+    fn valid_blob() -> BlobShadowInstance {
+        BlobShadowInstance {
+            position: [1.0, -2.0],
+            radius: 1.5,
+            softness: 0.5,
+            strength: 0.6,
+        }
+    }
+
+    #[test]
+    fn blob_shadow_instance_default_is_invalid_zero_radius() {
+        // `Default` (all-zero) is deliberately not automatically valid: a `radius <= 0.0` disc
+        // draws nothing, matching `BulletInstance`'s own "radius <= 0 is rejected" rule.
+        assert!(!BlobShadowInstance::default().is_valid());
+    }
+
+    #[test]
+    fn blob_shadow_instance_accepts_boundary_values() {
+        assert!(
+            BlobShadowInstance {
+                softness: 0.0,
+                strength: 0.0,
+                ..valid_blob()
+            }
+            .is_valid()
+        );
+        assert!(
+            BlobShadowInstance {
+                softness: 1.0,
+                strength: 1.0,
+                ..valid_blob()
+            }
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn blob_shadow_instance_rejects_invalid_fields_without_panic() {
+        assert!(
+            !BlobShadowInstance {
+                radius: 0.0,
+                ..valid_blob()
+            }
+            .is_valid(),
+            "zero radius"
+        );
+        assert!(
+            !BlobShadowInstance {
+                radius: -1.0,
+                ..valid_blob()
+            }
+            .is_valid(),
+            "negative radius"
+        );
+        assert!(
+            !BlobShadowInstance {
+                softness: 1.0001,
+                ..valid_blob()
+            }
+            .is_valid(),
+            "softness above 1.0"
+        );
+        assert!(
+            !BlobShadowInstance {
+                strength: -0.0001,
+                ..valid_blob()
+            }
+            .is_valid(),
+            "strength below 0.0"
+        );
+        assert!(
+            !BlobShadowInstance {
+                position: [f32::NAN, 0.0],
+                ..valid_blob()
+            }
+            .is_valid(),
+            "NaN position component"
+        );
+    }
+
+    // --- PointLight::casts_shadow (WP2.6, prepared interface) ---------------------------------
+
+    #[test]
+    fn point_light_default_does_not_cast_a_shadow() {
+        assert!(!PointLight::default().casts_shadow);
+    }
+
+    // --- key_light_view_projection (WP2.6) ----------------------------------------------------
+
+    #[test]
+    fn key_light_view_projection_is_finite_for_a_well_formed_light() {
+        let config = ShadowConfig::default();
+        let matrix = key_light_view_projection([0.3, 0.2, -1.0], [5.0, -3.0], &config);
+        for column in matrix {
+            assert!(column.iter().all(|c| c.is_finite()), "{matrix:?}");
+        }
+    }
+
+    #[test]
+    fn key_light_view_projection_never_panics_or_produces_nan_for_degenerate_input() {
+        let config = ShadowConfig::default();
+        for direction in [
+            [0.0, 0.0, 0.0],
+            [f32::NAN, 0.0, -1.0],
+            [0.0, 0.0, 1.0],  // straight up, parallel to the up hint
+            [0.0, 0.0, -1.0], // straight down, parallel to the up hint
+            [f32::INFINITY, 0.0, -1.0],
+        ] {
+            let matrix = key_light_view_projection(direction, [0.0, 0.0], &config);
+            for column in matrix {
+                assert!(
+                    column.iter().all(|c| c.is_finite()),
+                    "direction {direction:?} produced {matrix:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn key_light_view_projection_maps_the_target_column_near_the_frustum_centre() {
+        // The frustum is centred on `target` in X/Y (at half the configured height in Z); after
+        // the perspective-free orthographic divide (`w == 1` always), that point's light-space
+        // clip x/y must land at (or very near) the centre (0, 0) of the fitted box.
+        let config = ShadowConfig::default();
+        let target = [5.0, -3.0];
+        let matrix = key_light_view_projection([0.2, 0.4, -1.0], target, &config);
+        let world = [target[0], target[1], config.frustum_height * 0.5, 1.0];
+        let clip: [f32; 4] =
+            std::array::from_fn(|row| (0..4).map(|col| matrix[col][row] * world[col]).sum());
+        assert!((clip[0]).abs() < 1e-3, "clip x {clip:?}");
+        assert!((clip[1]).abs() < 1e-3, "clip y {clip:?}");
+    }
+
+    #[test]
+    fn key_light_view_projection_covers_a_taller_frustum_without_clipping_the_top() {
+        // A point at the top of the configured frustum height, straight above the target, must
+        // still land within the [-1, 1] light-space depth range (it must not be clipped away).
+        let config = ShadowConfig {
+            frustum_height: 30.0,
+            ..ShadowConfig::default()
+        };
+        let matrix = key_light_view_projection([0.0, 0.0, -1.0], [0.0, 0.0], &config);
+        let world = [0.0, 0.0, config.frustum_height, 1.0];
+        let clip: [f32; 4] =
+            std::array::from_fn(|row| (0..4).map(|col| matrix[col][row] * world[col]).sum());
+        assert!(
+            (-1.0..=1.0).contains(&clip[2]),
+            "top of the frustum must stay within depth range: {clip:?}"
+        );
     }
 }

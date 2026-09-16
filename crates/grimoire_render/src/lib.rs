@@ -18,13 +18,18 @@
 //! ([`WgpuRenderer::register_mesh`]) are plan 0002 WP2.3; see the `mesh` and `mesh_pass` modules.
 //! PBR shading (GGX, geometric specular anti-aliasing, optional textures) is WP2.5; texture
 //! registration ([`TextureData`], [`WgpuRenderer::register_texture`]) mirrors the mesh registry,
-//! see the `texture` module.
+//! see the `texture` module. Shadows (OF-3.2, plan 0002 WP2.6) are a key-light shadow map
+//! ([`ShadowMode::KeyLight`], `shadow_pass` module) plus cheap blob shadows
+//! ([`ShadowMode::Blob`], [`BlobShadowInstance`]), switchable per frame via
+//! [`StageFrame::shadow_config`] ([`ShadowConfig`]); see the `stage3d` module's WP2.6 section and
+//! this crate's WP2.6 ADR for what is deferred (point-light shadow casters).
 
 use std::time::Duration;
 
 mod mesh;
 mod mesh_pass;
 pub mod procedural;
+mod shadow_pass;
 mod sprite_pass;
 mod stage;
 mod stage3d;
@@ -36,8 +41,9 @@ pub use stage::{
     BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, palette_space,
 };
 pub use stage3d::{
-    AlphaMode, AmbientLight, BulletLightCap, Camera25D, CameraFollow, DirectionalLight,
-    MaterialHandle, MeshHandle, MeshInstance, PbrMaterial, PointLight, TextureHandle,
+    AlphaMode, AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, CameraFollow,
+    DirectionalLight, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial, PointLight,
+    ShadowConfig, ShadowMode, TextureHandle,
 };
 pub use texture::{TextureColorSpace, TextureData, TextureError};
 
@@ -427,8 +433,15 @@ mod tests {
             ..MeshInstance::default()
         });
         frame.point_lights.push(PointLight::default());
+        frame.blob_shadows.push(BlobShadowInstance {
+            position: [0.0, 0.0],
+            radius: 1.0,
+            softness: 0.5,
+            strength: 0.5,
+        });
         frame.camera_25d = Some(Camera25D::default());
         frame.key_light = Some(DirectionalLight::default());
+        frame.shadow_config.mode = ShadowMode::KeyLight;
 
         let stats = renderer.render_stage(&frame).expect("render never fails");
         assert_eq!(stats.base.sprites_drawn, 1, "only base.sprites is drawn");
@@ -450,6 +463,14 @@ mod tests {
         assert!(!stats.key_light_rejected_invalid);
         assert!(!stats.ambient_rejected_invalid);
         assert!(!stats.bullet_light_cap_invalid);
+        assert_eq!(
+            stats.blob_shadows_drawn, 0,
+            "the provided default never extracts WP2.6 channels either"
+        );
+        assert_eq!(stats.blob_shadows_rejected_invalid, 0);
+        assert!(!stats.shadow_config_invalid);
+        assert_eq!(stats.shadow_casters_drawn, 0, "no meshes were extracted");
+        assert_eq!(stats.point_shadow_casters_drawn, 0);
     }
 
     #[test]
@@ -484,6 +505,17 @@ mod tests {
             ..PointLight::default()
         });
         frame.key_light = Some(DirectionalLight::default());
+        frame.shadow_config.mode = ShadowMode::KeyLight;
+        frame.blob_shadows.push(BlobShadowInstance {
+            position: [0.0, 0.0],
+            radius: 1.0,
+            softness: 0.5,
+            strength: 0.5,
+        });
+        frame.blob_shadows.push(BlobShadowInstance {
+            radius: -1.0,
+            ..BlobShadowInstance::default()
+        });
 
         let stats = renderer
             .render_stage(&frame)
@@ -512,6 +544,14 @@ mod tests {
         assert!(!stats.key_light_rejected_invalid);
         assert!(!stats.ambient_rejected_invalid);
         assert!(!stats.bullet_light_cap_invalid);
+        assert_eq!(stats.blob_shadows_drawn, 1);
+        assert_eq!(stats.blob_shadows_rejected_invalid, 1);
+        assert!(!stats.shadow_config_invalid);
+        assert_eq!(
+            stats.shadow_casters_drawn, 1,
+            "one drawn mesh, a valid key light, and a mode wanting key-light shadows"
+        );
+        assert_eq!(stats.point_shadow_casters_drawn, 0);
         assert_eq!(
             renderer.last_sprite_count, 1,
             "only base.sprites, P0 semantics"

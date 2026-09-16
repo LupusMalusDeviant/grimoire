@@ -30,6 +30,22 @@
 //! (frame order) and reports how many were dropped; [`MeshPass::render`] logs a warning if any
 //! were.
 //!
+//! **Shadows (plan 0002 WP2.6, OF-3.2):** two techniques, selected per frame by
+//! [`crate::StageFrame::shadow_config`]'s [`crate::ShadowMode`]. A depth-only shadow map for the
+//! key light (`shadow.wgsl`, [`crate::shadow_pass::ShadowPass`], owned by this pass because it
+//! already owns the registered meshes' GPU buffers the shadow pass draws) is fitted with an
+//! orthographic frustum around the camera's ground target
+//! ([`stage3d::key_light_view_projection`]) and PCF-sampled from `mesh.wgsl`'s fragment shader
+//! through a comparison sampler bound in a third bind group (group 2). Blob shadows
+//! (`blob_shadow.wgsl`, [`crate::BlobShadowInstance`]) are cheap alpha-blended decals drawn in the
+//! *same* render pass as the opaque meshes, right after them: depth-tested against the
+//! already-populated depth buffer (so a wall still occludes one, and an actor standing on one
+//! still draws over it) but never depth-written. Both are built and skipped based on
+//! [`crate::ShadowMode::wants_key_light_shadow_map`]/[`crate::ShadowMode::wants_blob_shadows`], so
+//! neither technique costs anything on a frame that does not use it. Deferred: point-light shadow
+//! casters (see [`crate::ShadowMode::KeyLightPlusPoints`]'s doc comment and this crate's WP2.6
+//! ADR).
+//!
 //! Not part of the crate's public API (engine ADR-0002: `wgpu` stays invisible outside this
 //! crate and its `grimoire_gpu` dependency).
 
@@ -38,9 +54,13 @@ use std::collections::HashMap;
 use grimoire_gpu::{GpuContext, GpuError, wgpu};
 
 use crate::mesh::{MeshData, MeshError, MeshRegistry};
+use crate::shadow_pass::{ShadowCaster, ShadowPass};
 use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight};
 use crate::texture::{TextureData, TextureError, TextureRegistry};
-use crate::{MeshHandle, MeshInstance, PbrMaterial, PointLight, RenderLayer, TextureHandle};
+use crate::{
+    BlobShadowInstance, MeshHandle, MeshInstance, PbrMaterial, PointLight, RenderLayer,
+    ShadowConfig, TextureHandle,
+};
 
 /// Depth-buffer format of the mesh pass. Guaranteed renderable on every `wgpu` backend, including
 /// the software adapters (WARP, lavapipe) used in CI and in local tests (`GRIMOIRE_GPU_ADAPTER=
@@ -126,6 +146,13 @@ mod camera_gpu {
     /// Per-frame camera and lighting uniform consumed by `mesh.wgsl`'s `Camera` struct. Field
     /// order and padding mirror the WGSL struct exactly (a unit test below freezes the byte size);
     /// see this file's `camera_uniform` for how it is filled in.
+    ///
+    /// `light_view_proj`/`shadow_params` are WP2.6's addition (OF-3.2): the key-light shadow
+    /// map's light-space view-projection and, packed into one `vec4`, `x` = shadow-map texel size
+    /// (`1.0 / map_size`, for PCF stepping), `y` = PCF kernel radius in texels (as a float, `0` =
+    /// a single hard-edged tap), `z` = `1.0` if the shadow map should be sampled at all this frame
+    /// (`0.0` otherwise, in which case `mesh.wgsl` skips the texture read entirely rather than
+    /// sampling a possibly-stale map), `w` unused.
     #[repr(C)]
     #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     pub(super) struct CameraGpu {
@@ -139,6 +166,8 @@ mod camera_gpu {
         pub specular_aa_strength: f32,
         pub _pad1: u32,
         pub _pad2: u32,
+        pub light_view_proj: [[f32; 4]; 4],
+        pub shadow_params: [f32; 4],
         pub lights: [PointLightGpu; MAX_POINT_LIGHTS],
     }
 }
@@ -430,9 +459,11 @@ fn build_light_array(
 
 /// Builds the uniform `mesh.wgsl` reads: the view-projection matrix, the eye position, the key
 /// light and ambient term flattened into GPU-friendly vectors, the point-light array and count,
-/// and the OF-3.5 specular-AA toggle. An invalid or missing key light (contract §6
-/// `DirectionalLight::is_valid`) falls back to no directional contribution at all, consistent with
-/// `StageStats::key_light_rejected_invalid` already flagging it elsewhere.
+/// the OF-3.5 specular-AA toggle, and (WP2.6) the key-light shadow map's light-space
+/// view-projection plus its `shadow_params` (see [`CameraGpu`]'s doc comment for the packing). An
+/// invalid or missing key light (contract §6 `DirectionalLight::is_valid`) falls back to no
+/// directional contribution at all, consistent with `StageStats::key_light_rejected_invalid`
+/// already flagging it elsewhere.
 #[allow(clippy::too_many_arguments)]
 fn camera_uniform(
     view_proj: [[f32; 4]; 4],
@@ -442,6 +473,8 @@ fn camera_uniform(
     lights: [PointLightGpu; MAX_POINT_LIGHTS],
     light_count: u32,
     specular_aa: bool,
+    light_view_proj: [[f32; 4]; 4],
+    shadow_params: [f32; 4],
 ) -> CameraGpu {
     let (light_dir, key_color) = match key_light.filter(|light| light.is_valid()) {
         Some(light) => {
@@ -474,12 +507,15 @@ fn camera_uniform(
         specular_aa_strength: if specular_aa { 1.0 } else { 0.0 },
         _pad1: 0,
         _pad2: 0,
+        light_view_proj,
+        shadow_params,
         lights,
     }
 }
 
 /// GPU mesh pipeline, depth buffer, mesh registry and texture registry, owned by
-/// [`crate::WgpuRenderer`].
+/// [`crate::WgpuRenderer`]. From WP2.6 (this module's header doc comment) it also owns the
+/// key-light shadow map ([`ShadowPass`]) and the blob-shadow decal pipeline.
 pub(crate) struct MeshPass {
     pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
@@ -498,6 +534,24 @@ pub(crate) struct MeshPass {
     instance_capacity: u32,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
+    /// Key-light shadow map (plan 0002 WP2.6): depth texture, comparison sampler, its own
+    /// depth-only pipeline and instance buffer. Owned here (not standalone) because this pass
+    /// already owns the registered meshes' GPU vertex/index buffers it draws.
+    shadow_pass: ShadowPass,
+    /// Layout of the mesh pipeline's group 2 (shadow-sampling): a `texture_depth_2d` plus a
+    /// `sampler_comparison`, matching `mesh.wgsl`'s `shadow_map`/`shadow_sampler` bindings.
+    shadow_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group for group 2, rebuilt whenever [`ShadowPass::configure`] actually replaces the
+    /// shadow map's texture view (so it never goes stale); left as-is on a frame that skips the
+    /// shadow map render entirely (`mesh.wgsl`'s `shadow_params.z` gates sampling regardless).
+    shadow_sampling_bind_group: wgpu::BindGroup,
+    /// Blob-shadow decal pipeline (plan 0002 WP2.6, `blob_shadow.wgsl`): alpha-blended, depth
+    /// tested against the opaque meshes' depth buffer but never depth-writing, drawn in the same
+    /// render pass right after them. Reuses `camera_bind_group_layout`/`camera_bind_group` (group
+    /// 0) for `view_proj`; needs no texture group of its own.
+    blob_pipeline: wgpu::RenderPipeline,
+    blob_instance_buffer: wgpu::Buffer,
+    blob_instance_capacity: u32,
 }
 
 /// One `texture_2d<f32>` binding entry of the texture bind group layout (group 1), all four
@@ -513,6 +567,158 @@ fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
+}
+
+/// Layout of the mesh pipeline's group 2 (plan 0002 WP2.6): the shadow map's depth texture plus
+/// its comparison sampler, matching `mesh.wgsl`'s `shadow_map`/`shadow_sampler` bindings.
+fn create_shadow_bind_group_layout(context: &GpuContext) -> wgpu::BindGroupLayout {
+    context
+        .device()
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("grimoire mesh shadow layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
+        })
+}
+
+/// Builds the group-2 bind group from `shadow_pass`'s current view/sampler; called once at
+/// construction and again whenever [`ShadowPass::configure`] replaces the view (see
+/// [`MeshPass::shadow_sampling_bind_group`]'s doc comment).
+fn create_shadow_sampling_bind_group(
+    context: &GpuContext,
+    layout: &wgpu::BindGroupLayout,
+    shadow_pass: &ShadowPass,
+) -> wgpu::BindGroup {
+    context
+        .device()
+        .create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grimoire mesh shadow bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(shadow_pass.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(shadow_pass.sampler()),
+                },
+            ],
+        })
+}
+
+/// Builds the blob-shadow decal pipeline (plan 0002 WP2.6, `blob_shadow.wgsl`): alpha-blended,
+/// depth-tested against the opaque meshes' depth buffer (`DEPTH_FORMAT`) but never depth-writing,
+/// vertex-pulled (no vertex buffer, only a per-instance one). Reuses `camera_bind_group_layout`
+/// (group 0) so it can be drawn with the same bind group as the opaque meshes, without a uniform
+/// buffer of its own (`blob_shadow.wgsl`'s header comment explains why that is sound).
+fn create_blob_pipeline(
+    context: &GpuContext,
+    camera_bind_group_layout: &wgpu::BindGroupLayout,
+    color_format: wgpu::TextureFormat,
+) -> Result<wgpu::RenderPipeline, GpuError> {
+    let device = context.device();
+    let shader = context.capture_errors(|device| {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("grimoire blob shadow shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("blob_shadow.wgsl").into()),
+        })
+    })?;
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("grimoire blob shadow layout"),
+        bind_group_layouts: &[Some(camera_bind_group_layout)],
+        immediate_size: 0,
+    });
+    let instance_attributes: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x2,
+        1 => Float32,
+        2 => Float32,
+        3 => Float32,
+    ];
+    context.capture_errors(|device| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grimoire blob shadow pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<crate::stage3d::BlobShadowInstance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &instance_attributes,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                // Never occludes anything drawn after it; only reads the depth the opaque meshes
+                // already wrote this pass (`mesh_pass.rs`'s header doc comment on draw order).
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    })
+}
+
+/// Largest instance count a buffer of at most `max_buffer_size` bytes can hold, sized for
+/// [`crate::stage3d::BlobShadowInstance`] (mirrors [`mesh_instance_capacity`]).
+fn blob_instance_capacity(max_buffer_size: u64) -> u32 {
+    u32::try_from(
+        max_buffer_size / std::mem::size_of::<crate::stage3d::BlobShadowInstance>() as u64,
+    )
+    .unwrap_or(u32::MAX)
+}
+
+fn create_blob_instance_buffer(
+    context: &GpuContext,
+    capacity: u32,
+) -> Result<wgpu::Buffer, GpuError> {
+    let size =
+        u64::from(capacity) * std::mem::size_of::<crate::stage3d::BlobShadowInstance>() as u64;
+    context.capture_errors(|device| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grimoire blob shadow instances"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    })
 }
 
 impl MeshPass {
@@ -607,11 +813,14 @@ impl MeshPass {
             "grimoire default ORM texture",
         )?;
 
+        let shadow_bind_group_layout = create_shadow_bind_group_layout(context);
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("grimoire mesh layout"),
             bind_group_layouts: &[
                 Some(&camera_bind_group_layout),
                 Some(&texture_bind_group_layout),
+                Some(&shadow_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -690,6 +899,14 @@ impl MeshPass {
             16u32.min(mesh_instance_capacity(device.limits().max_buffer_size).max(1));
         let instance_buffer = create_mesh_instance_buffer(context, instance_capacity)?;
 
+        let shadow_pass = ShadowPass::new(context, &ShadowConfig::default())?;
+        let shadow_sampling_bind_group =
+            create_shadow_sampling_bind_group(context, &shadow_bind_group_layout, &shadow_pass);
+        let blob_pipeline = create_blob_pipeline(context, &camera_bind_group_layout, color_format)?;
+        let blob_instance_capacity =
+            16u32.min(blob_instance_capacity(device.limits().max_buffer_size).max(1));
+        let blob_instance_buffer = create_blob_instance_buffer(context, blob_instance_capacity)?;
+
         Ok(Self {
             pipeline,
             camera_buffer,
@@ -708,6 +925,12 @@ impl MeshPass {
             instance_capacity,
             depth_view,
             depth_size: (width.max(1), height.max(1)),
+            shadow_pass,
+            shadow_bind_group_layout,
+            shadow_sampling_bind_group,
+            blob_pipeline,
+            blob_instance_buffer,
+            blob_instance_capacity,
         })
     }
 
@@ -866,11 +1089,23 @@ impl MeshPass {
     /// (production rendering always passes `true`, see
     /// [`crate::WgpuRenderer::render_stage_with_specular_aa`]).
     ///
-    /// Returns the number of draw calls issued (`0` if there is no usable camera or nothing to
-    /// draw), for [`crate::StageStats::base`]'s `draw_calls` (contract §6: "all passes").
+    /// **Shadows (WP2.6):** if `shadow_config` is valid, its mode wants a key-light shadow map,
+    /// `key_light` is present and valid, and `camera` is present, this method first (re)configures
+    /// and renders [`ShadowPass`] from a light-space view-projection fitted around `camera`'s
+    /// ground target ([`stage3d::key_light_view_projection`]), then binds it (group 2) so
+    /// `mesh.wgsl` PCF-samples it for the key light's own contribution only. Otherwise the shadow
+    /// map render is skipped entirely (no cost on a frame that does not use it) and `mesh.wgsl`'s
+    /// `shadow_params.z` tells the shader to skip sampling too. Blob shadows
+    /// (`blob_shadows`, filtered to [`crate::BlobShadowInstance::is_valid`]) are drawn, if
+    /// `shadow_config`'s mode wants them, in the *same* render pass right after the opaque meshes —
+    /// depth-tested against them but never depth-writing (`blob_shadow.wgsl`'s header comment).
+    ///
+    /// Returns the number of draw calls issued across every sub-pass this call touches (`0` if
+    /// there is no usable camera or nothing to draw), for [`crate::StageStats::base`]'s
+    /// `draw_calls` (contract §6: "all passes").
     ///
     /// # Errors
-    /// [`GpuError`] if uploading the per-frame uniform/instance data or submitting the render pass
+    /// [`GpuError`] if uploading the per-frame uniform/instance data or submitting a render pass
     /// fails (for example out of memory).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
@@ -886,6 +1121,8 @@ impl MeshPass {
         meshes: &[MeshInstance],
         materials: &[PbrMaterial],
         specular_aa: bool,
+        shadow_config: &ShadowConfig,
+        blob_shadows: &[BlobShadowInstance],
     ) -> Result<u32, GpuError> {
         let view_proj =
             camera.map(|camera| stage3d::view_projection(camera, aspect, NEAR_PLANE, FAR_PLANE));
@@ -897,21 +1134,10 @@ impl MeshPass {
             HashMap::new();
         if usable_view_proj.is_some() {
             for mesh in meshes {
-                if mesh.layer != RenderLayer::World {
+                if !self.is_drawable(mesh, materials) {
                     continue;
                 }
-                if !mesh.transform.iter().flatten().all(|c| c.is_finite()) {
-                    continue;
-                }
-                let Some(material) = materials.get(mesh.material.0 as usize) else {
-                    continue;
-                };
-                if !material.is_valid() {
-                    continue;
-                }
-                if !self.is_registered(mesh.mesh) {
-                    continue;
-                }
+                let material = &materials[mesh.material.0 as usize];
                 let key = (mesh.mesh, self.texture_bind_key(material));
                 groups
                     .entry(key)
@@ -960,6 +1186,40 @@ impl MeshPass {
                 "point light budget exceeded: {total_valid} valid point lights this frame, shading only the first {MAX_POINT_LIGHTS} (WP3.4 replaces this with clustered forward+ and a configurable Low 32 / High 256 budget)"
             );
         }
+
+        // Key-light shadow map (WP2.6): skipped entirely (no `configure`/render cost) unless the
+        // mode wants it and there is a valid key light and camera to fit it around.
+        let key_light_valid = key_light.is_some_and(DirectionalLight::is_valid);
+        let want_shadow_map = shadow_config.is_valid()
+            && shadow_config.mode.wants_key_light_shadow_map()
+            && key_light_valid
+            && camera.is_some();
+        let mut light_view_proj = IDENTITY;
+        let mut shadow_draw_calls = 0u32;
+        if want_shadow_map {
+            let light = key_light.expect("key_light_valid implies Some");
+            let camera_ref = camera.expect("want_shadow_map implies Some");
+            self.shadow_pass.configure(context, shadow_config)?;
+            self.shadow_sampling_bind_group = create_shadow_sampling_bind_group(
+                context,
+                &self.shadow_bind_group_layout,
+                &self.shadow_pass,
+            );
+            light_view_proj = stage3d::key_light_view_projection(
+                light.direction,
+                camera_ref.target,
+                shadow_config,
+            );
+            shadow_draw_calls =
+                self.render_shadow_map(context, light_view_proj, meshes, materials)?;
+        }
+        let shadow_params = [
+            1.0 / self.shadow_pass.map_size() as f32,
+            shadow_config.pcf_radius as f32,
+            if want_shadow_map { 1.0 } else { 0.0 },
+            0.0,
+        ];
+
         let uniform = camera_uniform(
             usable_view_proj.unwrap_or(IDENTITY),
             eye,
@@ -968,10 +1228,49 @@ impl MeshPass {
             lights,
             light_count,
             specular_aa,
+            light_view_proj,
+            shadow_params,
         );
         context
             .queue()
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
+
+        // Blob shadows (WP2.6): drawn in the same render pass as the opaque meshes below, right
+        // after them, so the depth buffer they already wrote occludes a disc behind a wall or lets
+        // an actor standing on one draw over it (`blob_shadow.wgsl`'s header comment).
+        let blob_instances: Vec<BlobShadowInstance> =
+            if shadow_config.mode.wants_blob_shadows() && usable_view_proj.is_some() {
+                blob_shadows
+                    .iter()
+                    .copied()
+                    .filter(BlobShadowInstance::is_valid)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let blob_count = u32::try_from(blob_instances.len()).unwrap_or(u32::MAX);
+        if blob_count > 0 {
+            let max_buffer_size = context.device().limits().max_buffer_size;
+            let capacity = crate::sprite_pass::grown_capacity(
+                self.blob_instance_capacity,
+                blob_count,
+                blob_instance_capacity(max_buffer_size),
+            )
+            .ok_or_else(|| {
+                GpuError::Validation(format!(
+                    "{blob_count} blob shadows exceed the device buffer limit of {max_buffer_size} bytes"
+                ))
+            })?;
+            if capacity != self.blob_instance_capacity {
+                self.blob_instance_buffer = create_blob_instance_buffer(context, capacity)?;
+                self.blob_instance_capacity = capacity;
+            }
+            context.queue().write_buffer(
+                &self.blob_instance_buffer,
+                0,
+                bytemuck::cast_slice(blob_instances.as_slice()),
+            );
+        }
 
         let count = u32::try_from(instances.len()).map_err(|_| {
             GpuError::Validation(format!(
@@ -1002,18 +1301,23 @@ impl MeshPass {
             );
         }
 
-        let draw_calls = if count > 0 {
+        let mesh_draw_calls = if count > 0 {
             u32::try_from(draw_ranges.len()).unwrap_or(u32::MAX)
         } else {
             0
         };
+        let blob_draw_calls = u32::from(blob_count > 0);
+        let draw_calls = shadow_draw_calls + mesh_draw_calls + blob_draw_calls;
 
         let gpu_meshes = &self.gpu_meshes;
         let texture_bind_groups = &self.texture_bind_groups;
         let pipeline = &self.pipeline;
         let camera_bind_group = &self.camera_bind_group;
+        let shadow_sampling_bind_group = &self.shadow_sampling_bind_group;
         let instance_buffer = &self.instance_buffer;
         let depth_view = &self.depth_view;
+        let blob_pipeline = &self.blob_pipeline;
+        let blob_instance_buffer = &self.blob_instance_buffer;
         context.capture_errors(move |device| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("grimoire mesh encoder"),
@@ -1045,6 +1349,7 @@ impl MeshPass {
                 if count > 0 {
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, camera_bind_group, &[]);
+                    pass.set_bind_group(2, shadow_sampling_bind_group, &[]);
                     pass.set_vertex_buffer(
                         1,
                         instance_buffer.slice(..u64::from(count) * MESH_INSTANCE_SIZE),
@@ -1060,11 +1365,87 @@ impl MeshPass {
                         pass.draw_indexed(0..gpu_mesh.index_count, 0, *start..(*start + *len));
                     }
                 }
+                // Blob shadows (WP2.6), same pass, right after the opaque meshes: see this
+                // method's doc comment and `blob_shadow.wgsl`'s header comment for why draw order
+                // relative to the opaque meshes does not matter (the depth test already decides
+                // occlusion correctly either way).
+                if blob_count > 0 {
+                    pass.set_pipeline(blob_pipeline);
+                    pass.set_bind_group(0, camera_bind_group, &[]);
+                    pass.set_vertex_buffer(
+                        0,
+                        blob_instance_buffer.slice(
+                            ..u64::from(blob_count)
+                                * std::mem::size_of::<BlobShadowInstance>() as u64,
+                        ),
+                    );
+                    pass.draw(0..6, 0..blob_count);
+                }
             }
             context.queue().submit([encoder.finish()]);
         })?;
 
         Ok(draw_calls)
+    }
+
+    /// Whether `mesh` is drawable this frame under contract §6's shared mesh acceptance rules:
+    /// `layer == RenderLayer::World`, a finite `transform`, a `material` index pointing at a valid
+    /// [`PbrMaterial`], and `mesh` registered with this pass. Exactly the predicate
+    /// `crate::stage::extract_stage3d` applies for [`crate::StageStats::meshes_drawn`] (and, from
+    /// WP2.6, [`crate::StageStats::shadow_casters_drawn`]) — duplicated here, not shared code,
+    /// because this module additionally needs the registered [`GpuMesh`] itself, which
+    /// `crate::stage` never sees (contract §6: only the boolean registration check crosses that
+    /// boundary).
+    fn is_drawable(&self, mesh: &MeshInstance, materials: &[PbrMaterial]) -> bool {
+        mesh.layer == RenderLayer::World
+            && mesh.transform.iter().flatten().all(|c| c.is_finite())
+            && materials
+                .get(mesh.material.0 as usize)
+                .is_some_and(PbrMaterial::is_valid)
+            && self.is_registered(mesh.mesh)
+    }
+
+    /// Renders every drawable mesh instance's transform ([`MeshPass::is_drawable`]) into the
+    /// key-light shadow map from `light_view_proj` (plan 0002 WP2.6). Exactly the set of meshes
+    /// [`crate::StageStats::shadow_casters_drawn`] counts (`crate::stage`'s shared, GPU-free
+    /// extraction reaches the same count from the same rule, contract §6 style). Returns the
+    /// number of draw calls issued.
+    ///
+    /// Builds the caster list in two steps — first collecting `(handle, transform)` pairs with
+    /// [`MeshPass::is_drawable`] (which needs `&self` as a whole), then resolving each handle's
+    /// GPU buffers via a direct `&self.gpu_meshes` field borrow — so the borrow checker can see the
+    /// second step's borrow is disjoint from the later `&mut self.shadow_pass` call, instead of one
+    /// long-lived whole-`self` borrow blocking it.
+    ///
+    /// # Errors
+    /// [`GpuError`] if uploading the per-frame uniform/instance data or submitting the render pass
+    /// fails (for example out of memory).
+    fn render_shadow_map(
+        &mut self,
+        context: &GpuContext,
+        light_view_proj: [[f32; 4]; 4],
+        meshes: &[MeshInstance],
+        materials: &[PbrMaterial],
+    ) -> Result<u32, GpuError> {
+        let accepted: Vec<(MeshHandle, [[f32; 4]; 4])> = meshes
+            .iter()
+            .filter(|mesh| self.is_drawable(mesh, materials))
+            .map(|mesh| (mesh.mesh, mesh.transform))
+            .collect();
+        let gpu_meshes = &self.gpu_meshes;
+        let casters: Vec<ShadowCaster<'_>> = accepted
+            .iter()
+            .map(|&(handle, transform)| {
+                let gpu_mesh = &gpu_meshes[&handle];
+                ShadowCaster {
+                    vertex_buffer: &gpu_mesh.vertex_buffer,
+                    index_buffer: &gpu_mesh.index_buffer,
+                    index_count: gpu_mesh.index_count,
+                    transform,
+                }
+            })
+            .collect();
+        self.shadow_pass.render(context, light_view_proj, &casters)
     }
 }
 
@@ -1081,8 +1462,9 @@ mod tests {
     }
 
     #[test]
-    fn camera_gpu_is_1184_bytes() {
-        assert_eq!(std::mem::size_of::<CameraGpu>(), 1184);
+    fn camera_gpu_is_1264_bytes() {
+        // WP2.5's 1184 bytes plus WP2.6's `light_view_proj` (64) and `shadow_params` (16).
+        assert_eq!(std::mem::size_of::<CameraGpu>(), 1264);
     }
 
     #[test]
@@ -1167,6 +1549,8 @@ mod tests {
             lights,
             count,
             true,
+            IDENTITY,
+            [0.0; 4],
         );
         assert_eq!(uniform.light_dir, [0.0; 4], "no key light direction");
         assert_eq!(uniform.key_light, [0.0; 4], "no key light colour");
@@ -1194,6 +1578,8 @@ mod tests {
             lights,
             count,
             true,
+            IDENTITY,
+            [0.0; 4],
         );
         assert_eq!(&uniform.ambient_sky[..3], color, "sky");
         assert_eq!(
@@ -1221,6 +1607,8 @@ mod tests {
             lights,
             count,
             true,
+            IDENTITY,
+            [0.0; 4],
         );
         // `light_dir` points *from a surface towards the light*: the negated travel direction.
         assert_eq!(&uniform.light_dir[..3], [0.0, 0.0, 1.0]);
@@ -1247,6 +1635,8 @@ mod tests {
             lights,
             count,
             true,
+            IDENTITY,
+            [0.0; 4],
         );
         assert_eq!(uniform.view_proj, matrix);
     }
@@ -1262,9 +1652,36 @@ mod tests {
             lights,
             count,
             false,
+            IDENTITY,
+            [0.0; 4],
         );
         assert_eq!(&uniform.eye[..3], [1.0, 2.0, 3.0]);
         assert_eq!(uniform.specular_aa_strength, 0.0);
+    }
+
+    #[test]
+    fn camera_uniform_carries_the_shadow_matrix_and_params_through() {
+        let (lights, count, _) = build_light_array(&[]);
+        let light_view_proj = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 0.0],
+            [0.0, 0.0, 3.0, 0.0],
+            [4.0, 5.0, 6.0, 1.0],
+        ];
+        let shadow_params = [1.0 / 1024.0, 1.0, 1.0, 0.0];
+        let uniform = camera_uniform(
+            IDENTITY,
+            [0.0, 0.0, 0.0],
+            None,
+            &AmbientLight::default(),
+            lights,
+            count,
+            true,
+            light_view_proj,
+            shadow_params,
+        );
+        assert_eq!(uniform.light_view_proj, light_view_proj);
+        assert_eq!(uniform.shadow_params, shadow_params);
     }
 
     // --- clamp_light_budget / build_light_array (WP2.5) --------------------------------------
