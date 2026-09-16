@@ -935,7 +935,7 @@ pub struct SkinBinding {                 // Debug, Clone, Copy, PartialEq, Eq, D
   Pull-Request-Text für die dort verwendeten `AssetKind`-Werte.
 
 **Clustered Forward+ und Lichtbudget (Ergänzung P1, Plan 0002 WP3.4, Engine-ADR-0015
-„Compute-Clustering", PO-Entscheid V-20, 2026-09-16)**
+„Compute-Clustering", Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-16)**
 
 Additiv zum Licht-Kanal oben (WP2.2) und zu `grimoire_render::cluster_layout` (WP3.1, Engine-ADR-0013,
 bis hierhin nicht verdrahtet). Kein bestehendes Feld ändert Typ oder Bedeutung; `cluster_layout`s
