@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "file": "e-duplicate-silhouette.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0020",
+      "severity": "error",
+      "file": "e-duplicate-silhouette.sigil",
+      "line": 16,
+      "column": 15,
+      "node_path": "bullets.blue_orb.silhouette",
+      "token": "orb",
+      "message": "Bullet `blue_orb` shares silhouette `orb` with 1 other bullet type(s) in this unit (e-duplicate-silhouette.sigil:blue_orb, e-duplicate-silhouette.sigil:red_orb); PRD-0003 rule 3 requires bullet types to differ in silhouette, not only in color.",
+      "fix_hint": "Give each bullet type its own silhouette, or merge them if they are really the same type.",
+      "related": null
+    },
+    {
+      "code": "SIG0020",
+      "severity": "error",
+      "file": "e-duplicate-silhouette.sigil",
+      "line": 7,
+      "column": 15,
+      "node_path": "bullets.red_orb.silhouette",
+      "token": "orb",
+      "message": "Bullet `red_orb` shares silhouette `orb` with 1 other bullet type(s) in this unit (e-duplicate-silhouette.sigil:blue_orb, e-duplicate-silhouette.sigil:red_orb); PRD-0003 rule 3 requires bullet types to differ in silhouette, not only in color.",
+      "fix_hint": "Give each bullet type its own silhouette, or merge them if they are really the same type.",
+      "related": null
+    }
+  ]
+}

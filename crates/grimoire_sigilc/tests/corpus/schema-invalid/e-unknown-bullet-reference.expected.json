@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-unknown-bullet-reference.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0014",
+      "severity": "error",
+      "file": "e-unknown-bullet-reference.sigil",
+      "line": 6,
+      "column": 11,
+      "node_path": "emitters.burst.bullet",
+      "token": "ghost",
+      "message": "Unknown bullet `ghost`.",
+      "fix_hint": "Define a bullet named `ghost`, or fix the typo.",
+      "related": null
+    }
+  ]
+}

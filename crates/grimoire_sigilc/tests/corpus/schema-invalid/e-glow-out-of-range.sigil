@@ -1,0 +1,21 @@
+sigil 1
+// e-glow-out-of-range: `glow` must be between 0.0 and 1.0. Covers SIG0016.
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 1.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

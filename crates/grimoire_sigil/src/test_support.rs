@@ -40,10 +40,45 @@ pub(crate) fn build_unit_bytes(
     contents.push((1, bullet_type_bytes));
 
     if let Some(count) = program_count {
-        contents.push((2, count.to_le_bytes().to_vec()));
+        // `count` minimal-but-well-formed program records (Plan 0002 WP4.2 real `Programs`
+        // layout: a `BlockDef` -- kind 1 (`ring`), reserved 0, `count: u16 = 0`, six finite-zero
+        // `f32` params, `seed_hash: u32 = 0` -- followed by a `modifier_count: u16 = 0`), rather
+        // than the WP1.3 bare-count placeholder: this crate's tests only care about
+        // `SigilUnit::program_count()`, never about a program's actual shape, so any record that
+        // decodes is fine here.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&count.to_le_bytes());
+        for _ in 0..count {
+            bytes.push(1); // block kind: ring
+            bytes.push(0); // reserved
+            bytes.extend_from_slice(&0u16.to_le_bytes()); // block count
+            for _ in 0..6 {
+                bytes.extend_from_slice(&0f32.to_le_bytes());
+            }
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // seed_hash
+            bytes.extend_from_slice(&0u16.to_le_bytes()); // modifier_count
+        }
+        contents.push((2, bytes));
     }
 
-    contents.push((3, emitter_count.to_le_bytes().to_vec()));
+    let mut emitters_bytes = Vec::new();
+    emitters_bytes.extend_from_slice(&emitter_count.to_le_bytes());
+    for _ in 0..emitter_count {
+        // Minimal well-formed `EmitterRecord` (Plan 0002 WP4.2 layout): bullet type 0, no program,
+        // primary role, zero timing/offset. Bullet type 0 is always valid here since every caller
+        // of this helper passes at least one bullet type.
+        emitters_bytes.extend_from_slice(&0u16.to_le_bytes()); // bullet_type
+        emitters_bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // program: none
+        emitters_bytes.push(0); // role: primary
+        emitters_bytes.push(0); // reserved
+        emitters_bytes.extend_from_slice(&0u32.to_le_bytes()); // delay_ticks
+        emitters_bytes.extend_from_slice(&1u32.to_le_bytes()); // repeat
+        emitters_bytes.extend_from_slice(&1u32.to_le_bytes()); // interval_ticks
+        emitters_bytes.extend_from_slice(&0f32.to_le_bytes()); // speed
+        emitters_bytes.extend_from_slice(&0f32.to_le_bytes()); // offset_x
+        emitters_bytes.extend_from_slice(&0f32.to_le_bytes()); // offset_y
+    }
+    contents.push((3, emitters_bytes));
 
     if let Some(refs) = behavior_refs {
         let mut bytes = Vec::new();

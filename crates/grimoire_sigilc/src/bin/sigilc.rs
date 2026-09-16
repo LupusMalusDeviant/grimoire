@@ -7,8 +7,11 @@
 //! Source parsing and validation themselves live in the library
 //! ([`grimoire_sigilc::parse`]); this binary only wires them to argv and an exit code.
 //!
-//! Not yet implemented: the schema pass and `sigilc build`, `set`, `migrate`, `fmt` and
-//! `simulate` (Plan 0002 WP4.2, WP4.3, WP5.6).
+//! Plan 0002 WP4.2 adds the schema pass, name resolution and the `SigilUnit` encoder as a library
+//! ([`grimoire_sigilc::compiler::compile`]), but does not wire it into this binary: a real `sigilc
+//! build` needs a `SourceLoader` backed by a content root and a way to supply the
+//! name-to-`BehaviorId` table `compile` takes (`docs/formats/sigil.md` §11.4), both left to Plan
+//! 0002 WP4.3 alongside `set`, `migrate`, `fmt` and `simulate` (WP5.6).
 
 use std::process::ExitCode;
 

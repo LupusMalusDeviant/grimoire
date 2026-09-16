@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-unknown-block-kind.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0022",
+      "severity": "error",
+      "file": "e-unknown-block-kind.sigil",
+      "line": 20,
+      "column": 9,
+      "node_path": "block",
+      "token": "spline",
+      "message": "Unknown block kind `spline`.",
+      "fix_hint": "Use one of: ring, spiral, fan, aimed, wave, line, scatter.",
+      "related": null
+    }
+  ]
+}

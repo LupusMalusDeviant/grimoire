@@ -19,6 +19,9 @@ pub fn corpus_root() -> PathBuf {
 /// name a sibling `.expected.json` is keyed by, and the same shape a C# conformance test
 /// (Plan 0002 WP4.1 requirement 5: this corpus is data, not a Rust-specific encoding) can use to
 /// address the same file.
+/// `#[allow(dead_code)]`: `compiler_corpus.rs` compiles its own copy of this shared module too
+/// (see `expected_json_path`'s doc comment below) but only ever calls [`corpus_root`], not this.
+#[allow(dead_code)]
 pub fn corpus_sigil_files() -> Vec<(String, String)> {
     let mut out = Vec::new();
     for group in ["valid", "invalid"] {

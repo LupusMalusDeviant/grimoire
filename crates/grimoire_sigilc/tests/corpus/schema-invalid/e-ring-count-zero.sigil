@@ -1,0 +1,22 @@
+sigil 1
+// e-ring-count-zero: `count = 0` would make the ring block's angular-step formula
+// (360 degrees / count) divide by zero. Covers SIG0017 (NaN/Infinity-generating boundary value).
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 0
+  }
+}

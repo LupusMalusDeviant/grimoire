@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-wrong-palette-space.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0021",
+      "severity": "error",
+      "file": "e-wrong-palette-space.sigil",
+      "line": 7,
+      "column": 12,
+      "node_path": "bullets.orb.palette",
+      "token": "player.crimson",
+      "message": "Sigil bullets may only reference the enemy palette space, found `player` (PRD-0003 rule 4: enemy and player projectiles are told apart by separate, unmistakable palette spaces).",
+      "fix_hint": "Use an `enemy.<color>` palette reference.",
+      "related": null
+    }
+  ]
+}

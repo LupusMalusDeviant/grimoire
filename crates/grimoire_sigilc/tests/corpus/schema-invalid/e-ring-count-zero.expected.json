@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-ring-count-zero.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0017",
+      "severity": "error",
+      "file": "e-ring-count-zero.sigil",
+      "line": 20,
+      "column": 13,
+      "node_path": "emitters.burst.block.count",
+      "token": "0",
+      "message": "Field `count` is zero, which makes the angular-step formula (`360° / count`) divide by zero (a non-finite result is never allowed in compiled Sigil data).",
+      "fix_hint": "Use a positive value for `count`.",
+      "related": null
+    }
+  ]
+}

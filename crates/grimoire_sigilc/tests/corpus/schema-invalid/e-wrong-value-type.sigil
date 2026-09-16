@@ -1,0 +1,21 @@
+sigil 1
+// e-wrong-value-type: `radius` is a bare identifier, not a `u` quantity. Covers SIG0024.
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = huge
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

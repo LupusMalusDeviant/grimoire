@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "file": "e-import-cycle-a.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0013",
+      "severity": "error",
+      "file": "e-import-cycle-a.sigil",
+      "line": 1,
+      "column": 1,
+      "node_path": "imports",
+      "token": "e-import-cycle-b.sigil",
+      "message": "Import cycle detected: `e-import-cycle-a.sigil` transitively imports itself through `e-import-cycle-b.sigil`.",
+      "fix_hint": "Break the cycle by removing one of the imports involved.",
+      "related": null
+    },
+    {
+      "code": "SIG0013",
+      "severity": "error",
+      "file": "e-import-cycle-b.sigil",
+      "line": 1,
+      "column": 1,
+      "node_path": "imports",
+      "token": "e-import-cycle-a.sigil",
+      "message": "Import cycle detected: `e-import-cycle-b.sigil` transitively imports itself through `e-import-cycle-a.sigil`.",
+      "fix_hint": "Break the cycle by removing one of the imports involved.",
+      "related": null
+    }
+  ]
+}

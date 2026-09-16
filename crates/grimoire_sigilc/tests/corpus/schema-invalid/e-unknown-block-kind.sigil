@@ -1,0 +1,23 @@
+sigil 1
+// e-unknown-block-kind: `spline` is not one of the seven known block kinds. The WP4.1 parser
+// accepts any identifier here (schema-blind by design); the schema pass rejects it.
+// Covers SIG0022.
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block spline {
+    count = 8
+  }
+}

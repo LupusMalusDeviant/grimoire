@@ -1,0 +1,40 @@
+sigil 1
+// e-cascade-cycle: bullet a `change_type`s into b, which `change_type`s right back into a.
+// `change_type` never increases cascade depth (same bullet instance, just re-typed), so this
+// would loop forever rather than exceed a depth limit. Covers SIG0019.
+
+bullet a {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+  transform change_type {
+    when = distance 4u
+    to = b
+  }
+}
+
+bullet b {
+  silhouette = blob
+  palette = enemy.amber
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+  transform change_type {
+    when = distance 4u
+    to = a
+  }
+}
+
+emitter burst {
+  bullet = a
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}
