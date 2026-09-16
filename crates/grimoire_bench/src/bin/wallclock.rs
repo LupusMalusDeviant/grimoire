@@ -1,4 +1,5 @@
-//! Wall-clock trend measurement (Plan-0002 WP6.2 scope item 2) for the two P0 baseline benches.
+//! Wall-clock trend measurement (Plan-0002 WP6.2 scope item 2) for the two P0 baseline benches and
+//! the Sigil -> Render extraction bench (`sigil_extract_10k`, Plan-0002 WP5.3).
 //!
 //! Wall clock is a **trend only** (engine ADR-0010: measured noise band 95-129% job-to-job on
 //! shared Linux runners, "als scharfes Gate auf Linux ungeeignet") — this binary never feeds a
@@ -9,15 +10,19 @@
 //!
 //! Usage: `wallclock --sha <40 hex> --os <os> --arch <arch> --logical-cpus <n> [--dirty]
 //!   [--image <img>] [--cpu-model <model>] [--fingerprint k=v,...] [--run-id <id> --run-attempt <n>]`
-//! Prints two JSON Lines (`ecs_query_10k`, `sim_step_600`) to stdout.
+//! Prints three JSON Lines (`ecs_query_10k`, `sim_step_600`, `sigil_extract_10k`) to stdout, and one
+//! human-readable line per extraction sample median to stderr (time per single extraction against
+//! the plan's 0.5 ms budget), so the CI log shows the number the plan asks for without decoding
+//! JSON.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use grimoire_bench::scenarios::{
-    ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, SIM_ENTITIES, SIM_SCENARIO,
-    SIM_WALLCLOCK_TICKS, build_ecs_world, build_sim, run_ecs_rounds, run_sim_ticks,
+    ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS, EXTRACT_SCENARIO,
+    EXTRACT_WALLCLOCK_ROUNDS, SIM_ENTITIES, SIM_SCENARIO, SIM_WALLCLOCK_TICKS, build_ecs_world,
+    build_sigil_extract, build_sim, run_ecs_rounds, run_sigil_extract_rounds, run_sim_ticks,
 };
 use grimoire_bench::schema::{
     BenchResult, CommitRef, ExecutorInfo, ParamValue, RunKey, RunnerInfo, ValueOrigin, median,
@@ -134,6 +139,20 @@ fn measure_sim() -> Vec<f64> {
     samples
 }
 
+fn measure_extract() -> Vec<f64> {
+    let mut bench = build_sigil_extract(0xB5_11_C1_0C_C0_FF_EE_00);
+    for _ in 0..WARMUP_SAMPLES {
+        run_sigil_extract_rounds(&mut bench, EXTRACT_WALLCLOCK_ROUNDS, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run_sigil_extract_rounds(&mut bench, EXTRACT_WALLCLOCK_ROUNDS, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
 fn result_for(
     meta: &Meta,
     scenario: &str,
@@ -194,10 +213,29 @@ fn main() -> ExitCode {
         ),
     ]);
 
+    let extract_params = BTreeMap::from([
+        (
+            "bullets".to_string(),
+            ParamValue::Int(i64::from(EXTRACT_BULLETS)),
+        ),
+        (
+            "rounds".to_string(),
+            ParamValue::Int(i64::from(EXTRACT_WALLCLOCK_ROUNDS)),
+        ),
+    ]);
+
     let results = [
         result_for(&meta, ECS_SCENARIO, measure_ecs(), ecs_params),
         result_for(&meta, SIM_SCENARIO, measure_sim(), sim_params),
+        result_for(&meta, EXTRACT_SCENARIO, measure_extract(), extract_params),
     ];
+    // Plan 0002 WP5.3 budget, as a trend line for the log (never a gate, engine ADR-0010).
+    if let Some(extract) = results.last() {
+        let per_extraction_ms = extract.median / f64::from(EXTRACT_WALLCLOCK_ROUNDS) / 1.0e6;
+        eprintln!(
+            "{EXTRACT_SCENARIO}: median {per_extraction_ms:.4} ms per extraction of {EXTRACT_BULLETS} bullets (plan budget 0.5 ms, wall clock, trend only)"
+        );
+    }
 
     for result in &results {
         match result.to_json_line() {

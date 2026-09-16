@@ -44,11 +44,14 @@
 
 use std::hint::black_box;
 
+use grimoire::adapters::sigil_render::extract_bullets;
+use grimoire::render::BulletInstance;
 use grimoire_core::impl_stable_hash;
 use grimoire_core::math::Vec2;
 use grimoire_ecs::{System, World, system_fn};
 use grimoire_sigil::{
-    BehaviorRegistryBuilder, Emitter, SigilConfig, SigilLibrary, SigilUnit, install,
+    BehaviorRegistryBuilder, BulletPool, BulletSpawn, Emitter, SigilConfig, SigilContent,
+    SigilLibrary, SigilUnit, install,
 };
 use grimoire_sim::{Simulation, TickInput};
 
@@ -397,10 +400,133 @@ pub fn run_sigil_update_ticks(sim: &mut Simulation, ticks: u32, extra_ticks: u32
     }
 }
 
+/// Scenario name of the Sigil → Render extraction benchmark (contract §15.1
+/// `BenchResult::scenario`, plan 0002 WP5.3).
+pub const EXTRACT_SCENARIO: &str = "sigil_extract_10k";
+/// Live bullets the extraction benchmark extracts every round (plan 0002 WP5.3: "Extraktions-Bench
+/// ≤ 0,5 ms bei 10k").
+pub const EXTRACT_BULLETS: u32 = 10_000;
+/// Extractions per wall-clock sample of the extraction benchmark.
+pub const EXTRACT_WALLCLOCK_ROUNDS: u32 = 200;
+/// Extractions per Callgrind probe of the extraction benchmark.
+pub const EXTRACT_IR_ROUNDS: u32 = 100;
+/// Bullets of one bullet type in a row, like one volley of a pattern: the adapter's (unit, type)
+/// cache sees realistic runs rather than a different type in every slot.
+const EXTRACT_VOLLEY: u32 = 64;
+
+/// The extraction benchmark's state: a simulation holding [`EXTRACT_BULLETS`] live, moving
+/// bullets of three bullet types (one per silhouette of the bullet pass, both hostile palettes),
+/// and the reused output vector the adapter appends to.
+pub struct SigilExtractBench {
+    sim: Simulation,
+    out: Vec<BulletInstance>,
+}
+
+/// One bullet type record of `docs/formats/sigil.md` §10.3, visually a hostile bullet.
+fn hostile_bullet_type(silhouette: u16, palette: u16, glow: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0.3f32.to_le_bytes()); // radius
+    bytes.extend_from_slice(&0.3f32.to_le_bytes()); // collision_radius
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // lifetime_ticks: unbounded
+    bytes.push(0); // flags
+    bytes.push(0); // reserved
+    bytes.extend_from_slice(&silhouette.to_le_bytes());
+    bytes.extend_from_slice(&palette.to_le_bytes());
+    bytes.push(1); // palette_space: hostile, the only space the bullet pass draws
+    bytes.push(glow);
+    bytes
+}
+
+/// Builds the extraction benchmark: [`EXTRACT_BULLETS`] bullets spawned directly into the pool
+/// (no emitter, so building does not depend on pattern timing), laid out on a grid with varied
+/// headings, then one simulation tick so every bullet has distinct previous and current positions
+/// for the interpolation to work on.
+///
+/// # Panics
+/// Only if the hand-built fixture stops decoding or installing, which the crate's own tests catch.
+#[must_use]
+pub fn build_sigil_extract(seed: u64) -> SigilExtractBench {
+    let mut bullet_types = Vec::new();
+    bullet_types.extend_from_slice(&3u16.to_le_bytes());
+    bullet_types.extend_from_slice(&hostile_bullet_type(0, 0, 220));
+    bullet_types.extend_from_slice(&hostile_bullet_type(1, 1, 128));
+    bullet_types.extend_from_slice(&hostile_bullet_type(2, 0, 90));
+
+    let mut emitters = Vec::new();
+    emitters.extend_from_slice(&1u16.to_le_bytes());
+    emitters.extend_from_slice(&0u16.to_le_bytes()); // bullet_type
+    emitters.extend_from_slice(&0xFFFFu16.to_le_bytes()); // no program
+    emitters.push(0); // role
+    emitters.push(0); // reserved
+    emitters.extend_from_slice(&0u32.to_le_bytes()); // delay_ticks
+    emitters.extend_from_slice(&1u32.to_le_bytes()); // repeat
+    emitters.extend_from_slice(&1u32.to_le_bytes()); // interval_ticks
+    emitters.extend_from_slice(&0.1f32.to_le_bytes()); // speed
+    emitters.extend_from_slice(&0f32.to_le_bytes()); // offset_x
+    emitters.extend_from_slice(&0f32.to_le_bytes()); // offset_y
+
+    let unit = assemble_sigil_unit(2, vec![(1, bullet_types), (3, emitters)]);
+    let unit_id = unit.id();
+    let registry = BehaviorRegistryBuilder::new(1).build();
+    let library = SigilLibrary::new(vec![unit], registry.clone()).expect("library must build");
+    let mut sim = Simulation::new(seed);
+    install(
+        &mut sim,
+        library,
+        registry,
+        SigilConfig::new(
+            EXTRACT_BULLETS,
+            Vec2::new(-1.0e6, -1.0e6),
+            Vec2::new(1.0e6, 1.0e6),
+        ),
+    )
+    .expect("install must succeed");
+
+    let content = sim
+        .world()
+        .resource::<SigilContent>()
+        .expect("install adds the content")
+        .clone();
+    let pool = sim
+        .world_mut()
+        .resource_mut::<BulletPool>()
+        .expect("install adds the pool");
+    for i in 0..EXTRACT_BULLETS {
+        let bullet_type = ((i / EXTRACT_VOLLEY) % 3) as u16;
+        let position = Vec2::new((i % 100) as f32 * 0.4 - 20.0, (i / 100) as f32 * 0.4 - 20.0);
+        let angle = (i % 628) as f32 * 0.01;
+        pool.spawn(
+            &content,
+            BulletSpawn::new(unit_id, bullet_type, position, angle, 0.05),
+        )
+        .expect("capacity holds every bullet");
+    }
+    sim.step(TickInput::default());
+    SigilExtractBench {
+        sim,
+        out: Vec::with_capacity(EXTRACT_BULLETS as usize),
+    }
+}
+
+/// Runs `rounds + extra_rounds` extractions (the facade's `sigil_render::extract_bullets`, alpha
+/// 0.5) into the reused output vector, clearing it before each, and returns how many instances the
+/// last round extracted. `extra_rounds` is the nominal regression injection, like the other
+/// benches'.
+pub fn run_sigil_extract_rounds(
+    bench: &mut SigilExtractBench,
+    rounds: u32,
+    extra_rounds: u32,
+) -> u32 {
+    let mut extracted = 0;
+    for _ in 0..(rounds + extra_rounds) {
+        bench.out.clear();
+        extracted = black_box(extract_bullets(bench.sim.world(), 0.5, &mut bench.out)).extracted;
+    }
+    extracted
+}
+
 #[cfg(test)]
 mod tests {
-    use grimoire_sigil::BulletPool;
-
     use super::*;
 
     #[test]
@@ -441,7 +567,7 @@ mod tests {
     #[test]
     fn scenario_names_are_valid_bench_result_slugs() {
         // Contract §15.1: scenario matches [a-z0-9_]{1,64}.
-        for name in [ECS_SCENARIO, SIM_SCENARIO, SIGIL_SCENARIO] {
+        for name in [ECS_SCENARIO, SIM_SCENARIO, SIGIL_SCENARIO, EXTRACT_SCENARIO] {
             assert!(!name.is_empty() && name.len() <= 64);
             assert!(
                 name.bytes()
@@ -479,5 +605,45 @@ mod tests {
         run_sigil_update_ticks(&mut a, SIGIL_VOLLEYS + SIGIL_IR_TICKS, 0);
         run_sigil_update_ticks(&mut b, SIGIL_VOLLEYS + SIGIL_IR_TICKS, 0);
         assert_eq!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn sigil_extract_benchmark_extracts_every_live_bullet_each_round() {
+        let mut bench = build_sigil_extract(11);
+        assert_eq!(
+            bench.sim.world().resource::<BulletPool>().unwrap().len(),
+            EXTRACT_BULLETS
+        );
+        assert_eq!(run_sigil_extract_rounds(&mut bench, 2, 0), EXTRACT_BULLETS);
+        assert_eq!(
+            bench.out.len(),
+            EXTRACT_BULLETS as usize,
+            "cleared, not appended"
+        );
+        let silhouettes: std::collections::BTreeSet<u16> = bench
+            .out
+            .iter()
+            .map(|instance| instance.silhouette)
+            .collect();
+        assert_eq!(silhouettes.len(), 3, "all three bullet types are live");
+        let moved = bench
+            .sim
+            .world()
+            .resource::<BulletPool>()
+            .unwrap()
+            .iter()
+            .all(|bullet| bullet.position() != bullet.previous_position());
+        assert!(
+            moved,
+            "every bullet has distinct previous and current positions"
+        );
+    }
+
+    #[test]
+    fn sigil_extract_benchmark_leaves_the_simulation_untouched() {
+        let mut bench = build_sigil_extract(5);
+        let before = bench.sim.state_hash();
+        run_sigil_extract_rounds(&mut bench, 3, 0);
+        assert_eq!(bench.sim.state_hash(), before);
     }
 }
