@@ -672,7 +672,8 @@ pub enum RenderLayer { World, Vfx, PostFxResolve, Telegraphy, Bullets, PlayerMar
 - **Gültigkeit:** Eine Instanz mit `silhouette` oder `palette` außerhalb der Tabellen des Passes, mit nicht endlicher
   `position`, `radius` oder `rotation` oder mit `radius <= 0` wird verworfen und in `bullets_rejected_invalid`
   gezählt, ohne Panic und ohne Debug-Abbruch. Umfang und Inhalt der Silhouettentabelle und der Paletten je Raum legt
-  WP3.5 nach dem OF-3.3-ADR fest. `flags` wird in P1 ignoriert; Produzenten setzen 0.
+  WP3.5 nach dem OF-3.3-ADR fest (umgesetzt: `bullet_silhouette`, `bullet_palette`, siehe „Bullet-Pass, fester
+  Pass-Graph und Geschoss-Lichter" unten). `flags` wird in P1 ignoriert; Produzenten setzen 0.
   *Klarstellung — Reihenfolge:* Die Palettenraum-Prüfung geht der Gültigkeitsprüfung voraus. Eine Instanz in einem
   fremden Palettenraum wird sofort verworfen und in `bullets_rejected_palette_space` gezählt, ohne zusätzlich auf
   ungültige Geometrie geprüft oder in `bullets_rejected_invalid` mitgezählt zu werden; beide Zähler schließen sich
@@ -1121,6 +1122,81 @@ pub struct MeshVertex {
   `[0,0,0,0]` und läuft damit unverändert über `cotangent_frame` — die sieben
   Schnappschuss-Referenzen aus dem vorigen Paket (B1) bleiben bitgleich (`mean_abs_diff`/
   `max_abs_diff` = 0, im Pull-Request-Text nachgewiesen).
+
+**Bullet-Pass, fester Pass-Graph und Geschoss-Lichter (Ergänzung P1, Plan 0002 WP3.5, Engine-ADR-0014
+„Billboard-Impostor", Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-17)**
+
+Additiv zum Bullet-Kanal (oben, WP1.2) und zum Lichtkanal (WP2.2/WP3.4). `BulletInstance` bleibt unverändert (24 Byte,
+Layout eingefroren); kein bestehendes Feld ändert Typ oder Bedeutung. Szenen ohne Bullets, Marker- und Debug-Sprites
+rendern bitgleich wie vor dieser Ergänzung (die sieben Referenzbilder aus `snapshot_scenes.rs`: `mean_abs_diff` 0,000,
+`max_abs_diff` 0).
+
+```rust
+// grimoire_render — additiv (WP3.5):
+pub mod bullet_silhouette {                      // Werte von BulletInstance::silhouette (Stilbibel v0 „Bullets")
+    pub const ORB: u16 = 0;                      // Kreis
+    pub const RICE: u16 = 1;                     // Kapsel entlang der Flugrichtung
+    pub const DIAMOND: u16 = 2;                  // Raute mit Spitze in Flugrichtung
+    pub const COUNT: u16 = 3;
+}
+pub mod bullet_palette {                         // Werte von BulletInstance::palette im Raum HOSTILE
+    pub const HEX_MAGENTA: u16 = 0;              // H0: Körper #FF2FB4, Kern #FFE3F4
+    pub const POISON_LIME: u16 = 1;              // H1: Körper #B6FF2E, Kern #F6FFE0
+    pub const COUNT: u16 = 2;
+}
+impl WgpuRenderer {
+    pub fn last_stage_pass_order(&self) -> &[RenderLayer];   // Diagnose-Haken, siehe unten
+}
+```
+
+**Semantik:**
+
+- **Tabellen und Gültigkeit:** Die Gültigkeitsregel oben („`silhouette` oder `palette` außerhalb der Tabellen des
+  Passes") gilt jetzt mit `bullet_silhouette::COUNT` und `bullet_palette::COUNT`. Eine solche Instanz zählt in
+  `bullets_rejected_invalid`, in `NullRenderer` und `WgpuRenderer` gleich. Die Palettenraum-Prüfung geht weiterhin
+  voraus. Umgesetzt ist nur die Tabelle des einzigen Raums, den der Pass zeichnet (`HOSTILE`); eigene Projektile laufen
+  weiter über Sprite- und Mesh-Kanäle. Farbwerte und Formen sind vorläufig bis zum Look-Review (P-11).
+- **Darstellung (Engine-ADR-0014):** Jede Instanz ist ein kamerazugewandtes Billboard, dessen Mitte exakt auf der
+  Bodenebene (`Z = 0`) an `position` liegt, damit die gezeichnete Mitte der Trefferposition entspricht. Mit
+  `StageFrame::camera_25d` projiziert der Pass mit derselben Kamera und denselben Clip-Ebenen wie der Mesh-Pass,
+  sonst mit `base.camera` (`Camera2D`); liefert die gewählte Kamera keine endliche Matrix, zeichnet der Pass nichts
+  (wie der Mesh-Pass). Die Flugrichtung `rotation` wird in die Billboard-Ebene projiziert, sodass Reis und Raute unter
+  jeder Neigung in Flugrichtung zeigen. Silhouetten kommen aus einem Distanzfeld-Atlas, der bei der Erzeugung des
+  Renderers auf der CPU gebacken wird — Regel 3 aus PRD-0003 über eine Textur statt über Geometrie, wie das ADR
+  verlangt. Jede Instanz trägt Körperfarbe mit weißglühendem Kern, einen dunklen Rand (`#0A0510`, Deckkraft 0,9,
+  1,5 px) und einen Halo, dessen Stärke `glow` linear skaliert. Glow zeichnet nur der Pass selbst.
+- **Zwei Zeichenaufrufe:** Erst alle Halos, dann alle Ränder und Körper. Damit liegt kein Halo eines Bullets über dem
+  Umriss eines anderen. Der Pass hat keinen Tiefentest; nichts aus Ebene 1–3 verdeckt ein Bullet. Ohne akzeptierte
+  Instanz nimmt der Pass keine GPU-Arbeit auf. `StageStats::base.draw_calls` zählt beide Aufrufe mit („alle Pässe").
+- **Upload:** Ein zusammenhängender `write_buffer` je Frame in einen wachsenden Instanzpuffer, ohne Allokation je
+  Frame. Sind alle Instanzen akzeptiert, wird der Slice des Frames unverändert hochgeladen; nur ein Frame mit
+  verworfenen Instanzen wird vorher in einen wiederverwendeten Zwischenpuffer verdichtet. Die Extraktion liest dafür
+  die SoA-Spalten des Pools (§9.9).
+- **Fester Pass-Graph (PRD-0003 FR-10):** `WgpuRenderer::render_stage` führt die Ebenen ausschließlich über einen
+  internen Pass-Graphen aus, der `RenderLayer::ORDER` durchläuft und jeden ausgeführten Slot protokolliert: `World`
+  (Meshes, dann Welt-Sprites) → `Vfx` (leer) → `PostFxResolve` (leer) → `Telegraphy` (Ebene 4, reserviert, leer) →
+  `Bullets` (Ebene 6) → `PlayerMarker` (Ebene 7, `marker_sprites`) → `DebugUi` (`debug_sprites`). Jeder zeichnende Slot
+  reicht seine eigene GPU-Arbeit ein, bevor der nächste beginnt; das Protokoll ist also die tatsächliche
+  Einreihungsreihenfolge. Ein Fehler in einem Slot beendet den Graphen, spätere Slots laufen nicht. Die
+  Strukturtests prüfen das Protokoll gegen `ORDER` und ausdrücklich Ebene 4 vor Ebene 6 nach dem Post-FX-Resolve.
+- **`WgpuRenderer::last_stage_pass_order`:** Diagnose-Haken für diesen Strukturtest, im Sinn von
+  `render_stage_with_specular_aa`: das Protokoll des letzten `render_stage`, leer vor dem ersten Frame und nach einem
+  wegen Nullgröße übersprungenen Frame. Nicht Teil des `Renderer`-Traits.
+- **Marker- und Debug-Kanal werden gezeichnet:** `marker_sprites` und `debug_sprites` zeichnet die Sprite-Pipeline
+  jetzt tatsächlich, mit `base.camera` wie die Welt-Sprites. Bisher wurden sie nur gezählt.
+- **Geschoss-Lichter aus dem Bullet-Kanal (PO-Entscheid 2026-09-16, WP3.4 oben):** Der Renderer leitet aus
+  `StageFrame::bullets` selbst Lichter ab, ausschließlich über `point_light_from_bullet`. Jede akzeptierte Instanz mit
+  `glow > 0` fällt in ein weltfestes Raster von Zellen mit 4 Welteinheiten Kantenlänge um das Kameraziel
+  (`camera_25d.target`, sonst `base.camera.center`; 16 × 16 Zellen). Die höchstens 8 Zellen mit der größten
+  Glow-Summe (Gleichstand nach Zellindex) ergeben je eine stellvertretende Instanz: Position ist der glow-gewichtete
+  Schwerpunkt, `glow` der hellste Wert der Zelle, `radius` der größte, mindestens aber eine Zellreichweite. Diese
+  Instanz geht durch `point_light_from_bullet`. Die Lichter werden in aufsteigender Zellreihenfolge hinter
+  `StageFrame::point_lights` angehängt. Das Lichtbudget verwirft also zuerst Geschoss-Lichter, und die Obergrenze aus
+  `bullet_light_cap` wirkt auf sie wie auf jedes Licht mit `is_bullet_light`. Die Ableitung hängt nur vom Frame ab, nie
+  vom Renderer: `NullRenderer` zählt dieselben Lichter. Sie zählen in `point_lights_drawn`,
+  `bullet_point_lights_drawn` und gegebenenfalls `point_lights_over_budget`. Zellgröße, Rastergröße und die Zahl 8
+  sind vorläufig (P-11); bindend ist nur der Weg über `point_light_from_bullet`. Ein Test belegt am Quelltext, dass
+  außerhalb von Testmodulen nur diese Funktion `is_bullet_light` setzt.
 
 ## 7. `grimoire_ecs`
 
@@ -1827,7 +1903,7 @@ Engine-ADR „Crate-Map-Erweiterung P1“.
 
 | Modul | Richtung | Inhalt | Vertrag |
 |-------|----------|--------|---------|
-| `grimoire::adapters::sigil_render` | Sigil → Render | Extraktion Pool → `BulletVisual` → `BulletInstance` (mit Palettenraum und Interpolation) in `StageFrame::bullets` | §6, §11 (WP5.3) |
+| `grimoire::adapters::sigil_render` | Sigil → Render | Extraktion Pool → `BulletVisual` → `BulletInstance` (mit Palettenraum und Interpolation) in `StageFrame::bullets` | §6, §11, API §9.9 (WP5.3) |
 | `grimoire::adapters::sigil_collide` | Sigil → Kollision | Broadphase über Bullets und `Collider`-Entities, Graze-Ring-Abfrage je Tick | §9.6 (Ressourcentypen `GrazeProbe`, `GrazeHits` mit den Skeletten in WP1.3, Plugin und Systeme WP11.2) |
 | `grimoire::adapters::assets` | Assets → Sigil | Sigil-Einträge aus `AssetSource` an `SigilUnit::from_bytes`, Bibliothek für `grimoire_sigil::install` | §11.2, §12 |
 | `grimoire::adapters::debug` | Debug ↔ Sim/Render | Uhrzugriff des Profilers über `PlatformContext::clock`, `SystemObserver`-Anbindung, Overlay in `StageFrame::debug_sprites`, Warteschlange für Swaps | §9.7, §13 |
@@ -2175,6 +2251,52 @@ ersetzt beide Achsen von Slot 0 durch das Mauszielen (ab WP2.2, §9.2), sobald e
 und der gerenderte `StageFrame` eine `Camera25D` trägt (§9.3, §9.4): Achse 2 ist die x-Komponente, Achse 3 die y-Komponente der
 Zielrichtung als Einheitsvektor × 32767, gerundet. Sonst bleibt der Wert aus `sample`. `bind` mit Button-Bit `>= 32`
 oder Achse `>= 4` → Panic (unverändert).
+
+### 9.9 Adapter Sigil → Render (`grimoire::adapters::sigil_render`)
+
+*Ergänzung P1, Plan 0002 WP5.3, Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-17.* §9.1 nennt Modul und
+Richtung; dieser Abschnitt legt die öffentliche API fest.
+
+```rust
+pub const SIGIL_RENDER_PLUGIN_NAME: &str = "grimoire.sigil_render";
+#[non_exhaustive]
+pub struct BulletExtractionStats { pub extracted: u32, pub unmapped_visual: u32 }   // Copy, Eq, Debug, Default; nur von diesem Modul erzeugt
+#[non_exhaustive]
+pub struct MappedVisual { pub silhouette: u16, pub palette: u16, pub palette_space: u8, pub glow: u8 }   // Copy, Eq, Hash, Debug; nur von map_visual erzeugt
+pub fn map_visual(visual: BulletVisual) -> Option<MappedVisual>;
+pub fn extract_bullets(world: &World, alpha: f32, out: &mut Vec<BulletInstance>) -> BulletExtractionStats;
+pub fn extract_pool(pool: &BulletPool, content: &SigilContent, alpha: f32, out: &mut Vec<BulletInstance>)
+    -> BulletExtractionStats;
+pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new(), last_stats() -> BulletExtractionStats; impl GamePlugin
+```
+
+**Semantik:**
+- **Extraktion:** jeder lebende Slot in aufsteigender Slot-Reihenfolge, gelesen aus `BulletPool::columns`. Unit- und
+  Typindex des Slots führen über `SigilContent` zum `BulletType`. `position = previous + (current − previous) · alpha`
+  (§6 „Position"), `rotation` ist die Flugrichtung aus der Spalte `angle`, die der Interpreter synchron zur
+  Geschwindigkeit führt, ohne Trigonometrie je Tick (§11.6). `radius` ist `BulletType::radius`, `flags = 0`.
+  `extract_bullets` hängt an `out` an, leert nie; ohne `BulletPool` oder `SigilContent` bleibt `out` unverändert und
+  alle Zähler sind 0. `alpha` wird auf `[0, 1]` geklemmt; ein nicht endliches `alpha` zeigt den aktuellen Tick.
+- **Abbildung (§6 „Kennungen"):** `map_visual` ist in P1 die Identität mit Bereichsprüfung: `silhouette <
+  bullet_silhouette::COUNT`, `palette < bullet_palette::COUNT`, `palette_space` ist eine der drei Konstanten aus
+  `palette_space`. Sonst `None`; der Slot zählt dann in `unmapped_visual` und erreicht den Renderer nicht. Ein
+  bekannter, aber fremder Palettenraum wird nicht gefiltert. Die Ablehnung nach PRD-0003 Regel 4 bleibt allein im
+  Bullet-Pass.
+- **Nur lesend (§9.1):** Die Extraktion liest `&World` außerhalb der Ticks, schreibt keinen Zustand und ändert keinen
+  Hash (Test). Nach dem Wachsen der Kapazität von `out` allokiert sie nicht.
+- **`SigilRenderPlugin`:** ruft `extract_bullets` in `extract_stage` mit `stage.bullets` auf und merkt sich die Zähler
+  (`last_stats`). Es registriert weder Systeme noch Ressourcen oder Entities und ändert keinen Stufenplan und keinen
+  Hash. Empfohlene Position: nach dem Plugin, das `grimoire_sigil::install` aufruft.
+- **Leistung:** höchstens 0,5 ms für 10.000 Bullets (§6 „Leistung", PRD-0004 NFR). Das Bench-Szenario
+  `sigil_extract_10k` in `grimoire_bench` misst Wanduhr als Trend und Callgrind-`Ir` im Benchmark-Gate, im aktuellen
+  Warnmodus.
+- **Tests:** `crates/grimoire/tests/sigil_render.rs` fährt eine mit `sigilc` übersetzte Unit durch den Interpreter
+  (Fixture `tests/fixtures/bullet_showcase_unit_v1.bin`, Aktualität geprüft in
+  `grimoire_sigilc/tests/unit_fixtures.rs`, §1): Interpolation, Abbildung, nicht abbildbare Kennungen, Hash-Neutralität,
+  Zähler von `NullRenderer` und ein Offscreen-Bild über einer beleuchteten Bühne.
+- **Bekannte Lücke (sigil.md §11, offener Punkt 5):** `sigilc` vergibt Silhouetten- und Palettenindizes je Unit in
+  alphabetischer Reihenfolge der Namen, nicht aus einem gemeinsamen Katalog. Unter der Identität landet eine Silhouette
+  deshalb nur dann auf der gleichnamigen Tabellenzeile, wenn die Namen zufällig passend sortieren.
 
 ## 10. `grimoire_exec`
 
