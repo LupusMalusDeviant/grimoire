@@ -25,8 +25,8 @@ use grimoire::adapters::figure_assets::{self, FNP_FIGURE, FNP_MATERIAL, FNP_MESH
 use grimoire_assets::{AssetPath, AssetStore, PackReader, PackWriter};
 use grimoire_render::figure_format::{self, JointPose};
 use grimoire_render::{
-    AmbientLight, Camera25D, DirectionalLight, MaterialHandle, MeshInstance, RenderError, Renderer,
-    RendererConfig, SkinBinding, StageFrame, WgpuRenderer,
+    AmbientLight, Camera25D, DirectionalLight, MaterialHandle, MeshInstance, PointLight,
+    RenderError, Renderer, RendererConfig, SkinBinding, StageFrame, WgpuRenderer,
 };
 
 const FIGURE_NAME: &str = "testfig";
@@ -450,4 +450,158 @@ fn render_figure_rest_and_bent_pose() {
         "grimoire-p1-figure-showcase: size={WIDTH}x{HEIGHT} dir={}",
         dir.display()
     );
+}
+
+// --- showcase against a real `.pack` file ----------------------------------------------------
+
+/// Renders a figure from an on-disk pack instead of the in-process fixture, so the converter's
+/// real output can be looked at without a second harness.
+///
+/// Both inputs come from the environment, because the pack is a build artefact that deliberately
+/// lives outside either repository: `GRIMOIRE_FIGURE_PACK` is the path to the `.pack` file and
+/// `GRIMOIRE_FIGURE_NAME` the figure inside it (its entries are `figures/<name>/...`). Without
+/// `GRIMOIRE_FIGURE_PACK` the test skips, exactly like the GPU-less skip above — it is a viewing
+/// aid, not a gate, and nothing in CI has a pack to point it at.
+///
+/// Run explicitly:
+/// `GRIMOIRE_GPU_ADAPTER=software GRIMOIRE_FIGURE_PACK=<file> GRIMOIRE_FIGURE_NAME=imp
+/// cargo test -p grimoire --test figure_pack --locked -- --ignored --nocapture
+/// render_figure_from_pack_file`
+#[test]
+#[ignore = "viewing aid: renders a figure from an on-disk pack, run explicitly (see doc comment)"]
+fn render_figure_from_pack_file() {
+    let Some(pack_path) = std::env::var_os("GRIMOIRE_FIGURE_PACK") else {
+        eprintln!("GRIMOIRE_FIGURE_PACK not set; skipping the on-disk figure showcase");
+        return;
+    };
+    let figure_name = std::env::var("GRIMOIRE_FIGURE_NAME").unwrap_or_else(|_| "imp".to_owned());
+    let Some(mut renderer) = offscreen_renderer(WIDTH, HEIGHT) else {
+        eprintln!("no GPU adapter available; skipping the on-disk figure showcase");
+        return;
+    };
+
+    let fs = grimoire_platform::StdFileSystem;
+    let reader = PackReader::open(&fs, std::path::Path::new(&pack_path))
+        .expect("the pack file opens and its manifest decodes");
+    let mut store = AssetStore::new(Box::new(reader));
+    let figure = figure_assets::load_figure(&mut store, &mut renderer, &figure_name)
+        .expect("the figure loads from the pack");
+
+    let joint_count = figure.skeleton.joints.len();
+    println!(
+        "grimoire-figure-from-pack: figure={figure_name} parts={} joints={joint_count}",
+        figure.parts.len()
+    );
+
+    // Frame the figure by its own height instead of inheriting the two-unit fixture's camera:
+    // the bounds come from the pack, so an imp (~1.1 units) and a brute (~2.4) both fill the frame.
+    let height = figure.bounds_max[2] - figure.bounds_min[2];
+    let mid_z = (figure.bounds_max[2] + figure.bounds_min[2]) * 0.5;
+
+    let rest_matrices = figure_format::rest_pose_skin_matrices(&figure.skeleton);
+    let rest_image = render_figure_framed(&mut renderer, &figure, rest_matrices, height, mid_z);
+
+    // A visible bend, applied to every joint that has a parent: a quarter turn about X shared by
+    // the whole hierarchy reads clearly from the tilted camera without needing to know which bone
+    // is an arm. The root keeps its rest pose so the figure stays where it stands.
+    let quarter = std::f32::consts::FRAC_1_SQRT_2;
+    let bent_poses: Vec<JointPose> = figure
+        .skeleton
+        .joints
+        .iter()
+        .map(|joint| JointPose {
+            translation: joint.translation,
+            rotation: if joint.parent.is_some() {
+                [
+                    quarter * 0.45,
+                    0.0,
+                    0.0,
+                    (1.0 - (quarter * 0.45) * (quarter * 0.45)).sqrt(),
+                ]
+            } else {
+                joint.rotation
+            },
+            scale: joint.scale,
+        })
+        .collect();
+    let bent_matrices = figure_format::compute_skin_matrices(&figure.skeleton, &bent_poses)
+        .expect("one pose per joint");
+    let bent_image = render_figure_framed(&mut renderer, &figure, bent_matrices, height, mid_z);
+
+    let dir = out_dir();
+    rest_image
+        .write_png(&dir.join(format!("{figure_name}_rest.png")))
+        .expect("write the rest-pose image");
+    bent_image
+        .write_png(&dir.join(format!("{figure_name}_bent.png")))
+        .expect("write the bent-pose image");
+    Image::beside(&[&rest_image, &bent_image])
+        .write_png(&dir.join(format!("{figure_name}_comparison.png")))
+        .expect("write the comparison image");
+    println!("grimoire-figure-from-pack: dir={}", dir.display());
+}
+
+/// Like [`render_figure`], but frames the figure by its own height and lights it for a figure
+/// rather than for the two-unit fixture: the showcase camera above was tuned for the four-vertex
+/// test ribbon and leaves a real figure tiny, grey and under-lit.
+fn render_figure_framed(
+    renderer: &mut WgpuRenderer,
+    figure: &figure_assets::LoadedFigure,
+    joint_matrices: Vec<[[f32; 4]; 4]>,
+    height: f32,
+    mid_z: f32,
+) -> Image {
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.035, 0.037, 0.05, 1.0];
+
+    let mut camera = Camera25D::default();
+    camera.target = [0.0, 0.0];
+    camera.tilt_degrees = 62.0;
+    camera.fov_y_degrees = 40.0;
+    // Fill roughly two thirds of the frame height at this field of view.
+    camera.distance = grimoire_core::math::dmath::max(height * 1.9, 1.2);
+    frame.camera_25d = Some(camera);
+
+    let mut key_light = DirectionalLight::default();
+    key_light.direction = [0.45, 0.55, -0.7];
+    key_light.color = [1.0, 0.96, 0.9];
+    key_light.intensity = 3.2;
+    frame.key_light = Some(key_light);
+    frame.ambient = AmbientLight::Hemisphere {
+        sky_color: [0.22, 0.24, 0.32],
+        ground_color: [0.06, 0.055, 0.06],
+        intensity: 0.9,
+    };
+    // A warm rim from the far side so the silhouette separates from the dark ground.
+    let mut rim = PointLight::default();
+    rim.position = [-height * 0.9, -height * 0.8, mid_z + height * 0.35];
+    rim.color = [1.0, 0.55, 0.30];
+    rim.intensity = height * 2.0;
+    rim.range = height * 6.0;
+    frame.point_lights.push(rim);
+
+    let joint_count = u32::try_from(joint_matrices.len()).expect("skeleton fits in u32");
+    frame.joint_matrices = joint_matrices;
+    let mut skin = SkinBinding::default();
+    skin.joint_offset = 0;
+    skin.joint_count = joint_count;
+
+    // Centre the figure vertically in view.
+    let mut transform = identity_transform();
+    transform[3][2] = -mid_z;
+
+    for part in &figure.parts {
+        frame.materials.push(part.material);
+        let material = MaterialHandle(u32::try_from(frame.materials.len() - 1).unwrap());
+        let mut instance = MeshInstance::default();
+        instance.mesh = part.mesh;
+        instance.material = material;
+        instance.transform = transform;
+        instance.skin = Some(skin);
+        frame.meshes.push(instance);
+    }
+
+    renderer.render_stage(&frame).expect("render_stage");
+    let rgba = renderer.read_offscreen_rgba().expect("read-back");
+    Image::from_offscreen(WIDTH, HEIGHT, rgba)
 }
