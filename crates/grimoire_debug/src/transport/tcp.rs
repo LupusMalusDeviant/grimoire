@@ -4,8 +4,13 @@
 //! This module implements only the transport described in the WP1.3 scope note: loopback-only
 //! binding, a non-blocking IO thread, at most one connected client at a time, and panic-free
 //! handling of arbitrary bytes. The `Hello` handshake, token verification, and version
-//! negotiation described in contract §13 belong to WP8.2 and are intentionally not implemented
-//! here — `TcpConfig::token` is carried but not yet checked by this transport.
+//! negotiation described in contract §13 are implemented generically in `crate::handshake`
+//! (Plan-0002 WP8.2) against any [`super::DebugTransport`], this one included — but wiring that
+//! generic handshake into *this* transport's own IO thread (so a not-yet-authenticated socket
+//! peer gets the tighter, pre-allocation byte-level defenses contract §13 "TCP" describes: a
+//! one-frame gate ahead of `MAX_HELLO_FRAME_LEN`, and the handshake timeout watched by this
+//! thread specifically) is Plan-0002 WP8.4's "Engine-Server ... IO-Thread", not this module's
+//! job. `TcpConfig::token` is carried but not yet checked by this transport for the same reason.
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
@@ -288,8 +293,9 @@ fn io_err(error: io::Error) -> TransportError {
 pub struct TcpConfig {
     /// The address to bind. Must be exactly `127.0.0.1` (port `0` is allowed for tests).
     pub addr: SocketAddrV4,
-    /// Shared-secret token for the (not yet implemented, WP8.2) handshake. Carried through by
-    /// this transport but not validated by it.
+    /// Shared-secret token for the handshake (`crate::handshake`, implemented in WP8.2). Carried
+    /// through by this transport but not yet validated by it — wiring the generic handshake into
+    /// this transport's own IO thread is WP8.4's job (see the module docs above).
     pub token: [u8; 32],
 }
 

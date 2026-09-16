@@ -7,7 +7,10 @@
 /// Length of the fixed frame header in bytes: `id` (2) + `flags` (2) + `seq` (4).
 ///
 /// This is exactly the minimum value `len` may carry on the wire (contract §13 "Framing").
-const HEADER_LEN: usize = 8;
+/// `pub(crate)` so the handshake state machine (`handshake.rs`, WP8.2) can translate a decoded
+/// [`Frame`]'s payload length back into the wire `len` value it must compare against
+/// [`crate::MAX_HELLO_FRAME_LEN`] (contract §13 "Handshake" step 1).
+pub(crate) const HEADER_LEN: usize = 8;
 
 /// Length of the `len: u32` prefix that precedes every frame on the wire.
 const LEN_PREFIX_LEN: usize = 4;
@@ -36,13 +39,17 @@ pub struct Frame {
 
 /// Errors from decoding or encoding the debug protocol (contract §13, §2 rule 9).
 ///
-/// `#[non_exhaustive]`: the message-layer variant `UnknownMessage` (dispatch by message id)
-/// belongs to the WP8.2 message catalog and is deliberately not declared here yet; a later PR
-/// adds it additively (§2b). The other five variants below are shared by the frame envelope
-/// (this module) and by every payload type's generated `encode`/`decode` (project ADR-0011,
-/// `crates/grimoire_debug/src/generated/debug_protocol.rs`, Plan-0002 WP8.1): the generated code
-/// assumes exactly these variant names and field shapes, so changing one here is a schema-codec
-/// contract change, not just a frame-envelope one.
+/// `#[non_exhaustive]`: added additively (§2b) as the crate's needs grow. Six of the variants
+/// below are shared by the frame envelope (this module) and by every payload type's generated
+/// `encode`/`decode` (project ADR-0011, `crates/grimoire_debug/src/generated/debug_protocol.rs`,
+/// Plan-0002 WP8.1): the generated code assumes exactly these variant names and field shapes, so
+/// changing one here is a schema-codec contract change, not just a frame-envelope one.
+/// [`Self::UnknownMessage`] is the exception: it belongs to the hand-written message-layer
+/// dispatch (`message.rs`, WP8.2) added in the same PR as this variant, for message ids
+/// `Message::from_frame` does not recognise (contract §13 "Versionierung": id `0x0000`, a free id,
+/// a reserved range, or the application-defined range all decode to this one variant; the session
+/// layer in `handshake.rs` then classifies *which* of those it was to pick the right
+/// [`crate::ErrorCode`] to reply with).
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProtocolError {
@@ -105,6 +112,11 @@ pub enum ProtocolError {
         /// The raw wire value that did not match any known variant.
         value: u32,
     },
+    /// `Message::from_frame` did not recognise the frame's id: it was `0x0000`, a free id, a
+    /// reserved range, or the application-defined range (contract §13 "Versionierung", message
+    /// layer, WP8.2). Never produced by a payload type's own generated `decode`.
+    #[error("message id {0:?} is not decodable by Message::from_frame")]
+    UnknownMessage(MessageId),
 }
 
 /// Streaming decoder for the frame envelope (contract §13 "Framing").
