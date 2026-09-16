@@ -33,12 +33,18 @@
 // renderer has them registered (`WgpuRenderer::register_texture`), otherwise a 1x1 fallback
 // texture (white / flat-up-normal / neutral ORM, bound by `mesh_pass.rs`) is bound in their place,
 // so the same shader code path always runs: a missing texture is exactly a texture that samples to
-// the neutral value, and the result reduces to the material's plain factors. Normal mapping uses a
-// derivative-based tangent frame (Lengyel/Schüler) rather than a precomputed per-vertex tangent,
-// because `MeshVertex` (mesh.rs) carries none; growing it would touch every procedural test-mesh
-// generator for a feature with no authored UV-mapped asset in P1 to validate handedness against
-// (OF-3.4/P2 Blender pipeline). The OpenGL (+Y) convention (contract §6) is followed as written;
-// its exact handedness against this derivative frame is unverified without such an asset.
+// the neutral value, and the result reduces to the material's plain factors.
+//
+// Normal mapping (texture-quality package, strand B2, 2026-09-16): a fragment whose interpolated
+// `tangent.w` has `abs(w) < 0.5` (`MeshVertex::tangent`'s "no tangent" sentinel `[0,0,0,0]` — every
+// procedural test mesh, and any `FNP_MESH` primitive without a `TEXCOORD_0`) falls back to the
+// derivative-based tangent frame (Lengyel/Schüler) this shader always used before this package;
+// any other fragment builds its TBN from the real per-vertex tangent instead
+// (`bitangent = cross(normal, tangent.xyz) * tangent.w`), the MikkTSpace tangent Blender exported
+// the normal maps' bakes against (shared spec, game repo). A skinned instance rotates
+// `tangent.xyz` through the same bone matrices as the normal — the *only* rotation the tangent
+// gets; it otherwise comes out of the pack raw, exactly like position and normal (see
+// `vs_skinned`'s doc comment).
 //
 // Winding is not assumed to be consistent (see procedural.rs); the pipeline disables back-face
 // culling, like the sprite pass.
@@ -177,17 +183,21 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // `MeshVertex::tangent` (texture-quality package, strand B2): `xyz` a unit tangent, `w` the
+    // bitangent handedness, or the "no tangent" sentinel `[0,0,0,0]` — see this file's header
+    // comment.
+    @location(3) tangent: vec4<f32>,
 }
 
 struct InstanceInput {
-    @location(3) transform_0: vec4<f32>,
-    @location(4) transform_1: vec4<f32>,
-    @location(5) transform_2: vec4<f32>,
-    @location(6) transform_3: vec4<f32>,
-    @location(7) base_color: vec4<f32>,
-    @location(8) emissive: vec4<f32>,
+    @location(4) transform_0: vec4<f32>,
+    @location(5) transform_1: vec4<f32>,
+    @location(6) transform_2: vec4<f32>,
+    @location(7) transform_3: vec4<f32>,
+    @location(8) base_color: vec4<f32>,
+    @location(9) emissive: vec4<f32>,
     // x = metallic factor, y = roughness factor, z/w reserved (0).
-    @location(9) material_params: vec4<f32>,
+    @location(10) material_params: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -198,30 +208,36 @@ struct VertexOutput {
     @location(3) @interpolate(flat) base_color: vec4<f32>,
     @location(4) @interpolate(flat) emissive: vec4<f32>,
     @location(5) @interpolate(flat) material_params: vec4<f32>,
+    // World-space tangent, `w` (handedness) carried through unchanged (texture-quality package,
+    // strand B2); `abs(w) < 0.5` still means "no tangent" after interpolation, since every vertex
+    // of a primitive shares the same sentinel or none do (shared spec).
+    @location(6) tangent: vec4<f32>,
 }
 
 // Skinning vertex path (P1 addendum, see this file's header comment): `MeshVertex`'s full layout,
-// unlike `VertexInput` above which only reads its first three fields.
+// unlike `VertexInput` above which only reads its first four fields.
 struct SkinnedVertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) joints: vec4<u32>,
     @location(4) weights: vec4<f32>,
+    // See `VertexInput::tangent`.
+    @location(5) tangent: vec4<f32>,
 }
 
 struct SkinnedInstanceInput {
-    @location(5) transform_0: vec4<f32>,
-    @location(6) transform_1: vec4<f32>,
-    @location(7) transform_2: vec4<f32>,
-    @location(8) transform_3: vec4<f32>,
-    @location(9) base_color: vec4<f32>,
-    @location(10) emissive: vec4<f32>,
+    @location(6) transform_0: vec4<f32>,
+    @location(7) transform_1: vec4<f32>,
+    @location(8) transform_2: vec4<f32>,
+    @location(9) transform_3: vec4<f32>,
+    @location(10) base_color: vec4<f32>,
+    @location(11) emissive: vec4<f32>,
     // x = metallic factor, y = roughness factor, z/w reserved (0).
-    @location(11) material_params: vec4<f32>,
+    @location(12) material_params: vec4<f32>,
     // Index of this instance's first matrix in `bone_matrices` (contract §6
     // `SkinBinding::joint_offset`).
-    @location(12) bone_offset: u32,
+    @location(13) bone_offset: u32,
 }
 
 // Bone matrix palette for the whole frame's skinned instances, concatenated in
@@ -249,6 +265,18 @@ fn normal_matrix(m: mat3x3<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(cross(b, c) * inv_det, cross(c, a) * inv_det, cross(a, b) * inv_det);
 }
 
+// Transforms a model-space tangent into world space exactly like `normal_matrix(model3) *
+// vin.normal` transforms a normal (texture-quality package, strand B2: "wie die Normale" at every
+// step, not just skinning) — except the `[0,0,0]` "no tangent" sentinel is left alone rather than
+// normalized, since normalizing a zero vector is NaN and `fs_main` never reads `xyz` when `w`
+// marks it as absent anyway (`abs(tangent.w) < 0.5`).
+fn world_tangent(model3: mat3x3<f32>, tangent: vec4<f32>) -> vec4<f32> {
+    if abs(tangent.w) < 0.5 {
+        return tangent;
+    }
+    return vec4<f32>(normalize(normal_matrix(model3) * tangent.xyz), tangent.w);
+}
+
 @vertex
 fn vs_main(vin: VertexInput, iin: InstanceInput) -> VertexOutput {
     let model = mat4x4<f32>(iin.transform_0, iin.transform_1, iin.transform_2, iin.transform_3);
@@ -264,6 +292,7 @@ fn vs_main(vin: VertexInput, iin: InstanceInput) -> VertexOutput {
     out.base_color = iin.base_color;
     out.emissive = iin.emissive;
     out.material_params = iin.material_params;
+    out.tangent = world_tangent(model3, vin.tangent);
     return out;
 }
 
@@ -292,12 +321,22 @@ fn skin_matrix(joints: vec4<u32>, weights: vec4<f32>, bone_offset: u32) -> mat4x
 // Second vertex path (P1 addendum, see this file's header comment): identical to `vs_main` from
 // the model transform onward, except the vertex position/normal are first pulled through this
 // instance's bone matrix palette. Feeds the same `fs_main` as `vs_main`.
+//
+// Tangent (texture-quality package, strand B2): rotated by the same bone-matrix 3x3 (`skin3`) as
+// the normal, on the same `abs(w) < 0.5` guard `world_tangent` uses — this is the *only* rotation
+// a skinned tangent gets before the model transform; it comes out of the pack raw (shared spec,
+// game repo: the skeleton root's axis correction lives in the bone hierarchy itself, applied via
+// this same `skin3`, identically for position, normal and tangent).
 @vertex
 fn vs_skinned(vin: SkinnedVertexInput, iin: SkinnedInstanceInput) -> VertexOutput {
     let skin = skin_matrix(vin.joints, vin.weights, iin.bone_offset);
     let skinned_position = skin * vec4<f32>(vin.position, 1.0);
     let skin3 = mat3x3<f32>(skin[0].xyz, skin[1].xyz, skin[2].xyz);
     let skinned_normal = skin3 * vin.normal;
+    var skinned_tangent = vin.tangent;
+    if abs(vin.tangent.w) >= 0.5 {
+        skinned_tangent = vec4<f32>(skin3 * vin.tangent.xyz, vin.tangent.w);
+    }
 
     let model = mat4x4<f32>(iin.transform_0, iin.transform_1, iin.transform_2, iin.transform_3);
     let world_position4 = model * skinned_position;
@@ -312,6 +351,7 @@ fn vs_skinned(vin: SkinnedVertexInput, iin: SkinnedInstanceInput) -> VertexOutpu
     out.base_color = iin.base_color;
     out.emissive = iin.emissive;
     out.material_params = iin.material_params;
+    out.tangent = world_tangent(model3, skinned_tangent);
     return out;
 }
 
@@ -498,12 +538,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let occlusion = orm_sample.r;
 
     // Tangent-space normal mapping; the fallback normal texture (`mesh_pass.rs`) samples to
-    // (0, 0, 1) in tangent space, which `cotangent_frame`'s third basis vector always maps back to
-    // `n_geo` exactly, so an unregistered normal texture reproduces the untextured geometric
-    // normal bit-for-bit.
-    let tbn = cotangent_frame(n_geo, in.world_position, in.uv);
+    // (0, 0, 1) in tangent space, which either basis below always maps back to `n_geo` exactly, so
+    // an unregistered normal texture reproduces the untextured geometric normal bit-for-bit.
+    //
+    // Texture-quality package, strand B2: a real per-vertex tangent (`abs(in.tangent.w) >= 0.5`)
+    // builds the TBN directly instead of estimating it from screen-space derivatives —
+    // `cotangent_frame` stays the fallback for any mesh without one (every procedural test mesh,
+    // and any `FNP_MESH` primitive without a `TEXCOORD_0`), unchanged from before this package.
     let n_ts = normal_sample.xyz * 2.0 - 1.0;
-    let n = normalize(tbn * n_ts);
+    var n: vec3<f32>;
+    if abs(in.tangent.w) < 0.5 {
+        let tbn = cotangent_frame(n_geo, in.world_position, in.uv);
+        n = normalize(tbn * n_ts);
+    } else {
+        let t = normalize(in.tangent.xyz);
+        let b = cross(n_geo, t) * in.tangent.w;
+        let tbn = mat3x3<f32>(t, b, n_geo);
+        n = normalize(tbn * n_ts);
+    }
 
     let n_dot_v = max(dot(n, v), 1e-4);
     let f0 = mix(vec3<f32>(0.04), base_color, metallic);

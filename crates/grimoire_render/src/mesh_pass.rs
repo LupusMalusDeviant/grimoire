@@ -1159,22 +1159,28 @@ fn create_skinned_pipeline(
         immediate_size: 0,
     });
 
-    let vertex_attributes: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    // Every field of `MeshVertex` up to and including `tangent` (texture-quality package, strand
+    // B2) is listed here, in declared order with no gaps, so `wgpu::vertex_attr_array!`'s
+    // cumulative-offset assumption matches the real struct layout exactly — unlike the rigid
+    // pipeline's `vertex_attributes` below, which skips `joints`/`weights` and therefore cannot
+    // use the macro for `tangent` (see that pipeline's comment).
+    let vertex_attributes: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x3,
         2 => Float32x2,
         3 => Uint16x4,
         4 => Float32x4,
+        5 => Float32x4,
     ];
     let instance_attributes: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
-        5 => Float32x4,
         6 => Float32x4,
         7 => Float32x4,
         8 => Float32x4,
         9 => Float32x4,
         10 => Float32x4,
         11 => Float32x4,
-        12 => Uint32,
+        12 => Float32x4,
+        13 => Uint32,
     ];
 
     context.capture_errors(|device| {
@@ -1464,19 +1470,44 @@ impl MeshPass {
             immediate_size: 0,
         });
 
-        let vertex_attributes: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-            0 => Float32x3,
-            1 => Float32x3,
-            2 => Float32x2,
+        // `wgpu::vertex_attr_array!` accumulates offsets assuming the listed formats are packed
+        // back-to-back with no gap — true for `position`/`normal`/`uv` (the first three fields of
+        // `MeshVertex`, read verbatim), but `tangent` (texture-quality package, strand B2) sits
+        // *after* `joints`/`weights` in the real struct, which this pipeline never reads. The
+        // fourth attribute is therefore built by hand, its offset taken straight from
+        // `MeshVertex`'s own layout (`offset_of!`) rather than assumed — see
+        // `vertex_attributes_match_mesh_vertex_layout` below for the test that keeps the two in
+        // sync.
+        let vertex_attributes: [wgpu::VertexAttribute; 4] = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: std::mem::offset_of!(crate::mesh::MeshVertex, position) as u64,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: std::mem::offset_of!(crate::mesh::MeshVertex, normal) as u64,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: std::mem::offset_of!(crate::mesh::MeshVertex, uv) as u64,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: std::mem::offset_of!(crate::mesh::MeshVertex, tangent) as u64,
+                shader_location: 3,
+            },
         ];
         let instance_attributes: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-            3 => Float32x4,
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
             7 => Float32x4,
             8 => Float32x4,
             9 => Float32x4,
+            10 => Float32x4,
         ];
 
         let pipeline = context.capture_errors(|device| {
@@ -2407,20 +2438,40 @@ mod tests {
 
     #[test]
     fn vertex_attributes_match_mesh_vertex_layout() {
-        // The rigid pipeline's vertex attributes: position, normal, uv only. Since P1's skinning
-        // addendum grew `MeshVertex` with trailing `joints`/`weights`, this no longer covers the
-        // whole struct (see `skinned_vertex_attributes_match_mesh_vertex_layout` for those two) —
-        // deliberately: an instance with `skin == None` reads exactly these three fields and never
-        // touches the rest, which is what "costs nothing extra" means for the rigid path.
-        let attributes: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-            0 => Float32x3,
-            1 => Float32x3,
-            2 => Float32x2,
+        // The rigid pipeline's vertex attributes: position, normal, uv and (texture-quality
+        // package, strand B2) tangent — never `joints`/`weights` (see
+        // `skinned_vertex_attributes_match_mesh_vertex_layout` for those two, plus tangent again):
+        // deliberately, since an instance with `skin == None` never touches skinning data, which is
+        // what "costs nothing extra" means for the rigid path. Built by hand, not
+        // `wgpu::vertex_attr_array!` (see `MeshPass::new`'s comment on why the macro's
+        // cumulative-offset assumption does not hold once `joints`/`weights` are skipped).
+        let attributes: [wgpu::VertexAttribute; 4] = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: offset_of!(MeshVertex, position) as u64,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: offset_of!(MeshVertex, normal) as u64,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: offset_of!(MeshVertex, uv) as u64,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: offset_of!(MeshVertex, tangent) as u64,
+                shader_location: 3,
+            },
         ];
         let offsets = [
             offset_of!(MeshVertex, position),
             offset_of!(MeshVertex, normal),
             offset_of!(MeshVertex, uv),
+            offset_of!(MeshVertex, tangent),
         ];
         for (attribute, offset) in attributes.iter().zip(offsets) {
             assert_eq!(attribute.offset, offset as u64);
@@ -2429,12 +2480,13 @@ mod tests {
 
     #[test]
     fn skinned_vertex_attributes_match_mesh_vertex_layout() {
-        let attributes: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        let attributes: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
             0 => Float32x3,
             1 => Float32x3,
             2 => Float32x2,
             3 => Uint16x4,
             4 => Float32x4,
+            5 => Float32x4,
         ];
         let offsets = [
             offset_of!(MeshVertex, position),
@@ -2442,11 +2494,12 @@ mod tests {
             offset_of!(MeshVertex, uv),
             offset_of!(MeshVertex, joints),
             offset_of!(MeshVertex, weights),
+            offset_of!(MeshVertex, tangent),
         ];
         for (attribute, offset) in attributes.iter().zip(offsets) {
             assert_eq!(attribute.offset, offset as u64);
         }
-        let last = &attributes[4];
+        let last = &attributes[5];
         assert_eq!(
             last.offset + last.format.size(),
             std::mem::size_of::<MeshVertex>() as u64,
@@ -2462,14 +2515,14 @@ mod tests {
     #[test]
     fn skinned_instance_attributes_match_skinned_mesh_instance_gpu_layout() {
         let attributes: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
-            5 => Float32x4,
             6 => Float32x4,
             7 => Float32x4,
             8 => Float32x4,
             9 => Float32x4,
             10 => Float32x4,
             11 => Float32x4,
-            12 => Uint32,
+            12 => Float32x4,
+            13 => Uint32,
         ];
         // The four transform columns are contiguous 16-byte chunks of `transform: [[f32; 4]; 4]`,
         // immediately followed by `base_color`, `emissive`, `material_params` and `bone_offset`.
@@ -2537,13 +2590,13 @@ mod tests {
     #[test]
     fn instance_attributes_match_mesh_instance_gpu_layout() {
         let attributes: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
-            3 => Float32x4,
             4 => Float32x4,
             5 => Float32x4,
             6 => Float32x4,
             7 => Float32x4,
             8 => Float32x4,
             9 => Float32x4,
+            10 => Float32x4,
         ];
         // The four transform columns are contiguous 16-byte chunks of `transform: [[f32; 4]; 4]`,
         // immediately followed by `base_color`, `emissive` and `material_params`.

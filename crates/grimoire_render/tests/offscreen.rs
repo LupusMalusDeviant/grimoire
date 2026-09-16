@@ -19,9 +19,9 @@ use std::time::Duration;
 use grimoire_render::procedural::{altar_block, floor_tile_grid, icosphere};
 use grimoire_render::{
     AmbientLight, BlobShadowInstance, Camera2D, Camera25D, DirectionalLight, MaterialHandle,
-    MeshHandle, MeshInstance, Msaa, PbrMaterial, PointLight, RenderError, RenderFrame, Renderer,
-    RendererConfig, ShadowMode, SpriteInstance, StageFrame, StageRendererConfig, TextureColorSpace,
-    TextureData, TextureHandle, WgpuRenderer, shape,
+    MeshData, MeshHandle, MeshInstance, MeshVertex, Msaa, PbrMaterial, PointLight, RenderError,
+    RenderFrame, Renderer, RendererConfig, ShadowMode, SpriteInstance, StageFrame,
+    StageRendererConfig, TextureColorSpace, TextureData, TextureHandle, WgpuRenderer, shape,
 };
 
 const SIZE: u32 = 64;
@@ -1134,6 +1134,104 @@ fn unregistered_texture_handle_falls_back_to_the_material_factor() {
         [255, 0, 0, 255],
         20,
         "falls back to the plain red factor, exactly like flat_material's other tests",
+    );
+}
+
+/// A flat quad facing world `+Z` (normal `[0, 0, 1]`), UV-mapped `(0,0)`-`(1,1)`, tangent
+/// `[1, 0, 0, handedness]` on every vertex — the smallest mesh that gives `mesh.wgsl`'s real
+/// tangent-space TBN branch (`abs(tangent.w) >= 0.5`) something to build a bitangent from.
+fn tangent_quad(handedness: f32) -> MeshData {
+    let corners: [([f32; 3], [f32; 2]); 4] = [
+        ([-0.5, -0.5, 0.0], [0.0, 0.0]),
+        ([0.5, -0.5, 0.0], [1.0, 0.0]),
+        ([0.5, 0.5, 0.0], [1.0, 1.0]),
+        ([-0.5, 0.5, 0.0], [0.0, 1.0]),
+    ];
+    let vertices = corners
+        .into_iter()
+        .map(|(position, uv)| MeshVertex {
+            tangent: [1.0, 0.0, 0.0, handedness],
+            ..MeshVertex::new(position, [0.0, 0.0, 1.0], uv)
+        })
+        .collect();
+    MeshData {
+        vertices,
+        indices: vec![0, 1, 2, 0, 2, 3],
+    }
+}
+
+/// Texture-quality package strand B2's mandatory proof ("ein Test ... prüft, dass die Bitangente
+/// wirklich umklappt" — a test proving the bitangent really flips): [`tangent_quad`]'s tangent is
+/// `[1, 0, 0, w]`, so `bitangent = cross(normal, tangent.xyz) * w = [0, w, 0]` (`mesh.wgsl`) —
+/// exactly world `+Y` for `w = 1` and `-Y` for `w = -1`, with `normal = [0, 0, 1]` unaffected
+/// either way. A 1x1 normal map encoding the fixed tangent-space normal `(0, 0.6, 0.8)` (already
+/// unit length, packed the way a sampled normal map is decoded, `* 2 - 1`) therefore shades to
+/// world normal `(0, 0.6, 0.8)` under `w = 1` but `(0, -0.6, 0.8)` under `w = -1`. A key light
+/// travelling `-Y` (so its "towards" vector is exactly `+Y`) then lands on opposite sides of
+/// `mesh.wgsl`'s hard `dot(n, l) <= 0` cutoff for the two cases: `dot((0,0.6,0.8),(0,1,0)) = 0.6`
+/// (lit) versus `dot((0,-0.6,0.8),(0,1,0)) = -0.6` (fully unlit, clipped to zero) — not a subtle
+/// shading difference, a lit-or-not one, so this is a direct proof of the handedness flip rather
+/// than a coincidental brightness change that some other bug could also produce.
+#[test]
+fn tangent_handedness_flips_the_bitangent() {
+    let Some(mut renderer) = offscreen_renderer(64, 64, 4) else {
+        return;
+    };
+    let normal_map = TextureData {
+        width: 1,
+        height: 1,
+        // Tangent-space normal (0, 0.6, 0.8): x = 0 -> 128, y = 0.6 -> 204, z = 0.8 -> 230
+        // (`(n * 0.5 + 0.5) * 255`, rounded).
+        pixels: vec![128, 204, 230, 255],
+        color_space: TextureColorSpace::Linear,
+    };
+    let normal_handle = renderer
+        .register_texture(normal_map)
+        .expect("valid texture");
+    let mesh_lit = renderer
+        .register_mesh(tangent_quad(1.0))
+        .expect("valid mesh");
+    let mesh_unlit = renderer
+        .register_mesh(tangent_quad(-1.0))
+        .expect("valid mesh");
+
+    let mut material = flat_material([0.8, 0.8, 0.8, 1.0]);
+    material.metallic_factor = 0.0;
+    material.roughness_factor = 0.8;
+    material.normal_texture = Some(normal_handle);
+
+    let render_with = |renderer: &mut WgpuRenderer, mesh: MeshHandle| -> [u8; 4] {
+        let mut frame = StageFrame::new();
+        frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+        frame.camera_25d = Some(top_down_camera());
+        let mut key_light = DirectionalLight::default();
+        // Travels -Y, so the "towards light" vector `mesh.wgsl` uses is exactly world +Y.
+        key_light.direction = [0.0, -1.0, 0.0];
+        key_light.color = [1.0, 1.0, 1.0];
+        key_light.intensity = 4.0;
+        frame.key_light = Some(key_light);
+        frame.ambient = AmbientLight::Flat {
+            color: [0.03, 0.03, 0.03],
+            intensity: 1.0,
+        };
+        frame.materials.push(material);
+        frame.meshes.push(mesh_instance(
+            mesh,
+            MaterialHandle(0),
+            translation([0.0; 3]),
+        ));
+        renderer.render_stage(&frame).expect("render_stage");
+        let rgba = renderer.read_offscreen_rgba().expect("read-back");
+        pixel(&rgba, 64, 32, 32)
+    };
+    let lit = render_with(&mut renderer, mesh_lit);
+    let unlit = render_with(&mut renderer, mesh_unlit);
+    assert!(
+        luminance(lit) > luminance(unlit) + 40,
+        "handedness +1 should be lit by the key light and handedness -1 should not: \
+         lit={lit:?} (luminance {}) unlit={unlit:?} (luminance {})",
+        luminance(lit),
+        luminance(unlit)
     );
 }
 

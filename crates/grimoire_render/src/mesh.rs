@@ -18,9 +18,10 @@ mod vertex {
     // `BulletInstance` elsewhere in this crate.
     #![allow(unsafe_code)]
 
-    /// One mesh vertex: position, normal, texture coordinate, and (P1 skinning addendum, contract
-    /// §6 changelog 2026-09-16) up to four bone influences. Layout is `#[repr(C)]`, 56 bytes, no
-    /// padding, uploaded to the GPU verbatim as a vertex buffer element.
+    /// One mesh vertex: position, normal, texture coordinate, (P1 skinning addendum, contract §6
+    /// changelog 2026-09-16) up to four bone influences, and (texture-quality package, strand B2)
+    /// an optional per-vertex tangent. Layout is `#[repr(C)]`, 72 bytes, no padding, uploaded to
+    /// the GPU verbatim as a vertex buffer element.
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct MeshVertex {
@@ -46,12 +47,27 @@ mod vertex {
         /// Skinning weight for each of [`MeshVertex::joints`], summing to `1.0` (tolerance `1e-3`,
         /// checked by [`crate::mesh::MeshData::validate`] and, before that, by the pack decoder).
         pub weights: [f32; 4],
+        /// Model-space tangent (texture-quality package, strand B2, additive): `xyz` a unit vector
+        /// in the surface plane, `w` the bitangent handedness (`+1.0` or `-1.0`) —
+        /// `mesh.wgsl` builds `bitangent = cross(normal, tangent.xyz) * tangent.w`. The default,
+        /// `[0.0, 0.0, 0.0, 0.0]` (every procedural mesh in this crate, and any `FNP_MESH` primitive
+        /// without a `TEXCOORD_0`, shared spec), is the agreed "no tangent" sentinel:
+        /// `mesh.wgsl`'s fragment shader falls back to its derivative-based `cotangent_frame` for
+        /// any fragment whose interpolated `tangent.w` has `abs(w) < 0.5`, exactly as if this field
+        /// did not exist — so growing it changes no existing mesh's rendered output (only real
+        /// tangent data, which only the figure pack decoder produces so far, opts into the new
+        /// path). Registration does not validate `tangent` (see
+        /// [`crate::figure_format::decode_mesh`] for the pack decoder's own check); an arbitrary,
+        /// invalid tangent here degrades to whatever `mesh.wgsl`'s TBN construction computes from
+        /// it, never a panic.
+        pub tangent: [f32; 4],
     }
 
     impl Default for MeshVertex {
-        /// Zero position/normal/uv (unchanged from before this field grew), bone 0 with full
-        /// weight — "no skeleton" per this struct's doc comment, *not* an all-zero weight vector
-        /// (which would skin every vertex to nothing).
+        /// Zero position/normal/uv/tangent (tangent unchanged from `[0.0; 4]` since this field was
+        /// added — the "no tangent" sentinel, see [`MeshVertex::tangent`]'s doc comment), bone 0
+        /// with full weight — "no skeleton" per this struct's doc comment, *not* an all-zero weight
+        /// vector (which would skin every vertex to nothing).
         fn default() -> Self {
             Self {
                 position: [0.0; 3],
@@ -59,6 +75,7 @@ mod vertex {
                 uv: [0.0; 2],
                 joints: [0; 4],
                 weights: [1.0, 0.0, 0.0, 0.0],
+                tangent: [0.0; 4],
             }
         }
     }
@@ -239,8 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn mesh_vertex_is_56_bytes() {
-        assert_eq!(std::mem::size_of::<MeshVertex>(), 56);
+    fn mesh_vertex_is_72_bytes() {
+        assert_eq!(std::mem::size_of::<MeshVertex>(), 72);
     }
 
     #[test]
