@@ -301,10 +301,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Same reasoning as the `test` job: lavapipe gives this runner a software Vulkan adapter.
-      - name: Install software Vulkan (lavapipe)
+      # ffmpeg is installed here rather than assumed: it is not part of the `ubuntu-latest` image,
+      # and this job's first run on `main` died with "ffmpeg: command not found" (exit 127).
+      - name: Install software Vulkan (lavapipe) and ffmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers ffmpeg
       # `pbr_stage_showcase.rs`'s renderer helper does not read `GRIMOIRE_REQUIRE_GPU_ADAPTER`
       # (unlike `tests/offscreen.rs`): a missing adapter here would just mean an empty artifact, so
       # a hard failure (via `set -e` and no GPU) is the honest outcome rather than a silent skip.
@@ -314,9 +316,8 @@ jobs:
         run: |
           cargo test -p grimoire_render --test pbr_stage_showcase --locked -- --ignored --nocapture render_pbr_stage_png_sequence
           test -f "$GRIMOIRE_PBR_STAGE_GIF_OUT_DIR/frame_0000.png"
-      # ffmpeg ships preinstalled on GitHub-hosted runners; a two-pass palette (generate, then
-      # apply) keeps an 8-bit GIF from banding the PBR spheres/gradients as badly as ffmpeg's
-      # default fixed palette would.
+      # A two-pass palette (generate, then apply) keeps an 8-bit GIF from banding the PBR
+      # spheres and gradients as badly as ffmpeg's default fixed palette would.
       - name: Assemble the PNG sequence into a GIF
         run: |
           palette="$(mktemp --suffix=.png)"
