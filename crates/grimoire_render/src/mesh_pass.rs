@@ -86,9 +86,9 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Near clip plane of [`stage3d::view_projection`]. Not part of the [`Camera25D`] contract (which
 /// has no near/far fields); a provisional constant until WP2.4 gives the camera rig a reason to
 /// make it configurable.
-const NEAR_PLANE: f32 = 0.05;
+pub(crate) const NEAR_PLANE: f32 = 0.05;
 /// Far clip plane; see [`NEAR_PLANE`].
-const FAR_PLANE: f32 = 2000.0;
+pub(crate) const FAR_PLANE: f32 = 2000.0;
 
 const IDENTITY: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],

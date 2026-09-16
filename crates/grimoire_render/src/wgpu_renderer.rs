@@ -8,13 +8,17 @@ use grimoire_gpu::{
 };
 use grimoire_platform::PlatformWindow;
 
+use crate::bullet_lights::derive_bullet_lights;
+use crate::bullet_pass::{BulletPass, BulletView, bullet_view};
 use crate::mesh_pass::MeshPass;
+use crate::pass_graph::{self, PassLog};
 use crate::sprite_pass::SpritePass;
 use crate::stage;
 use crate::texture::{TextureData, TextureError};
 use crate::{
-    LightBudget, MeshData, MeshError, MeshHandle, RenderError, RenderFrame, RenderStats, Renderer,
-    RendererConfig, StageFrame, StageRendererConfig, StageStats, TextureHandle,
+    BulletInstance, Camera2D, LightBudget, MeshData, MeshError, MeshHandle, PointLight,
+    RenderError, RenderFrame, RenderLayer, RenderStats, Renderer, RendererConfig, SpriteInstance,
+    StageFrame, StageRendererConfig, StageStats, TextureHandle,
 };
 
 enum Target {
@@ -45,6 +49,13 @@ pub struct WgpuRenderer {
     target: Target,
     sprites: SpritePass,
     mesh_pass: MeshPass,
+    /// Layer 6 (plan 0002 WP3.5, engine ADR-0014).
+    bullet_pass: BulletPass,
+    /// The frame's own point lights followed by its derived bullet-cloud lights (WP3.5), reused
+    /// across frames so shading them allocates nothing once the capacity has grown.
+    lights: Vec<PointLight>,
+    /// Slots the stage pass graph executed during the most recent `render_stage` call.
+    last_pass_order: PassLog,
     width: u32,
     height: u32,
     /// Error of the most recent `resize`; never `SurfaceLost`, which callers treat as a skip.
@@ -172,11 +183,16 @@ impl WgpuRenderer {
             config.msaa,
         )
         .map_err(map_gpu_error)?;
+        let bullet_pass =
+            BulletPass::new(&context, surface.view_format()).map_err(map_gpu_error)?;
         Ok(Self {
             context,
             target: Target::Window(surface),
             sprites,
             mesh_pass,
+            bullet_pass,
+            lights: Vec::new(),
+            last_pass_order: PassLog::default(),
             width,
             height,
             resize_error: None,
@@ -237,11 +253,15 @@ impl WgpuRenderer {
             config.msaa,
         )
         .map_err(map_gpu_error)?;
+        let bullet_pass = BulletPass::new(&context, target.format()).map_err(map_gpu_error)?;
         Ok(Self {
             context,
             target: Target::Offscreen(target),
             sprites,
             mesh_pass,
+            bullet_pass,
+            lights: Vec::new(),
+            last_pass_order: PassLog::default(),
             width,
             height,
             resize_error: None,
@@ -262,6 +282,19 @@ impl WgpuRenderer {
             Target::Offscreen(target) => target.read_rgba(&self.context).map_err(map_gpu_error),
             Target::Window(_) => Err(RenderError::NotOffscreen),
         }
+    }
+
+    /// The stage pass graph slots the most recent [`Renderer::render_stage`] call executed, in
+    /// execution order (plan 0002 WP3.5): [`RenderLayer::ORDER`] after a rendered frame, empty
+    /// before the first frame and after a frame skipped for a zero-size target.
+    ///
+    /// A diagnostic hook for the structural layer-order test (contract §6, "Ein Strukturtest
+    /// vergleicht die vom Pass-Graph protokollierte Pass-Reihenfolge mit `ORDER`"), in the same
+    /// spirit as [`WgpuRenderer::render_stage_with_specular_aa`]: it reads the log the pass graph
+    /// writes while it submits the GPU passes, so it reports the order they actually ran in.
+    #[must_use]
+    pub fn last_stage_pass_order(&self) -> &[RenderLayer] {
+        self.last_pass_order.layers()
     }
 
     /// Single greppable line identifying the selected adapter for CI logs; see
@@ -352,27 +385,29 @@ impl WgpuRenderer {
         }
     }
 
-    /// Draws `frame.sprites` in one instanced pass into `view`, with `load` controlling whether
-    /// the pass clears (P0's [`Renderer::render`], the only caller before WP2.3) or loads existing
-    /// pixels (the stage's sprite layer drawn on top of the mesh pass, WP2.3's `render_stage`).
-    /// Returns `(sprites_drawn, draw_calls)`.
+    /// Draws `sprites` in one instanced pass into `view` through `camera`, with `load` controlling
+    /// whether the pass clears (P0's [`Renderer::render`], the only caller before WP2.3) or loads
+    /// existing pixels (the stage's sprite channels drawn on top of earlier layers:
+    /// `render_stage`'s world sprites from WP2.3, marker and debug sprites from WP3.5). Returns
+    /// `(sprites_drawn, draw_calls)`.
     fn draw_sprites(
         &mut self,
         view: &wgpu::TextureView,
-        frame: &RenderFrame,
+        camera: &Camera2D,
+        sprites: &[SpriteInstance],
         load: wgpu::LoadOp<wgpu::Color>,
     ) -> Result<(u32, u32), GpuError> {
         let aspect = self.width as f32 / self.height as f32;
-        let view_projection = frame.camera.view_projection(aspect);
+        let view_projection = camera.view_projection(aspect);
         // Clip space spans 2 units over the target height.
         let pixels_per_unit = view_projection[1][1] * self.height as f32 * 0.5;
 
         let context = &self.context;
-        let sprites = &mut self.sprites;
+        let sprite_pass = &mut self.sprites;
         context
             .capture_errors(|device| {
                 let count =
-                    sprites.prepare(context, &view_projection, pixels_per_unit, &frame.sprites)?;
+                    sprite_pass.prepare(context, &view_projection, pixels_per_unit, sprites)?;
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("grimoire frame encoder"),
                 });
@@ -394,10 +429,59 @@ impl WgpuRenderer {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    sprites.draw(&mut pass, count)
+                    sprite_pass.draw(&mut pass, count)
                 };
                 context.queue().submit([encoder.finish()]);
                 Ok::<_, GpuError>((count, draw_calls))
+            })
+            .and_then(|result| result)
+    }
+
+    /// Draws the accepted instances of `bullets` in one instanced pass on top of `view` (layer 6,
+    /// plan 0002 WP3.5). No render pass is recorded when nothing is accepted, so a frame without
+    /// bullets submits exactly the passes it submitted before WP3.5. Returns the draw calls issued.
+    fn draw_bullets(
+        &mut self,
+        view: &wgpu::TextureView,
+        bullet_view: &BulletView,
+        bullets: &[BulletInstance],
+    ) -> Result<u32, GpuError> {
+        if bullets.is_empty() {
+            return Ok(0);
+        }
+        let context = &self.context;
+        let bullet_pass = &mut self.bullet_pass;
+        let viewport = (self.width, self.height);
+        context
+            .capture_errors(|device| {
+                let count = bullet_pass.prepare(context, bullet_view, viewport, bullets)?;
+                if count == 0 {
+                    return Ok::<_, GpuError>(0);
+                }
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("grimoire bullet encoder"),
+                });
+                let draw_calls = {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("grimoire bullet pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    bullet_pass.draw(&mut pass, count)
+                };
+                context.queue().submit([encoder.finish()]);
+                Ok(draw_calls)
             })
             .and_then(|result| result)
     }
@@ -457,7 +541,12 @@ impl Renderer for WgpuRenderer {
             a: f64::from(a),
         };
         let (count, draw_calls) = self
-            .draw_sprites(&view, frame, wgpu::LoadOp::Clear(clear_color))
+            .draw_sprites(
+                &view,
+                &frame.camera,
+                &frame.sprites,
+                wgpu::LoadOp::Clear(clear_color),
+            )
             .map_err(map_gpu_error)?;
         if let Some(acquired) = surface_frame {
             acquired.present(self.context.queue());
@@ -478,15 +567,19 @@ impl Renderer for WgpuRenderer {
         true
     }
 
-    /// Applies the full stage semantics of contract §6 and, from WP2.3, actually draws pixels:
-    /// the mesh pass (this module's `mesh_pass::MeshPass`, depth-tested, real PBR shading from
-    /// WP2.5) runs first, clearing colour and depth, then the unchanged sprite pass draws
-    /// `frame.base.sprites` on top with `LoadOp::Load` — both share [`crate::RenderLayer::World`]
-    /// per contract §6, mesh pass first. Bullets are validated (palette space, finiteness,
-    /// `radius > 0`) and counted into [`StageStats`] — including the debug-only `debug_assert!` on
-    /// a foreign palette space — but still never rasterised: the GPU bullet pass is WP3.5's job.
-    /// `marker_sprites` and `debug_sprites` are likewise only counted, not drawn (no pipeline for
-    /// them yet). Point lights, the key light and ambient are validated and counted (as before
+    /// Applies the full stage semantics of contract §6 and draws every layer through the fixed
+    /// pass graph (plan 0002 WP3.5, `pass_graph` module): World → VFX (empty) → post-FX resolve
+    /// (empty) → telegraphy (layer 4, reserved, empty) → bullets (layer 6) → player marker
+    /// (layer 7) → debug/UI. On [`crate::RenderLayer::World`] the mesh pass (this module's
+    /// `mesh_pass::MeshPass`, depth-tested, real PBR shading from WP2.5) runs first, clearing
+    /// colour and depth, then the unchanged sprite pass draws `frame.base.sprites` on top with
+    /// `LoadOp::Load`. Bullets are validated (palette space, finiteness, `radius > 0`, table
+    /// indices), counted into [`StageStats`] — including the debug-only `debug_assert!` on a
+    /// foreign palette space — and, from WP3.5, the accepted ones are drawn by the bullet pass as
+    /// billboards with silhouette, palette and glow; their glow also yields a few bullet-cloud
+    /// lights through [`crate::point_light_from_bullet`] (the `bullet_lights` module).
+    /// `marker_sprites` and `debug_sprites` are drawn by the sprite pipeline through
+    /// [`crate::Camera2D`], like the world sprites. Point lights, the key light and ambient are validated and counted (as before
     /// WP2.3) and, from WP2.5, actually shaded — every valid point light through the same GGX term
     /// as the key light. From WP3.4 (engine ADR-0015 "compute clustering"), shading is clustered
     /// forward+: lights are clamped to this renderer's configured [`crate::LightBudget`] (the
@@ -522,25 +615,32 @@ impl WgpuRenderer {
         if let Some(error) = &self.resize_error {
             return Err(repeat_error(error));
         }
+        // Bullet-cloud lights (plan 0002 WP3.5): derived from the frame alone, so a skipped frame
+        // counts them exactly like a drawn one (and like `NullRenderer`).
+        let bullet_lights = derive_bullet_lights(frame);
         if self.width == 0 || self.height == 0 {
+            self.last_pass_order = PassLog::default();
             return Ok(stage::stage_stats_from_base(
                 skipped_frame(start),
                 frame,
                 Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
                 Some(self.light_budget.light_count()),
                 None,
+                bullet_lights.as_slice(),
             ));
         }
 
         let (surface_frame, view) = match self.acquire_target() {
             Ok(result) => result,
             Err(GpuError::ZeroSize) => {
+                self.last_pass_order = PassLog::default();
                 return Ok(stage::stage_stats_from_base(
                     skipped_frame(start),
                     frame,
                     Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
                     Some(self.light_budget.light_count()),
                     None,
+                    bullet_lights.as_slice(),
                 ));
             }
             Err(error) => return Err(map_gpu_error(error)),
@@ -554,31 +654,87 @@ impl WgpuRenderer {
             a: f64::from(a),
         };
         let aspect = self.width as f32 / self.height as f32;
+        // The frame's own lights first, bullet-cloud lights after them: the light budget clamp
+        // drops bullet lights first (`bullet_lights` module doc comment). Without bullets this is
+        // exactly `frame.point_lights`, so every pre-WP3.5 scene shades bit-identically.
+        self.lights.clear();
+        self.lights.extend_from_slice(&frame.point_lights);
+        self.lights.extend_from_slice(bullet_lights.as_slice());
 
-        let mesh_pass_stats = self
-            .mesh_pass
-            .render(
-                &self.context,
-                &view,
-                clear_color,
-                aspect,
-                frame.camera_25d.as_ref(),
-                frame.key_light.as_ref(),
-                &frame.ambient,
-                &frame.point_lights,
-                &frame.bullet_light_cap,
-                &frame.meshes,
-                &frame.materials,
-                specular_aa,
-                &frame.shadow_config,
-                &frame.blob_shadows,
-                &frame.joint_matrices,
-            )
-            .map_err(map_gpu_error)?;
-
-        let (sprite_count, sprite_draw_calls) = self
-            .draw_sprites(&view, &frame.base, wgpu::LoadOp::Load)
-            .map_err(map_gpu_error)?;
+        // The fixed pass graph (contract §6, plan 0002 WP3.5): `pass_graph::run` alone decides the
+        // order; every slot below only says what it draws. Each drawing slot submits its own
+        // command buffer, so the recorded order is the order the GPU work was queued in.
+        let mut cluster_stats = None;
+        let mut sprite_count = 0;
+        let mut draw_calls = 0;
+        let pass_order = pass_graph::run(|layer| -> Result<(), GpuError> {
+            match layer {
+                RenderLayer::World => {
+                    // Layers 1-3: meshes (clearing colour and depth), then the world sprites.
+                    let mesh_pass_stats = self.mesh_pass.render(
+                        &self.context,
+                        &view,
+                        clear_color,
+                        aspect,
+                        frame.camera_25d.as_ref(),
+                        frame.key_light.as_ref(),
+                        &frame.ambient,
+                        &self.lights,
+                        &frame.bullet_light_cap,
+                        &frame.meshes,
+                        &frame.materials,
+                        specular_aa,
+                        &frame.shadow_config,
+                        &frame.blob_shadows,
+                        &frame.joint_matrices,
+                    )?;
+                    cluster_stats = Some(mesh_pass_stats.cluster);
+                    draw_calls += mesh_pass_stats.draw_calls;
+                    let (count, calls) = self.draw_sprites(
+                        &view,
+                        &frame.base.camera,
+                        &frame.base.sprites,
+                        wgpu::LoadOp::Load,
+                    )?;
+                    sprite_count = count;
+                    draw_calls += calls;
+                }
+                // Empty in P1: particles (VFX), the post-processing resolve and telegraphy
+                // (layer 4, reserved) have no channel yet. They still occupy their slots, so
+                // whatever fills them later is ordered before the bullets by construction.
+                RenderLayer::Vfx | RenderLayer::PostFxResolve | RenderLayer::Telegraphy => {}
+                RenderLayer::Bullets => {
+                    if let Some(bullet_view) = bullet_view(frame, aspect) {
+                        draw_calls += self.draw_bullets(&view, &bullet_view, &frame.bullets)?;
+                    }
+                }
+                RenderLayer::PlayerMarker => {
+                    if !frame.marker_sprites.is_empty() {
+                        let (_, calls) = self.draw_sprites(
+                            &view,
+                            &frame.base.camera,
+                            &frame.marker_sprites,
+                            wgpu::LoadOp::Load,
+                        )?;
+                        draw_calls += calls;
+                    }
+                }
+                RenderLayer::DebugUi => {
+                    if !frame.debug_sprites.is_empty() {
+                        let (_, calls) = self.draw_sprites(
+                            &view,
+                            &frame.base.camera,
+                            &frame.debug_sprites,
+                            wgpu::LoadOp::Load,
+                        )?;
+                        draw_calls += calls;
+                    }
+                }
+            }
+            Ok(())
+        })
+        .map_err(map_gpu_error)?;
+        self.last_pass_order = pass_order;
 
         if let Some(acquired) = surface_frame {
             acquired.present(self.context.queue());
@@ -586,7 +742,7 @@ impl WgpuRenderer {
 
         let base_stats = RenderStats {
             sprites_drawn: sprite_count,
-            draw_calls: sprite_draw_calls + mesh_pass_stats.draw_calls,
+            draw_calls,
             cpu_time: start.elapsed(),
         };
         Ok(stage::stage_stats_from_base(
@@ -594,7 +750,8 @@ impl WgpuRenderer {
             frame,
             Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
             Some(self.light_budget.light_count()),
-            Some(mesh_pass_stats.cluster),
+            cluster_stats,
+            bullet_lights.as_slice(),
         ))
     }
 

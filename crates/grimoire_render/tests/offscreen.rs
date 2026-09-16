@@ -18,10 +18,11 @@ use std::time::Duration;
 
 use grimoire_render::procedural::{altar_block, floor_tile_grid, icosphere};
 use grimoire_render::{
-    AmbientLight, BlobShadowInstance, Camera2D, Camera25D, DirectionalLight, MaterialHandle,
-    MeshData, MeshHandle, MeshInstance, MeshVertex, Msaa, PbrMaterial, PointLight, RenderError,
-    RenderFrame, Renderer, RendererConfig, ShadowMode, SpriteInstance, StageFrame,
-    StageRendererConfig, TextureColorSpace, TextureData, TextureHandle, WgpuRenderer, shape,
+    AmbientLight, BULLET_PASS_PALETTE_SPACE, BlobShadowInstance, BulletInstance, Camera2D,
+    Camera25D, DirectionalLight, MaterialHandle, MeshData, MeshHandle, MeshInstance, MeshVertex,
+    Msaa, PbrMaterial, PointLight, RenderError, RenderFrame, RenderLayer, Renderer, RendererConfig,
+    ShadowMode, SpriteInstance, StageFrame, StageRendererConfig, TextureColorSpace, TextureData,
+    TextureHandle, WgpuRenderer, bullet_palette, bullet_silhouette, shape,
 };
 
 const SIZE: u32 = 64;
@@ -1232,6 +1233,391 @@ fn tangent_handedness_flips_the_bitangent() {
          lit={lit:?} (luminance {}) unlit={unlit:?} (luminance {})",
         luminance(lit),
         luminance(unlit)
+    );
+}
+
+// --- Bullet pass and pass graph (plan 0002 WP3.5) ------------------------------------------------
+
+/// A hostile bullet of the given silhouette and palette; no glow, heading `+X`.
+fn bullet(position: [f32; 2], radius: f32, silhouette: u16, palette: u16) -> BulletInstance {
+    BulletInstance {
+        position,
+        radius,
+        rotation: 0.0,
+        silhouette,
+        palette,
+        palette_space: BULLET_PASS_PALETTE_SPACE,
+        glow: 0,
+        flags: 0,
+    }
+}
+
+/// Stage frame with a flat 2D camera mapping the 64x64 target to world `[-32, 32]^2`, one world
+/// unit per pixel, over a black clear colour.
+fn flat_bullet_stage() -> StageFrame {
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.base.camera = Camera2D {
+        center: [0.0, 0.0],
+        world_height: SIZE as f32,
+    };
+    frame
+}
+
+/// Pixel whose centre is the given world point under [`flat_bullet_stage`]'s camera (Y up).
+fn flat_pixel(image: &[u8], world: [f32; 2]) -> [u8; 4] {
+    let x = (world[0] + SIZE as f32 / 2.0).floor() as u32;
+    let y = (SIZE as f32 / 2.0 - world[1]).floor() as u32;
+    pixel(image, SIZE, x.min(SIZE - 1), y.min(SIZE - 1))
+}
+
+#[test]
+fn bullet_pass_draws_core_body_and_rim_on_top_of_the_world_layer() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut frame = flat_bullet_stage();
+    // A dark blue world sprite covering the whole target: layer 1-3 content under the bullet.
+    frame.base.sprites.push(SpriteInstance {
+        position: [0.0, 0.0],
+        half_size: [40.0, 40.0],
+        rotation: 0.0,
+        shape: shape::QUAD,
+        color: [0.0, 0.0, 0.25, 1.0],
+    });
+    frame.bullets.push(bullet(
+        [0.5, 0.5],
+        20.0,
+        bullet_silhouette::ORB,
+        bullet_palette::HEX_MAGENTA,
+    ));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.bullets_drawn, 1);
+    assert_eq!(stats.bullets_rejected_invalid, 0);
+    assert_eq!(
+        stats.base.draw_calls, 3,
+        "world sprites plus the bullet pass's halo and body draws"
+    );
+    assert_eq!(
+        renderer.last_stage_pass_order(),
+        RenderLayer::ORDER.as_slice(),
+        "the pass graph executed every slot in the contract's order"
+    );
+
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    // Core: stylebook `#FFE3F4`, white-hot centre.
+    assert_near(
+        flat_pixel(&image, [0.5, 0.5]),
+        [255, 227, 244, 255],
+        12,
+        "bullet core",
+    );
+    // Body near the edge: stylebook H0 `#FF2FB4`, magenta.
+    let body = flat_pixel(&image, [0.5, 17.5]);
+    assert!(
+        body[0] > 220 && body[1] < 130 && body[2] > 150,
+        "bullet body should be magenta, got {body:?}"
+    );
+    // Rim just outside the radius: dark `#0A0510` at 0.9 opacity over the blue world sprite.
+    let rim = flat_pixel(&image, [0.5, 21.5]);
+    assert!(
+        rim.iter().take(3).all(|&channel| channel < 70),
+        "dark rim outside the body, got {rim:?}"
+    );
+    // Far from the bullet: the world layer, untouched.
+    assert_near(
+        flat_pixel(&image, [-29.5, -29.5]),
+        [0, 0, 137, 255],
+        3,
+        "world sprite far away from the bullet",
+    );
+}
+
+#[test]
+fn player_marker_and_debug_sprites_are_drawn_on_top_of_bullets_in_that_order() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut frame = flat_bullet_stage();
+    frame.bullets.push(bullet(
+        [0.5, 0.5],
+        20.0,
+        bullet_silhouette::ORB,
+        bullet_palette::POISON_LIME,
+    ));
+    frame
+        .marker_sprites
+        .push(circle([0.5, 0.5], 8.0, [0.0, 1.0, 0.0, 1.0]));
+    frame.debug_sprites.push(SpriteInstance {
+        position: [0.5, 0.5],
+        half_size: [2.0, 2.0],
+        rotation: 0.0,
+        shape: shape::QUAD,
+        color: [1.0, 0.0, 0.0, 1.0],
+    });
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.base.sprites_drawn, 2, "marker plus debug sprite");
+    assert_eq!(
+        stats.base.draw_calls, 4,
+        "bullets (halos, bodies), marker and debug; the empty world layer issues none"
+    );
+
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    assert_near(
+        flat_pixel(&image, [0.5, 0.5]),
+        [255, 0, 0, 255],
+        3,
+        "debug/UI on top of everything",
+    );
+    assert_near(
+        flat_pixel(&image, [0.5, 5.5]),
+        [0, 255, 0, 255],
+        3,
+        "layer 7 marker on top of layer 6 bullet",
+    );
+    let body = flat_pixel(&image, [0.5, 16.5]);
+    assert!(
+        body[1] > 220 && body[2] < 140,
+        "the lime bullet body stays visible outside the marker, got {body:?}"
+    );
+}
+
+/// Renders one bullet of `silhouette` (radius 20, heading `rotation`) and reports whether the
+/// pixels at each silhouette-local point (units of the radius, `+X` = the unrotated heading) are
+/// covered by the bullet body or core rather than the black background.
+fn silhouette_coverage(
+    renderer: &mut WgpuRenderer,
+    silhouette: u16,
+    rotation: f32,
+    probes: &[[f32; 2]],
+) -> Vec<bool> {
+    let mut frame = flat_bullet_stage();
+    let mut instance = bullet([0.5, 0.5], 20.0, silhouette, bullet_palette::HEX_MAGENTA);
+    instance.rotation = rotation;
+    frame.bullets.push(instance);
+    renderer.render_stage(&frame).expect("render_stage");
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    probes
+        .iter()
+        .map(|local| {
+            let p = flat_pixel(&image, [0.5 + local[0] * 20.0, 0.5 + local[1] * 20.0]);
+            // Body and core are bright in red; background and rim are not.
+            p[0] > 150
+        })
+        .collect()
+}
+
+#[test]
+fn silhouettes_differ_in_outline_not_only_in_colour() {
+    // PRD-0003 rule 3 on real pixels: the same colour, three different outlines.
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    // Probes in silhouette-local units: across the heading, off-axis, along the heading.
+    let probes = [[0.0, 0.75], [0.7, 0.3], [0.85, 0.0]];
+    let orb = silhouette_coverage(&mut renderer, bullet_silhouette::ORB, 0.0, &probes);
+    let rice = silhouette_coverage(&mut renderer, bullet_silhouette::RICE, 0.0, &probes);
+    let diamond = silhouette_coverage(&mut renderer, bullet_silhouette::DIAMOND, 0.0, &probes);
+    assert_eq!(orb, [true, true, true], "orb: a full disc");
+    assert_eq!(
+        rice,
+        [false, true, true],
+        "rice: long along the heading, thin across"
+    );
+    assert_eq!(
+        diamond,
+        [false, false, true],
+        "diamond: tips on the axes only"
+    );
+
+    // The heading turns the silhouette: a rice grain flying along +Y is long vertically.
+    let turned = silhouette_coverage(
+        &mut renderer,
+        bullet_silhouette::RICE,
+        std::f32::consts::FRAC_PI_2,
+        &[[0.0, 0.85], [0.75, 0.0]],
+    );
+    assert_eq!(turned, [true, false], "rice turned by 90 degrees");
+}
+
+#[test]
+fn glow_draws_a_halo_outside_the_rim() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut render_halo = |glow: u8| {
+        let mut frame = flat_bullet_stage();
+        let mut instance = bullet(
+            [0.5, 0.5],
+            12.0,
+            bullet_silhouette::ORB,
+            bullet_palette::HEX_MAGENTA,
+        );
+        instance.glow = glow;
+        frame.bullets.push(instance);
+        let stats = renderer.render_stage(&frame).expect("render_stage");
+        let image = renderer.read_offscreen_rgba().expect("read-back");
+        // 1.35 radii from the centre: beyond the body and the 1.5 px rim, inside the glow reach.
+        (stats, flat_pixel(&image, [0.5 + 16.0, 0.5]))
+    };
+    let (dark_stats, dark) = render_halo(0);
+    let (lit_stats, lit) = render_halo(255);
+    assert_near(
+        dark,
+        [0, 0, 0, 255],
+        2,
+        "no glow: background outside the rim",
+    );
+    assert!(
+        luminance(lit) > luminance(dark) + 60 && lit[0] > lit[1],
+        "full glow: a magenta halo outside the rim, got {lit:?}"
+    );
+    assert_eq!(dark_stats.bullet_point_lights_drawn, 0, "no glow, no light");
+    assert_eq!(
+        lit_stats.bullet_point_lights_drawn, 1,
+        "a glowing bullet yields one bullet-cloud light"
+    );
+}
+
+#[test]
+fn rejected_bullets_are_skipped_and_the_rest_still_drawn() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut frame = flat_bullet_stage();
+    frame.bullets.push(bullet(
+        [-15.5, 0.5],
+        8.0,
+        bullet_silhouette::ORB,
+        bullet_palette::HEX_MAGENTA,
+    ));
+    // Structurally invalid (no debug assertion): out-of-table silhouette, then a zero radius.
+    frame.bullets.push(bullet(
+        [0.5, 0.5],
+        8.0,
+        bullet_silhouette::COUNT,
+        bullet_palette::HEX_MAGENTA,
+    ));
+    frame.bullets.push(bullet(
+        [0.5, 20.5],
+        0.0,
+        bullet_silhouette::ORB,
+        bullet_palette::HEX_MAGENTA,
+    ));
+    frame.bullets.push(bullet(
+        [16.5, 0.5],
+        8.0,
+        bullet_silhouette::DIAMOND,
+        bullet_palette::POISON_LIME,
+    ));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.bullets_drawn, 2);
+    assert_eq!(stats.bullets_rejected_invalid, 2);
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    assert!(
+        flat_pixel(&image, [-15.5, 0.5])[0] > 200,
+        "left bullet drawn"
+    );
+    assert!(
+        flat_pixel(&image, [16.5, 0.5])[1] > 200,
+        "right bullet drawn"
+    );
+    assert_near(
+        flat_pixel(&image, [0.5, 0.5]),
+        [0, 0, 0, 255],
+        2,
+        "the out-of-table instance draws nothing",
+    );
+}
+
+#[test]
+fn bullets_under_the_tilted_camera_sit_on_their_ground_position() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut camera = Camera25D::default();
+    camera.target = [1.0, 2.0];
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(camera);
+    let ground = [3.0, 4.0];
+    frame.bullets.push(bullet(
+        ground,
+        2.5,
+        bullet_silhouette::ORB,
+        bullet_palette::POISON_LIME,
+    ));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.bullets_drawn, 1);
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let [sx, sy] = camera
+        .ground_to_screen(ground, [SIZE as f32, SIZE as f32])
+        .expect("the bullet is in view");
+    let centre = pixel(&image, SIZE, sx as u32, sy as u32);
+    assert_near(
+        centre,
+        [246, 255, 224, 255],
+        40,
+        "the bullet core lands on the projected ground position",
+    );
+    // Mirror the bullet's screen position through the target centre: plain background there.
+    let mirrored = pixel(&image, SIZE, SIZE - 1 - sx as u32, SIZE - 1 - sy as u32);
+    assert_near(mirrored, [0, 0, 0, 255], 2, "nothing drawn elsewhere");
+}
+
+#[test]
+fn glowing_bullets_light_the_floor_through_the_bullet_light_path() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let floor = renderer
+        .register_mesh(floor_tile_grid(4, 40.0))
+        .expect("valid mesh");
+    let mut render_floor = |glow: u8| {
+        let mut frame = StageFrame::new();
+        frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+        frame.camera_25d = Some(top_down_camera());
+        frame.ambient = AmbientLight::Flat {
+            color: [1.0, 1.0, 1.0],
+            intensity: 0.0,
+        };
+        let mut material = PbrMaterial::default();
+        material.base_color_factor = [0.8, 0.8, 0.8, 1.0];
+        material.metallic_factor = 0.0;
+        material.roughness_factor = 0.9;
+        frame.materials.push(material);
+        frame.meshes.push(mesh_instance(
+            floor,
+            MaterialHandle(0),
+            translation([0.0; 3]),
+        ));
+        let mut instance = bullet(
+            [0.0, 0.0],
+            0.3,
+            bullet_silhouette::ORB,
+            bullet_palette::HEX_MAGENTA,
+        );
+        instance.glow = glow;
+        frame.bullets.push(instance);
+        let stats = renderer.render_stage(&frame).expect("render_stage");
+        let image = renderer.read_offscreen_rgba().expect("read-back");
+        // World (1.5, 0) on the floor: beyond the small bullet's own halo, inside the light range.
+        let tan_half_fov: f32 = 25.0_f32.to_radians().tan();
+        let x = (((1.5 / (10.0 * tan_half_fov) + 1.0) * 0.5 * SIZE as f32) as u32).min(SIZE - 1);
+        (stats, pixel(&image, SIZE, x, SIZE / 2))
+    };
+    let (dark_stats, dark) = render_floor(0);
+    let (lit_stats, lit) = render_floor(255);
+    assert_eq!(dark_stats.bullet_point_lights_drawn, 0);
+    assert_eq!(lit_stats.bullet_point_lights_drawn, 1);
+    assert_eq!(lit_stats.point_lights_drawn, 1);
+    assert!(
+        luminance(lit) > luminance(dark),
+        "the derived, capped bullet light must reach the floor: dark {dark:?}, lit {lit:?}"
     );
 }
 

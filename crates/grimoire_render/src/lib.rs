@@ -37,11 +37,14 @@
 
 use std::time::Duration;
 
+mod bullet_lights;
+mod bullet_pass;
 pub mod cluster_layout;
 mod cluster_pass;
 pub mod figure_format;
 mod mesh;
 mod mesh_pass;
+mod pass_graph;
 pub mod procedural;
 mod shadow_pass;
 mod sprite_pass;
@@ -52,7 +55,8 @@ mod wgpu_renderer;
 
 pub use mesh::{MeshData, MeshError, MeshVertex};
 pub use stage::{
-    BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, palette_space,
+    BULLET_PASS_PALETTE_SPACE, BulletInstance, RenderLayer, StageFrame, StageStats, bullet_palette,
+    bullet_silhouette, palette_space,
 };
 pub use stage3d::{
     AlphaMode, AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, CameraFollow,
@@ -464,7 +468,17 @@ impl Renderer for NullRenderer {
         // has no configured `LightBudget` and never dispatches the clustering compute pass, the
         // same "renderer-capability-gated counter stays 0" shape
         // `meshes_rejected_unregistered` already established (contract §6, PO decision V-20).
-        Ok(stage::stage_stats_from_base(base, frame, None, None, None))
+        // The WP3.5 bullet-cloud lights depend only on the frame, so they are derived and counted
+        // exactly as `WgpuRenderer` derives and shades them.
+        let bullet_lights = bullet_lights::derive_bullet_lights(frame);
+        Ok(stage::stage_stats_from_base(
+            base,
+            frame,
+            None,
+            None,
+            None,
+            bullet_lights.as_slice(),
+        ))
     }
 }
 
