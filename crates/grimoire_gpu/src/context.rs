@@ -149,13 +149,47 @@ fn format_capability_lines(
     ]
 }
 
-/// WebGL2/GLES 3.0 baseline (no storage buffers, no compute), so GL 3.3-class adapters qualify;
-/// resolution and buffer size follow the adapter. The default for [`GpuContext::new_offscreen`]
-/// and [`GpuContext::new_for_window`]; [`GpuContext::new_offscreen_with_limits`] (WP3.1) can ask
-/// for more.
+/// Floor [`conservative_required_limits`] requests for `max_storage_buffer_binding_size` (P1
+/// skinning addendum, contract §6 changelog 2026-09-16): comfortably above one instance's full
+/// 256-bone, 16 KiB palette (engine ADR-0013's own headroom calculation) so many skinned
+/// instances' palettes can be concatenated into the mesh pass's single per-frame bone buffer
+/// (`grimoire_render::mesh_pass`) without hitting this floor — still tiny next to any of the three
+/// measured CI target adapters (weakest: lavapipe at 128 MiB, ADR-0013).
+const MIN_STORAGE_BUFFER_BINDING_SIZE: u64 = 16 * 1024 * 1024;
+
+/// WebGL2/GLES 3.0-*adjacent* baseline: every field follows the strict WebGL2 downlevel defaults
+/// (resolution and buffer size following the adapter) **except** a single storage buffer binding,
+/// added for the P1 skinning package's bone matrix palette (`grimoire_render::mesh_pass`, contract
+/// §6 changelog 2026-09-16): `MeshPass`'s skinning pipeline binds exactly one read-only storage
+/// buffer, in the vertex stage, at group 3 — nothing in this engine version needs more than that
+/// one buffer. Engine ADR-0013 measured `vertex_storage` as `true`, with
+/// `max_storage_buffers_per_shader_stage` and `max_storage_buffer_binding_size` far past what one
+/// buffer needs, on all three CI target adapters (Windows/WARP, Linux/lavapipe, macOS
+/// Apple-Paravirtual/Metal) — but using a *separate*, elevated context
+/// ([`GpuContext::new_offscreen_with_limits`]) reserved for that measurement; this function is
+/// what [`GpuContext::new_offscreen`]/[`GpuContext::new_for_window`] actually request for every
+/// renderer, and until this change it asked for zero storage buffers regardless, which made the
+/// skinning pipeline fail `create_render_pipeline` validation the first time it was actually
+/// exercised. Compute stays at `0`: nothing in this engine version uses it.
+///
+/// **Deviation flagged for the PO** (this crate's P1 skinning PR description, contract §6
+/// "grimoire_gpu ist in P0 frei gestaltbar, solange nur grimoire_render es nutzt"): a genuine
+/// future WebGL2/GLES 3.0 backend (P2, hypothetical — none exists today) cannot provide even one
+/// storage buffer under any circumstance, so this floor quietly retires that specific aspiration a
+/// pure WebGL2 baseline previously kept open in principle. No currently supported adapter is
+/// affected (all three measured targets already exceed the new floor by orders of magnitude, per
+/// ADR-0013's table); restoring strict zero-storage-buffer compatibility for a future WebGL2/GLES
+/// target, if one is ever built, is that target's own problem — ADR-0013's own "Empfehlung"
+/// section already sketches a uniform-buffer/texture-encoded fallback for exactly this case.
 fn conservative_required_limits(adapter_limits: wgpu::Limits) -> wgpu::Limits {
     wgpu::Limits {
         max_buffer_size: adapter_limits.max_buffer_size,
+        max_storage_buffers_per_shader_stage: u32::from(
+            adapter_limits.max_storage_buffers_per_shader_stage > 0,
+        ),
+        max_storage_buffer_binding_size: adapter_limits
+            .max_storage_buffer_binding_size
+            .min(MIN_STORAGE_BUFFER_BINDING_SIZE),
         ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter_limits)
     }
 }
@@ -565,15 +599,36 @@ mod tests {
     }
 
     #[test]
-    fn conservative_required_limits_allow_neither_storage_buffers_nor_compute() {
+    fn conservative_required_limits_allow_no_compute_but_one_storage_buffer() {
+        // P1 skinning addendum (contract §6 changelog 2026-09-16): exactly one storage buffer is
+        // now requested, for `grimoire_render::mesh_pass`'s skinning pipeline; compute stays at
+        // zero, since nothing in this engine version uses it.
         let adapter_limits = wgpu::Limits {
             max_storage_buffers_per_shader_stage: 8,
+            max_storage_buffer_binding_size: 134_217_728, // 128 MiB, ADR-0013's lavapipe figure
             max_compute_invocations_per_workgroup: 256,
             ..wgpu::Limits::default()
         };
         let required = conservative_required_limits(adapter_limits);
-        assert_eq!(required.max_storage_buffers_per_shader_stage, 0);
+        assert_eq!(required.max_storage_buffers_per_shader_stage, 1);
+        assert_eq!(
+            required.max_storage_buffer_binding_size,
+            MIN_STORAGE_BUFFER_BINDING_SIZE
+        );
         assert_eq!(required.max_compute_invocations_per_workgroup, 0);
-        assert_eq!(required.max_storage_buffer_binding_size, 0);
+    }
+
+    #[test]
+    fn conservative_required_limits_never_asks_for_more_storage_than_the_adapter_has() {
+        // An adapter reporting zero storage buffers (or a binding size below the floor) must never
+        // be asked for more than it actually has — `request_device` would simply fail otherwise.
+        let adapter_limits = wgpu::Limits {
+            max_storage_buffers_per_shader_stage: 0,
+            max_storage_buffer_binding_size: 4096,
+            ..wgpu::Limits::default()
+        };
+        let required = conservative_required_limits(adapter_limits);
+        assert_eq!(required.max_storage_buffers_per_shader_stage, 0);
+        assert_eq!(required.max_storage_buffer_binding_size, 4096);
     }
 }

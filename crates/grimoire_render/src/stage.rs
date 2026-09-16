@@ -11,8 +11,8 @@
 //! alongside the P1 bullet channel.
 
 use crate::stage3d::{
-    AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, DirectionalLight, MeshHandle,
-    MeshInstance, PbrMaterial, PointLight, ShadowConfig,
+    AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, DirectionalLight, MAX_SKIN_JOINTS,
+    MeshHandle, MeshInstance, PbrMaterial, PointLight, ShadowConfig,
 };
 use crate::{RenderFrame, RenderStats, SpriteInstance};
 
@@ -162,6 +162,10 @@ pub struct StageFrame {
     /// Shadow technique and its parameters for this frame (plan 0002 WP2.6, OF-3.2). Persists
     /// across [`StageFrame::clear`], like [`StageFrame::camera_25d`].
     pub shadow_config: ShadowConfig,
+    /// Flat table of bone matrices every [`MeshInstance::skin`] in this frame indexes into (P1
+    /// skinning addendum, contract §6 changelog 2026-09-16), analogous to
+    /// [`StageFrame::materials`]. Cleared like the other per-frame instance channels.
+    pub joint_matrices: Vec<[[f32; 4]; 4]>,
 }
 
 impl StageFrame {
@@ -186,6 +190,7 @@ impl StageFrame {
         self.materials.clear();
         self.point_lights.clear();
         self.blob_shadows.clear();
+        self.joint_matrices.clear();
     }
 }
 
@@ -419,22 +424,38 @@ struct Stage3dExtraction {
     bullet_light_cap_invalid: bool,
 }
 
-/// Applies the mesh, material and light validation rules (contract §6, WP2.2) to `frame`; used by
-/// [`stage_stats_from_base`]. Never panics: every rejection is deterministic data classification,
-/// with no debug-only assertion analogous to the bullet pass's palette-space check — there is no
-/// pre-existing hard invariant here for one to guard, only this WP's own new validation.
+/// Whether `skin`'s range fits entirely inside `frame.joint_matrices` and `joint_count` is within
+/// `1..=MAX_SKIN_JOINTS` (P1 skinning addendum, contract §6 changelog 2026-09-16). A mesh instance
+/// with an out-of-range or oversized skin binding is rejected exactly like a non-finite transform
+/// or an invalid material — folded into `meshes_rejected_invalid`, not a separate counter, since
+/// this is one more structural precondition on the same instance, not a new failure mode a caller
+/// needs to distinguish.
+fn skin_binding_is_valid(skin: crate::stage3d::SkinBinding, frame: &StageFrame) -> bool {
+    skin.joint_count > 0
+        && skin.joint_count <= MAX_SKIN_JOINTS
+        && skin
+            .joint_offset
+            .checked_add(skin.joint_count)
+            .is_some_and(|end| (end as usize) <= frame.joint_matrices.len())
+}
+
+/// Applies the mesh, material and light validation rules (contract §6, WP2.2; skin binding range
+/// added P1) to `frame`; used by [`stage_stats_from_base`]. Never panics: every rejection is
+/// deterministic data classification, with no debug-only assertion analogous to the bullet pass's
+/// palette-space check — there is no pre-existing hard invariant here for one to guard, only this
+/// WP's own new validation.
 ///
-/// A mesh instance is drawn only if all of: its own fields are valid (finite `transform`),
-/// `material` indexes a present, valid [`PbrMaterial`] in `frame.materials`, and — when
-/// `is_mesh_registered` is `Some`, i.e. the caller owns a mesh registry — `mesh` is registered
-/// with it (contract §6, PO decision V-20, 2026-09-16). An out-of-range or invalid material
-/// rejects the mesh (`meshes_rejected_invalid`) without double-counting into
-/// `materials_rejected_invalid`, which counts invalid *materials* themselves regardless of whether
-/// any mesh references them. An otherwise-drawable mesh with an unregistered handle is counted
-/// separately (`meshes_rejected_unregistered`), never folded into `meshes_rejected_invalid`. With
-/// `is_mesh_registered == None` every structurally valid mesh counts as drawn — the behaviour
-/// every caller had before a registry existed (contract §6, still [`crate::NullRenderer`]'s
-/// behaviour, which has no registry of its own).
+/// A mesh instance is drawn only if all of: its own fields are valid (finite `transform`,
+/// [`skin_binding_is_valid`] when [`MeshInstance::skin`] is `Some`), `material` indexes a present,
+/// valid [`PbrMaterial`] in `frame.materials`, and — when `is_mesh_registered` is `Some`, i.e. the
+/// caller owns a mesh registry — `mesh` is registered with it (contract §6, PO decision V-20,
+/// 2026-09-16). An out-of-range or invalid material rejects the mesh (`meshes_rejected_invalid`)
+/// without double-counting into `materials_rejected_invalid`, which counts invalid *materials*
+/// themselves regardless of whether any mesh references them. An otherwise-drawable mesh with an
+/// unregistered handle is counted separately (`meshes_rejected_unregistered`), never folded into
+/// `meshes_rejected_invalid`. With `is_mesh_registered == None` every structurally valid mesh
+/// counts as drawn — the behaviour every caller had before a registry existed (contract §6, still
+/// [`crate::NullRenderer`]'s behaviour, which has no registry of its own).
 fn extract_stage3d(
     frame: &StageFrame,
     is_mesh_registered: Option<&dyn Fn(MeshHandle) -> bool>,
@@ -457,7 +478,10 @@ fn extract_stage3d(
         let transform_finite = mesh.transform.iter().flatten().all(|c| c.is_finite());
         let material = frame.materials.get(mesh.material.0 as usize);
         let material_valid = material.is_some_and(PbrMaterial::is_valid);
-        if !(transform_finite && material_valid) {
+        let skin_valid = mesh
+            .skin
+            .is_none_or(|skin| skin_binding_is_valid(skin, frame));
+        if !(transform_finite && material_valid && skin_valid) {
             meshes_rejected_invalid += 1;
             continue;
         }
@@ -555,6 +579,7 @@ mod tests {
         frame.materials.push(PbrMaterial::default());
         frame.point_lights.push(PointLight::default());
         frame.blob_shadows.push(BlobShadowInstance::default());
+        frame.joint_matrices.push([[0.0; 4]; 4]);
         frame.base.camera.world_height = 42.0;
         frame.base.clear_color = [0.1, 0.2, 0.3, 1.0];
         frame.camera_25d = Some(Camera25D::default());
@@ -579,6 +604,7 @@ mod tests {
         assert!(frame.materials.is_empty());
         assert!(frame.point_lights.is_empty());
         assert!(frame.blob_shadows.is_empty());
+        assert!(frame.joint_matrices.is_empty());
         assert!((frame.base.camera.world_height - 42.0).abs() < f32::EPSILON);
         assert_eq!(frame.base.clear_color, [0.1, 0.2, 0.3, 1.0]);
         assert_eq!(frame.camera_25d, Some(Camera25D::default()));
@@ -757,6 +783,91 @@ mod tests {
             result.materials_rejected_invalid, 1,
             "the invalid material itself is counted once, independent of how many meshes reference it"
         );
+    }
+
+    // --- extract_stage3d: skin binding range (P1 skinning addendum, 2026-09-16) --------------
+
+    #[test]
+    fn extract_stage3d_accepts_a_mesh_with_a_valid_skin_binding() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.joint_matrices = vec![[[0.0; 4]; 4]; 2];
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            skin: Some(crate::stage3d::SkinBinding {
+                joint_offset: 0,
+                joint_count: 2,
+            }),
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame, None);
+        assert_eq!(result.meshes_drawn, 1);
+        assert_eq!(result.meshes_rejected_invalid, 0);
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_a_skin_binding_reaching_past_joint_matrices() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.joint_matrices = vec![[[0.0; 4]; 4]; 2];
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            skin: Some(crate::stage3d::SkinBinding {
+                joint_offset: 1,
+                joint_count: 2, // 1 + 2 = 3 > joint_matrices.len() == 2
+            }),
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame, None);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_invalid, 1);
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_a_skin_binding_with_zero_or_oversized_joint_count() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.joint_matrices = vec![[[0.0; 4]; 4]; 300];
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            skin: Some(crate::stage3d::SkinBinding {
+                joint_offset: 0,
+                joint_count: 0,
+            }),
+            ..MeshInstance::default()
+        });
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            skin: Some(crate::stage3d::SkinBinding {
+                joint_offset: 0,
+                joint_count: MAX_SKIN_JOINTS + 1,
+            }),
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame, None);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_invalid, 2);
+    }
+
+    #[test]
+    fn extract_stage3d_rejects_a_skin_binding_offset_overflow_without_panic() {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            skin: Some(crate::stage3d::SkinBinding {
+                joint_offset: u32::MAX,
+                joint_count: 1,
+            }),
+            ..MeshInstance::default()
+        });
+
+        let result = extract_stage3d(&frame, None);
+        assert_eq!(result.meshes_drawn, 0);
+        assert_eq!(result.meshes_rejected_invalid, 1);
     }
 
     // --- extract_stage3d: mesh registry check (WP2.3, PO decision V-20, 2026-09-16) -----------

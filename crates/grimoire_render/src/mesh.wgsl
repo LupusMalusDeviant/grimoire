@@ -45,6 +45,17 @@
 // contribution — point lights and ambient are unaffected, matching how a single key-light shadow
 // map behaves. `shadow_params.z <= 0.5` (no shadow map wanted this frame, or no valid key
 // light/camera) skips the texture reads entirely rather than sampling a possibly-stale map.
+//
+// Skinning (P1 addendum, contract §6 changelog 2026-09-16, `mesh_pass.rs`'s module doc comment):
+// `vs_skinned` is the second vertex path for a `MeshInstance` with `skin` set. It reads two extra
+// per-vertex attributes (`joints`, `weights`, `MeshVertex`'s new fields) and one extra per-instance
+// attribute (`bone_offset`), looks up up to four bone matrices in the group-3 storage buffer
+// (`bone_matrices`, one entry per `StageFrame::joint_matrices` slot, engine ADR-0013's proven
+// `vertex_storage` capability), blends them (linear blend skinning) into one matrix, and applies it
+// to the vertex *before* the usual model transform — everything after that point (the `model`
+// multiply, the normal matrix, filling `VertexOutput`) is identical to `vs_main`. Both vertex
+// entry points feed the *same* `fs_main`: skinning changes only where a vertex's position and
+// normal come from, never how a fragment is shaded.
 
 const PI: f32 = 3.14159265358979;
 // Mirrors `mesh_pass::MIN_ROUGHNESS` (the Rust side clamps the same way before upload; this clamp
@@ -142,6 +153,38 @@ struct VertexOutput {
     @location(5) @interpolate(flat) material_params: vec4<f32>,
 }
 
+// Skinning vertex path (P1 addendum, see this file's header comment): `MeshVertex`'s full layout,
+// unlike `VertexInput` above which only reads its first three fields.
+struct SkinnedVertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) joints: vec4<u32>,
+    @location(4) weights: vec4<f32>,
+}
+
+struct SkinnedInstanceInput {
+    @location(5) transform_0: vec4<f32>,
+    @location(6) transform_1: vec4<f32>,
+    @location(7) transform_2: vec4<f32>,
+    @location(8) transform_3: vec4<f32>,
+    @location(9) base_color: vec4<f32>,
+    @location(10) emissive: vec4<f32>,
+    // x = metallic factor, y = roughness factor, z/w reserved (0).
+    @location(11) material_params: vec4<f32>,
+    // Index of this instance's first matrix in `bone_matrices` (contract §6
+    // `SkinBinding::joint_offset`).
+    @location(12) bone_offset: u32,
+}
+
+// Bone matrix palette for the whole frame's skinned instances, concatenated in
+// `StageFrame::joint_matrices` order (`mesh_pass.rs`'s `render` uploads it verbatim);
+// `SkinnedInstanceInput::bone_offset` picks out one instance's slice. Read-only, vertex-stage only
+// (engine ADR-0013 measured `vertex_storage` as `true`, with `max_storage_buffer_binding_size` far
+// past a single instance's 256-matrix, 16 KiB palette, on every CI target adapter).
+@group(3) @binding(0)
+var<storage, read> bone_matrices: array<mat4x4<f32>>;
+
 // Inverse-transpose of a 3x3 matrix built from cross products of its columns (Ogre3D / graphitemaster
 // "Normals Revisited"): avoids implementing a general 3x3 inverse just for the normal matrix, and
 // stays correct under non-uniform scale (the previous WP2.3 shortcut of reusing the model matrix
@@ -165,6 +208,54 @@ fn vs_main(vin: VertexInput, iin: InstanceInput) -> VertexOutput {
     let world_position4 = model * vec4<f32>(vin.position, 1.0);
     let model3 = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
     let world_normal = normalize(normal_matrix(model3) * vin.normal);
+
+    var out: VertexOutput;
+    out.clip_position = camera.view_proj * world_position4;
+    out.world_position = world_position4.xyz;
+    out.world_normal = world_normal;
+    out.uv = vin.uv;
+    out.base_color = iin.base_color;
+    out.emissive = iin.emissive;
+    out.material_params = iin.material_params;
+    return out;
+}
+
+// Linear blend skinning: the weighted sum of up to four bone matrices from `bone_matrices`,
+// indexed by `joints` relative to `bone_offset` (this instance's slice, contract §6
+// `SkinBinding::joint_offset`). Not renormalised: `weights` is already checked to sum to 1.0
+// within 1e-3 before a mesh ever reaches the GPU (`MeshData::validate`, and the pack decoder
+// before that), so the tiny residual error is negligible next to the software-adapter/driver noise
+// every offscreen test already tolerates. wgpu's storage-buffer bounds checking (WebGPU robustness)
+// makes an out-of-range `bone_offset + joint` index read zero rather than access undefined memory,
+// even though this path trusts the CPU-side range check (`skin_binding_fits`) to keep it in range
+// in the first place.
+fn skin_matrix(joints: vec4<u32>, weights: vec4<f32>, bone_offset: u32) -> mat4x4<f32> {
+    let m0 = bone_matrices[bone_offset + joints.x];
+    let m1 = bone_matrices[bone_offset + joints.y];
+    let m2 = bone_matrices[bone_offset + joints.z];
+    let m3 = bone_matrices[bone_offset + joints.w];
+    return mat4x4<f32>(
+        m0[0] * weights.x + m1[0] * weights.y + m2[0] * weights.z + m3[0] * weights.w,
+        m0[1] * weights.x + m1[1] * weights.y + m2[1] * weights.z + m3[1] * weights.w,
+        m0[2] * weights.x + m1[2] * weights.y + m2[2] * weights.z + m3[2] * weights.w,
+        m0[3] * weights.x + m1[3] * weights.y + m2[3] * weights.z + m3[3] * weights.w,
+    );
+}
+
+// Second vertex path (P1 addendum, see this file's header comment): identical to `vs_main` from
+// the model transform onward, except the vertex position/normal are first pulled through this
+// instance's bone matrix palette. Feeds the same `fs_main` as `vs_main`.
+@vertex
+fn vs_skinned(vin: SkinnedVertexInput, iin: SkinnedInstanceInput) -> VertexOutput {
+    let skin = skin_matrix(vin.joints, vin.weights, iin.bone_offset);
+    let skinned_position = skin * vec4<f32>(vin.position, 1.0);
+    let skin3 = mat3x3<f32>(skin[0].xyz, skin[1].xyz, skin[2].xyz);
+    let skinned_normal = skin3 * vin.normal;
+
+    let model = mat4x4<f32>(iin.transform_0, iin.transform_1, iin.transform_2, iin.transform_3);
+    let world_position4 = model * skinned_position;
+    let model3 = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
+    let world_normal = normalize(normal_matrix(model3) * skinned_normal);
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * world_position4;

@@ -15,7 +15,12 @@ publish.workspace = true
 # AimTarget) even though only the always-present `adapters::sigil_collide` module and the
 # opt-in `fixtures` module use them today — the `fixtures` feature itself adds no dependency
 # (contract §9.2 feature table).
+# grimoire_assets joins as of the P1 "Figuren in der Engine" package (contract §1 already allowed
+# this edge; this is the first module to draw it, `adapters::figure_assets`): the engine crate map
+# forbids any edge between `grimoire_assets` and `grimoire_render` directly, so the facade is the
+# only place a `.pack` file's bytes and `grimoire_render`'s pure payload decoders can meet.
 [dependencies]
+grimoire_assets.workspace = true
 grimoire_collide.workspace = true
 grimoire_core.workspace = true
 grimoire_ecs.workspace = true
@@ -28,6 +33,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 env_logger.workspace = true
+proptest.workspace = true
 
 # Runs only with the `fixtures` feature enabled (contract §9.2: "Tests hinter `fixtures` tragen
 # `required-features = [\"fixtures\"]`"); otherwise `cargo test --workspace` would silently skip it.

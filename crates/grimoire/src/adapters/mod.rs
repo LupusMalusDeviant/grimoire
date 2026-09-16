@@ -9,6 +9,8 @@
 //! | [`sigil_collide`] | Sigil → Collision | [`sigil_collide::GrazeProbe`] and [`sigil_collide::GrazeHits`] ship with WP1.3 because the player proxy (§9.5) writes `GrazeProbe`; the broadphase/graze systems and `SigilCollideConfig`/`SigilCollidePlugin` follow in WP11.2 |
 //! | `sigil_render` | Sigil → Render | WP5.3 |
 //! | `assets` | Assets → Sigil | §11.2, §12, once `grimoire_sigil::install` lands |
+//! | [`figure_assets`] | Assets → Render | P1 "Figuren in der Engine" package: [`figure_assets::load_figure`] decodes a figure's pack payloads and registers them with a `WgpuRenderer`; posing/animation stays out of scope |
 //! | `debug` | Debug ↔ Sim/Render | §9.7, §13, WP8.2 |
 
+pub mod figure_assets;
 pub mod sigil_collide;

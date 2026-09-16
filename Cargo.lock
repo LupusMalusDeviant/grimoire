@@ -753,6 +753,7 @@ name = "grimoire"
 version = "0.1.1"
 dependencies = [
  "env_logger",
+ "grimoire_assets",
  "grimoire_collide",
  "grimoire_core",
  "grimoire_ecs",
@@ -761,6 +762,7 @@ dependencies = [
  "grimoire_sigil",
  "grimoire_sim",
  "log",
+ "proptest",
  "thiserror 2.0.20",
 ]
 
@@ -879,6 +881,7 @@ dependencies = [
  "grimoire_gpu",
  "grimoire_platform",
  "log",
+ "proptest",
  "thiserror 2.0.20",
 ]
 

@@ -33,15 +33,15 @@ pub fn floor_tile_grid(tiles_per_side: u32, tile_size: f32) -> MeshData {
     let mut vertices = Vec::with_capacity((verts_per_side * verts_per_side) as usize);
     for j in 0..verts_per_side {
         for i in 0..verts_per_side {
-            vertices.push(MeshVertex {
-                position: [
+            vertices.push(MeshVertex::new(
+                [
                     i as f32 * tile_size - half,
                     j as f32 * tile_size - half,
                     0.0,
                 ],
-                normal: [0.0, 0.0, 1.0],
-                uv: [i as f32 / tiles as f32, j as f32 / tiles as f32],
-            });
+                [0.0, 0.0, 1.0],
+                [i as f32 / tiles as f32, j as f32 / tiles as f32],
+            ));
         }
     }
 
@@ -72,11 +72,7 @@ fn push_quad(
     let base = u32::try_from(vertices.len()).expect("test meshes stay far below u32::MAX");
     const UVS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     for (corner, uv) in corners.into_iter().zip(UVS) {
-        vertices.push(MeshVertex {
-            position: corner,
-            normal,
-            uv,
-        });
+        vertices.push(MeshVertex::new(corner, normal, uv));
     }
     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
@@ -106,26 +102,10 @@ pub fn octagonal_pillar(radius: f32, height: f32) -> MeshData {
         let u0 = side as f32 / PILLAR_SIDES as f32;
         let u1 = (side + 1) as f32 / PILLAR_SIDES as f32;
         let base = u32::try_from(vertices.len()).expect("test meshes stay far below u32::MAX");
-        vertices.push(MeshVertex {
-            position: [x0, y0, -half_height],
-            normal,
-            uv: [u0, 0.0],
-        });
-        vertices.push(MeshVertex {
-            position: [x1, y1, -half_height],
-            normal,
-            uv: [u1, 0.0],
-        });
-        vertices.push(MeshVertex {
-            position: [x1, y1, half_height],
-            normal,
-            uv: [u1, 1.0],
-        });
-        vertices.push(MeshVertex {
-            position: [x0, y0, half_height],
-            normal,
-            uv: [u0, 1.0],
-        });
+        vertices.push(MeshVertex::new([x0, y0, -half_height], normal, [u0, 0.0]));
+        vertices.push(MeshVertex::new([x1, y1, -half_height], normal, [u1, 0.0]));
+        vertices.push(MeshVertex::new([x1, y1, half_height], normal, [u1, 1.0]));
+        vertices.push(MeshVertex::new([x0, y0, half_height], normal, [u0, 1.0]));
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
@@ -147,18 +127,14 @@ fn push_cap_fan(
 ) {
     let normal = [0.0, 0.0, normal_z];
     let center = u32::try_from(vertices.len()).expect("test meshes stay far below u32::MAX");
-    vertices.push(MeshVertex {
-        position: [0.0, 0.0, z],
-        normal,
-        uv: [0.5, 0.5],
-    });
+    vertices.push(MeshVertex::new([0.0, 0.0, z], normal, [0.5, 0.5]));
     for side in 0..PILLAR_SIDES {
         let angle = side as f32 / PILLAR_SIDES as f32 * TAU;
-        vertices.push(MeshVertex {
-            position: [radius * angle.cos(), radius * angle.sin(), z],
+        vertices.push(MeshVertex::new(
+            [radius * angle.cos(), radius * angle.sin(), z],
             normal,
-            uv: [0.5 + 0.5 * angle.cos(), 0.5 + 0.5 * angle.sin()],
-        });
+            [0.5 + 0.5 * angle.cos(), 0.5 + 0.5 * angle.sin()],
+        ));
     }
     for side in 0..PILLAR_SIDES {
         let a = center + 1 + side;
@@ -249,14 +225,14 @@ fn push_ring(
     for j in 0..radial_segments {
         let theta = j as f32 / radial_segments as f32 * TAU;
         let (cos_t, sin_t) = (theta.cos(), theta.sin());
-        vertices.push(MeshVertex {
-            position: [ring_radius * cos_t, ring_radius * sin_t, z],
-            normal: [phi.cos() * cos_t, phi.cos() * sin_t, phi.sin()],
-            uv: [
+        vertices.push(MeshVertex::new(
+            [ring_radius * cos_t, ring_radius * sin_t, z],
+            [phi.cos() * cos_t, phi.cos() * sin_t, phi.sin()],
+            [
                 j as f32 / radial_segments as f32,
                 0.5 + phi / std::f32::consts::PI,
             ],
-        });
+        ));
     }
     start
 }
@@ -298,11 +274,11 @@ pub fn capsule_actor(
     let mut indices = Vec::new();
 
     let bottom_pole = u32::try_from(vertices.len()).expect("test meshes stay far below u32::MAX");
-    vertices.push(MeshVertex {
-        position: [0.0, 0.0, -half_height - radius],
-        normal: [0.0, 0.0, -1.0],
-        uv: [0.5, 0.0],
-    });
+    vertices.push(MeshVertex::new(
+        [0.0, 0.0, -half_height - radius],
+        [0.0, 0.0, -1.0],
+        [0.5, 0.0],
+    ));
 
     let mut rings = Vec::with_capacity((2 * cap_rings + 2) as usize);
     for i in 1..=cap_rings {
@@ -341,11 +317,11 @@ pub fn capsule_actor(
     }
 
     let top_pole = u32::try_from(vertices.len()).expect("test meshes stay far below u32::MAX");
-    vertices.push(MeshVertex {
-        position: [0.0, 0.0, half_height + radius],
-        normal: [0.0, 0.0, 1.0],
-        uv: [0.5, 1.0],
-    });
+    vertices.push(MeshVertex::new(
+        [0.0, 0.0, half_height + radius],
+        [0.0, 0.0, 1.0],
+        [0.5, 1.0],
+    ));
 
     for j in 0..radial_segments {
         let next = (j + 1) % radial_segments;
@@ -469,17 +445,19 @@ pub fn icosphere(subdivisions: u32, radius: f32) -> MeshData {
 
     let vertices = positions
         .iter()
-        .map(|&position| MeshVertex {
-            position: [
-                position[0] * radius,
-                position[1] * radius,
-                position[2] * radius,
-            ],
-            normal: position,
-            uv: [
-                0.5 + position[0].atan2(position[2]) / TAU,
-                0.5 - position[1].asin() / std::f32::consts::PI,
-            ],
+        .map(|&position| {
+            MeshVertex::new(
+                [
+                    position[0] * radius,
+                    position[1] * radius,
+                    position[2] * radius,
+                ],
+                position,
+                [
+                    0.5 + position[0].atan2(position[2]) / TAU,
+                    0.5 - position[1].asin() / std::f32::consts::PI,
+                ],
+            )
         })
         .collect();
     let indices = faces.into_iter().flatten().collect();
