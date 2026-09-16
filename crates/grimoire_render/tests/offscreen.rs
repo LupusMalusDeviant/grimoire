@@ -1319,10 +1319,18 @@ fn bullet_pass_draws_core_body_and_rim_on_top_of_the_world_layer() {
         body[0] > 220 && body[1] < 130 && body[2] > 150,
         "bullet body should be magenta, got {body:?}"
     );
-    // Rim just outside the radius: dark `#0A0510` at 0.9 opacity over the blue world sprite.
-    let rim = flat_pixel(&image, [0.5, 21.5]);
+    // Rim just outside the radius: dark `#0A0510` at 0.9 opacity over the blue world sprite. The
+    // rim is only 1.5 px wide and anti-aliased, so how much of it one pixel centre catches differs
+    // between adapters (WARP, lavapipe); take the darkest pixel on the ray from the body edge
+    // outwards instead of one fixed pixel.
+    let rim = (0..5)
+        .map(|step| flat_pixel(&image, [0.5, 19.5 + step as f32]))
+        .min_by_key(|pixel| luminance(*pixel))
+        .expect("five probes");
+    // A 0.9-opaque rim leaves a tenth of the blue sprite (sRGB 137) showing: about 48 at full
+    // coverage, higher where a pixel centre catches only part of the rim.
     assert!(
-        rim.iter().take(3).all(|&channel| channel < 70),
+        rim[0] < 30 && rim[1] < 30 && rim[2] < 137 - 50,
         "dark rim outside the body, got {rim:?}"
     );
     // Far from the bullet: the world layer, untouched.
