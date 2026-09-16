@@ -980,13 +980,14 @@ const BULLET_LIGHT_RANGE_PER_RADIUS: f32 = 6.0;
 /// The bullet's ground position becomes the light's `position`, lifted by its own `radius` (a
 /// small, deliberately simple height offset — this crate has no other notion of a bullet's visual
 /// centre height); `range` scales with `radius` and `intensity` with `glow`
-/// ([`BulletInstance::glow`] `/ 255`); `color` is always [`BULLET_LIGHT_COLOR`], never derived from
-/// the bullet's own palette. A structurally degenerate bullet (for example `radius <= 0`) produces
-/// a `PointLight` that fails [`PointLight::is_valid`] downstream and is rejected and counted like
-/// any other invalid light (contract §6) — this function itself never panics or validates.
+/// (`BulletInstance::glow / 255`); `color` is always this module's fixed bullet-light glow colour,
+/// never derived from the bullet's own palette. A structurally degenerate bullet (for example
+/// `radius <= 0`) produces a `PointLight` that fails [`PointLight::is_valid`] downstream and is
+/// rejected and counted like any other invalid light (contract §6) — this function itself never
+/// panics or validates.
 ///
-/// Every numeric constant here besides the flag itself is provisional (see
-/// [`BULLET_LIGHT_BASE_INTENSITY`]'s doc comment); only *that* [`PointLight::is_bullet_light`] is
+/// Every numeric constant here besides the flag itself is provisional (see this module's private
+/// `BULLET_LIGHT_BASE_INTENSITY` doc comment); only *that* [`PointLight::is_bullet_light`] is
 /// always `true` is the firm part of today's PO decision.
 #[must_use]
 pub fn point_light_from_bullet(bullet: &crate::stage::BulletInstance) -> PointLight {
