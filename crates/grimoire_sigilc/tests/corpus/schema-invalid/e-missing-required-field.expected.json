@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-missing-required-field.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0023",
+      "severity": "error",
+      "file": "e-missing-required-field.sigil",
+      "line": 1,
+      "column": 1,
+      "node_path": "radius",
+      "token": "",
+      "message": "Missing required field `radius`.",
+      "fix_hint": "Add `radius = ...`.",
+      "related": null
+    }
+  ]
+}

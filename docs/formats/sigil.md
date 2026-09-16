@@ -7,16 +7,19 @@ Plan 0002 WP4.1). This page describes what that code does, not what it should do
 between this page and the crate's behaviour is a bug in one of the two.
 
 Sigil source version **1** (`sigil 1`). The binary unit format `SigilUnit` this compiles to
-(engine contract §11.1) is versioned separately and documented in its own section of this file
-once the encoder lands (Plan 0002 WP4.2) — the two version numbers are unrelated, by design
-(ADR-0007).
+(engine contract §11.1) is versioned separately, by design (ADR-0007); its layout is
+[§10](#10-binary-format-sigilunit-v1) below.
 
-**Scope of this page (WP4.1):** lexing, parsing, the lossless syntax tree, node paths and the
-lexer/parser diagnostics. **Not covered here** (Plan 0002 WP4.2 and later): the schema pass (which
-field names, kinds, units and ranges are valid for which construct), name resolution and imports,
-the `SigilUnit` binary encoding, and the `sigilc build`/`set`/`migrate`/`simulate` subcommands. A
-file that is syntactically valid by this page's rules can still be rejected by the schema pass —
-`sigilc check`/`parse --json` in WP4.1 only ever raise the codes in the table below.
+**Scope of this page:** [§1](#1-overview)–[§9](#9-conformance-corpus) are WP4.1 (lexing, parsing,
+the lossless syntax tree, node paths, lexer/parser diagnostics `SIG0001`–`SIG0011`).
+[§10](#10-binary-format-sigilunit-v1)–[§12](#12-schema-diagnostic-code-table-sig0012) are WP4.2:
+the schema pass (field names, kinds, units and ranges per construct, name resolution, imports and
+`from`-composition, static validation, diagnostics `SIG0012` onward) and the `SigilUnit` binary
+encoding, implemented in `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/src/compiler/`).
+Not covered by either: the `sigilc build`/`set`/`migrate`/`simulate` CLI subcommands (Plan 0002
+WP4.3/WP5.6) and the runtime interpreter that will actually read a compiled unit's `Programs` and
+`Emitters` content at tick time (Plan 0002 WP5). A file that is syntactically valid by
+[§1](#1-overview)–[§4](#4-syntactic-grammar)'s rules can still be rejected by the schema pass.
 
 ## 1. Overview
 
@@ -383,3 +386,275 @@ for it. `crates/grimoire_sigilc/tests/corpus.rs` checks this crate's own parser 
 sidecar; the same `.sigil`/`.expected.json` pairs are plain data with nothing Rust-specific about
 them, so a later C# asset-compiler test (this corpus's stated purpose) can run the same files and
 compare against the same sidecars independently.
+
+## 10. Binary format `SigilUnit` v1
+
+Plan 0002 WP4.2. Decoded and re-encoded by `grimoire_sigil::SigilUnit` (`crates/grimoire_sigil/src/unit.rs`);
+produced by `grimoire_sigilc::compiler::lower` (`crates/grimoire_sigilc/src/compiler/lower.rs`), an
+encoder independent of the decoder: `grimoire_sigilc` builds raw bytes straight
+from this page's tables and hands them to `SigilUnit::from_bytes`, which both validates and
+produces the object — there is no other public constructor. Follows contract §2 rule 10: little-endian,
+fixed field widths, magic and version at the front, length-prefixed strings/blocks with a
+documented upper bound, no unordered-container iteration order in the bytes.
+
+### 10.1 Header (40 bytes)
+
+| Offset | Field | Type | Rule |
+|--------|------|-----|-------|
+| 0 | Magic `GRIMSIGL` | `[u8; 8]` | else `BadMagic` |
+| 8 | `format_version` | `u32` | `1`, else `UnsupportedVersion` |
+| 12 | `header_flags` | `u32` | `0`, else `ReservedFlags` |
+| 16 | `unit_id` | `u64` | ≠ 0 (`grimoire_sigilc::derive_unit_id`, from the canonical content path) |
+| 24 | `content_hash` | `u64` | `StableHasher` v1 over bytes `0..24` then `32..end` |
+| 32 | `payload_len` | `u64` | exactly file length − 40; file length ≤ `MAX_UNIT_BYTES` (8 MiB) |
+| 40 | Payload | `payload_len` bytes | section table, see below |
+
+### 10.2 Section table
+
+`section_count: u32`, then `section_count` × 24-byte entries (`kind: u32`, `reserved: u32 = 0`,
+`offset: u64` relative to the payload start, `len: u64`). Entries are ascending by `(kind,
+offset)`, non-overlapping, fully in-bounds, and **tightly packed**: the first section starts
+exactly at the end of the table (`4 + section_count * 24`), each next section starts exactly where
+the previous ends, and the last ends exactly at the end of the payload — any gap is `NonCanonical`
+rather than `SectionLayout`, so `to_bytes` never needs to retain raw filler bytes to reproduce one.
+
+| Kind | Section | Required | Interior format |
+|------|---------|----------|------------------|
+| 1 | `BulletTypes` | yes | [§10.3](#103-bullettypes-kind-1) |
+| 2 | `Programs` | no | [§10.4](#104-programs-kind-2) |
+| 3 | `Emitters` | yes | [§10.5](#105-emitters-kind-3) |
+| 4 | `Transforms` | no | **opaque** (not yet decided; [§11.4](#114-open-points-for-the-product-owner)) |
+| 5 | `Curves` | no | [§10.6](#106-curves-kind-5) |
+| 6 | `BehaviorRefs` | no | [§10.7](#107-behaviorrefs-kind-6) |
+| 7 | `Names` | no | **opaque**, diagnostics only, hashed but never interpreted at runtime |
+
+Every `f32` field in every section is finite (`NonFinite` otherwise) and its bit pattern is never
+the non-canonical `-0.0` (`NonCanonical` otherwise; the encoder always writes `+0.0`). Every
+`reserved` byte/field is `0` (`ReservedFlags` otherwise). An unrecognised enum tag (a section
+`kind`, a block `kind`, a modifier `kind`) is `UnknownSection`/`UnknownTag`.
+
+### 10.3 `BulletTypes` (kind 1)
+
+`count: u16`, then `count` × this 20-byte record (contract §11.2's `BulletType`/`BulletVisual`,
+final since WP1.3):
+
+| Offset | Field | Type |
+|---|---|---|
+| 0 | `radius` | `f32` |
+| 4 | `collision_radius` | `f32` |
+| 8 | `lifetime_ticks` | `u32` |
+| 12 | `flags` | `u8` (bits 0–3: `SMASHABLE`, `REFLECTABLE`, `ENV_ACTIVE`, `GRAZEABLE`; 4–7 reserved) |
+| 13 | reserved | `u8` |
+| 14 | `silhouette` | `u16` |
+| 16 | `palette` | `u16` |
+| 18 | `palette_space` | `u8` (Sigil bullets: always `1`, "hostile"/enemy — PRD-0003 rule 4, `SIG0021`) |
+| 19 | `glow` | `u8` (linear, `0`–`255`; the compiler quantises the source `glow` float `0.0..=1.0`) |
+
+`silhouette`/`palette` are per-unit indices the compiler assigns by sorting the distinct
+identifiers it saw (alphabetically) and numbering them from `0` — there is no cross-unit silhouette
+or palette catalog yet (`grimoire_render`'s own docs: "P1 has no silhouette/palette table yet"); see
+[§11.4](#114-open-points-for-the-product-owner).
+
+### 10.4 `Programs` (kind 2)
+
+A program is the block/modifier stack an emitter uses for one volley (contract §11.1: "Bausteine
+und Modifikatorstapel"; distinct from a bullet *type*, contract §11.2). `count: u16`, then `count`
+records of: one 32-byte `BlockDef`, then `modifier_count: u16`, then `modifier_count` × a 16-byte
+`ModifierDef`.
+
+**`BlockDef`** (32 bytes) — the decoder only checks the generic shape (a known `kind` `1..=7`,
+finite/canonical floats); which `params` slot means what is a compiler/interpreter concern, not a
+decoder one (contract §11.1: "was der Compiler zusichert"):
+
+| Offset | Field | Type |
+|---|---|---|
+| 0 | `kind` | `u8` (`1` ring, `2` spiral, `3` fan, `4` aimed, `5` wave, `6` line, `7` scatter) |
+| 1 | reserved | `u8` |
+| 2 | `count` | `u16` (shots per volley; `arms` for `spiral`) |
+| 4 | `params[0..6]` | `f32 × 6`, see the per-kind mapping below |
+| 28 | `seed_hash` | `u32` (a `StableHasher` v1 domain-hash of `scatter.seed`'s name; `0` otherwise) |
+
+| `kind` | `params[0]` | `params[1]` | `params[2]` | `params[4..6]` |
+|---|---|---|---|---|
+| ring | `start` (rad) | — | — | — |
+| spiral | `step` (rad) | `start` (rad) | — | — |
+| fan | `spread` (rad) | `center` (rad) | — | — |
+| aimed | `spread` (rad) | — | — | — |
+| wave | `amplitude` (u) | `wavelength` (u) | `direction` (rad) | unit vector of `direction` (`dmath::cos`/`sin`) |
+| line | `spacing` (u) | `direction` (rad) | — | unit vector of `direction` (`dmath::cos`/`sin`) |
+| scatter | `cone` (rad) | `direction` (rad) | `speed_jitter` (0..=1) | — |
+
+`params[3]` and any `params[4..6]` slot not listed are `+0.0`. Every source angle (`deg`) is
+converted to radians by a plain multiply (`grimoire_core::math`'s own docs: basic IEEE-754
+arithmetic is already bit-identical cross-platform, no `dmath` call needed for that step alone);
+`wave`/`line`'s baked direction unit vector is the one place this compiler actually precomputes a
+direction constant with `dmath::cos`/`dmath::sin`, per contract §11.1/WP4.2's requirement that such
+constants go through `dmath`.
+
+**`ModifierDef`** (16 bytes), one per entry of the modifier stack, in written order:
+
+| Offset | Field | Type |
+|---|---|---|
+| 0 | `kind` | `u8` (`1` accelerate, `2` sine_offset, `3` rotate, `4` mirror, `5` speed_curve, `6` curve) |
+| 1 | `flag` | `u8` (`speed_curve` only: `0` linear, `1` smooth; else `0`) |
+| 2 | `extra` | `u16` (`mirror.folds`; `speed_curve`'s index into the unit's `Curves` section; else `0`) |
+| 4 | `params[0..3]` | `f32 × 3` |
+
+| `kind` | `params[0]` | `params[1]` | `params[2]` |
+|---|---|---|---|
+| accelerate | `rate` (u/t²) | `max_speed` (u/t) | — |
+| sine_offset | `amplitude` (u) | `period` (ticks) | `phase` (rad) |
+| rotate | `rate` (rad/t) | — | — |
+| mirror | `axis` (rad) | — | — |
+| speed_curve | — | — | — |
+| curve | `turn` (rad/t) | — | — |
+
+A `speed_curve` modifier's `extra` must index a valid entry of the unit's `Curves` section
+(`IndexOutOfRange`, checked by the decoder); an `EmitterRecord`'s `program` must likewise index a
+valid `Programs` entry when it is not the `NO_PROGRAM` sentinel `0xFFFF`.
+
+### 10.5 `Emitters` (kind 3)
+
+`count: u16`, then `count` × this 30-byte record:
+
+| Offset | Field | Type |
+|---|---|---|
+| 0 | `bullet_type` | `u16` (index into `BulletTypes`) |
+| 2 | `program` | `u16` (index into `Programs`, or `0xFFFF` = no program) |
+| 4 | `role` | `u8` (`0` primary, `1` sub — contract §11.1's `role = sub`) |
+| 5 | reserved | `u8` |
+| 6 | `delay_ticks` | `u32` |
+| 10 | `repeat` | `u32` (`0xFFFFFFFF` = `forever`) |
+| 14 | `interval_ticks` | `u32` |
+| 18 | `speed` | `f32` (u/t) |
+| 22 | `offset_x` | `f32` (u) |
+| 26 | `offset_y` | `f32` (u) |
+
+### 10.6 `Curves` (kind 5)
+
+`count: u16`, then `count` records of `key_count: u16` (≤ 256, `Limit` otherwise — generous for
+any real tempo curve; the richest corpus example uses 4) followed by `key_count` × (`at_ticks:
+u32`, `mul: f32`), in written order. Referenced by a `speed_curve` modifier's `extra` index.
+
+### 10.7 `BehaviorRefs` (kind 6)
+
+`count: u16`, then `count` × `BehaviorId` (`u32`). Final since WP1.3. The set of ids a compiled
+unit references; `SigilLibrary::new` (contract §11.2) rejects a unit whose set contains an id the
+loaded `BehaviorRegistry` never registered.
+
+### 10.8 Golden fixtures
+
+`crates/grimoire_sigil/tests/golden/*.bin` plus `crates/grimoire_sigil/tests/golden.rs` (contract §2
+rule 10): every fixture's bytes, content hash included, were derived by a standalone script that
+reimplements the `StableHasher` v1 algorithm from `grimoire_core::hash`'s own documentation
+directly against this page's tables — never by calling `SigilUnit::to_bytes` and saving the
+result — then checked against `SigilUnit::from_bytes`/`to_bytes`.
+
+## 11. Compiler: resolution and composition
+
+Plan 0002 WP4.2, `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/src/compiler/`): name
+resolution, imports, `from`-composition and static validation on top of the WP4.1 parser's
+lossless tree, then lowering to [§10](#10-binary-format-sigilunit-v1)'s bytes.
+
+### 11.1 Imports and the compiled unit's contents
+
+A `.sigil` file compiles to its own, independent `SigilUnit`. `import "<path>" as <alias>` makes
+another file's `bullet`/`emitter` items addressable as `<alias>.<name>`, for `from`-composition
+([§11.2](#112-from-composition-and-overrides)) — it does not merge the two files' contents. The
+compiled unit contains every `bullet`/`emitter` item declared directly in the entry file, plus, for
+every composed emitter whose (possibly inherited, see below) `bullet` field names a bullet not
+declared in the entry file, that bullet pulled in from wherever it actually lives — transitively,
+following that foreign bullet's own `change_type`/`burst` transform targets one file deep. A cycle
+of imports (`SIG0013`) or an import naming a file the compiler's `SourceLoader` cannot load
+(`SIG0012`) is rejected before resolution proceeds.
+
+### 11.2 `from`-composition and overrides
+
+`emitter <name> from <alias>.<base> { <overrides> }` starts from a clone of `<base>` (itself
+composed first, if it too has a `from`; a composition cycle is `SIG0019`) and applies `<name>`'s
+own body on top:
+
+- A plain field (`delay = ...`) replaces that field on the composed emitter.
+- A dotted `block.<field>` field (contract §5's node-path convention) replaces that one field of
+  the composed `block`, leaving the rest of it — including its `kind` — untouched.
+- A literal nested `block <kind> { ... }` replaces the composed block wholesale.
+- A literal nested `modifier <kind> { ... }` is appended to the composed modifier stack.
+
+Every field keeps track of which file its value's text actually came from (`origin_file`): an
+inherited, unoverridden field (like `finale`'s `bullet` field in
+[§8.2](#82-composition-via-import-and-overrides-testscorpusvalid05-wave-line-compositesigil-excerpt))
+resolves its reference against *that* file, not the entry file — this is why `05-wave-line-composite.sigil`
+compiles a unit containing `orb` (declared only in `01-ring-burst.sigil`) even though it never
+declares a bullet of its own.
+
+### 11.3 Static validation
+
+Beyond the reference/range/cascade checks in [§12](#12-schema-diagnostic-code-table-sig0012)'s
+table: cascade depth is computed by walking every primary (non-`sub`) emitter's bullet through its
+`become_emitter`/`burst` transforms (each adds one level) and `change_type`/`reverse` transforms
+(same level, same bullet instance); a level beyond `SigilUnit::MAX_CASCADE_DEPTH` (3) is `SIG0018`,
+and a bullet reachable from itself through `change_type` alone (the only edge kind that cannot be
+bounded by the depth check, since it never advances the level) is `SIG0019`. This mirrors, ahead of
+time, exactly what contract §11.1 asks the binary decoder to re-check once `Transforms` gets a real
+encoding ("keine Rekursion in Sub-Emittern", "Kaskadentiefe höchstens `MAX_CASCADE_DEPTH`").
+
+PRD-0003's readability rules are enforced across the whole compiled unit (not per file): rule 3 —
+no two bullet types may share a `silhouette`, even with different `palette`s (`SIG0020`) — and
+rule 4 — `palette` must reference the `enemy` namespace, the only palette space Sigil bullets may
+use (`SIG0021`, contract §11.2's `palette_space`, [§10.3](#103-bullettypes-kind-1)).
+
+### 11.4 Open points for the Product Owner
+
+Recorded here, not silently decided, because each is a real design choice with more than one
+reasonable answer:
+
+1. **`Transforms` (kind 4) stays opaque bytes in v1.** `change_type`/`become_emitter`/`burst`/`reverse`
+   are fully parsed, resolved and statically validated ([§11.3](#113-static-validation)), but not
+   yet encoded — locking in a binary shape before Plan 0002 WP5's interpreter exists risks a
+   breaking format revision once real requirements emerge. Recommendation: encode it once WP5
+   starts, informed by what the interpreter actually needs to read.
+2. **No source field yet for `collision_radius` or `lifetime_ticks`.** The compiler defaults
+   `collision_radius = radius` (satisfies contract §11.2's `collision_radius <= radius` invariant
+   trivially) and `lifetime_ticks = 0` (unbounded). Recommendation: add optional source fields
+   (e.g. `collision_radius = ..`, `lifetime = ..t`) once a pattern actually needs to differ from
+   the default, rather than guessing at names now.
+3. **`damage` and `despawn_vfx` are parsed and type-checked but not compiled into the binary** —
+   `BulletType`'s wire record (§10.3) has no room for them (frozen in WP1.3) and no other section
+   claims them either. Recommendation: a small additive `GameplayMeta`-style section once the
+   combat/VFX systems that would consume these values exist and their real shape is known.
+4. **`behaviour = <name>` resolves against a name→`BehaviorId` table supplied by the caller of
+   `grimoire_sigilc::compiler::compile`**, not derived from the name (contract §11.5: ids are
+   assigned by whichever Rust code calls `BehaviorRegistryBuilder::register`, not computable from
+   text alone). Every referenced id is folded into the unit's `BehaviorRefs` section
+   ([§10.7](#107-behaviorrefs-kind-6)), but **which bullet type uses which behavior is not yet
+   representable in the binary** (`BulletType`'s record has no field for it either). Recommendation:
+   decide the source of that name→id table (a manifest file next to the Rust registration code is
+   the natural fit) as part of Plan 0002 WP4.3's CLI work, and extend `Programs`/a new section once
+   WP5 needs the per-bullet association.
+5. **`silhouette`/`palette` indices are per-unit, not a shared cross-unit catalog** — there isn't
+   one yet ([§10.3](#103-bullettypes-kind-1)). Fine for one unit rendering itself consistently;
+   two different units can assign the same index to different silhouettes. Recommendation: once
+   `grimoire_render` gains a real silhouette/palette table (its own module docs already anticipate
+   this), revisit whether Sigil should reference it by stable name instead of a compiler-assigned
+   index.
+
+## 12. Schema diagnostic code table (`SIG0012`+)
+
+Continues [§6.3](#63-diagnostic-code-table)'s table (Plan 0002 WP4.2, `grimoire_sigilc::compiler`).
+Same stability rule: a code's meaning is fixed from its first release.
+
+| Code | Cause |
+|---|---|
+| `SIG0012` | An `import` names a path the compiler's `SourceLoader` cannot load. |
+| `SIG0013` | An import cycle: a file transitively imports itself. |
+| `SIG0014` | An unknown reference: a `bullet`/`emitter`/`behaviour` name, or an `emitter ... from <alias>.<name>` naming an unknown alias or base emitter, that does not resolve. |
+| `SIG0015` | A field uses the reserved unit `beats` (lexically valid since WP4.1, always rejected by the schema pass — there are no wall-clock units in Sigil). |
+| `SIG0016` | A parameter is outside its valid range (e.g. `glow` outside `0.0..=1.0`, a negative `repeat`/`delay`/`speed`). |
+| `SIG0017` | A parameter is exactly the value that would make a documented downstream formula divide by zero (e.g. a block's `count`/`arms` of `0`, a `mirror.folds` of `0`, a `wave.wavelength`/`sine_offset.period` of `0`) — a non-finite (NaN/Infinity) result is never allowed in compiled Sigil data. |
+| `SIG0018` | A `become_emitter`/`burst` transform chain would create a bullet beyond `SigilUnit::MAX_CASCADE_DEPTH`. |
+| `SIG0019` | A bullet is reachable from itself through a chain of `change_type` transforms (or, for `emitter ... from ...`, a composition cycle). |
+| `SIG0020` | Two bullet types compiled into the same unit share a `silhouette` (PRD-0003 rule 3: bullet types must differ in silhouette, not only in color). |
+| `SIG0021` | A bullet's `palette` does not reference the `enemy` namespace (PRD-0003 rule 4: Sigil bullets only ever use the enemy palette space). |
+| `SIG0022` | An unknown enum-like value: a `block`/`modifier`/`transform` kind, a bullet `flags` entry, an emitter `role`, a `speed_curve.interp` mode, or an `offset` record field, that is not one of the known values. |
+| `SIG0023` | A required field or nested member is missing entirely. |
+| `SIG0024` | A present field has the wrong shape (wrong value kind, or a quantity with the wrong unit) for its construct. |

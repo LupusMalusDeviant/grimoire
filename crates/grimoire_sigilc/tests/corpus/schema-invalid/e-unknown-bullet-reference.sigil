@@ -1,0 +1,13 @@
+sigil 1
+// e-unknown-bullet-reference: the emitter's `bullet` field names a bullet that does not exist.
+// Covers SIG0014.
+
+emitter burst {
+  bullet = ghost
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

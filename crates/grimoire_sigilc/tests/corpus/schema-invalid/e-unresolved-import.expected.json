@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-unresolved-import.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0012",
+      "severity": "error",
+      "file": "e-unresolved-import.sigil",
+      "line": 3,
+      "column": 34,
+      "node_path": "imports",
+      "token": "missing",
+      "message": "Cannot load imported file `does-not-exist.sigil`.",
+      "fix_hint": "Check the import path; it is relative to the same root the compiler was invoked with.",
+      "related": null
+    }
+  ]
+}

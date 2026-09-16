@@ -1,0 +1,32 @@
+sigil 1
+// e-duplicate-silhouette: two bullet types share the silhouette `orb`, differing only by
+// palette. PRD-0003 rule 3 requires bullet types to differ in silhouette, not only in color.
+// Covers SIG0020.
+
+bullet red_orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+bullet blue_orb {
+  silhouette = orb
+  palette = enemy.azure
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = red_orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

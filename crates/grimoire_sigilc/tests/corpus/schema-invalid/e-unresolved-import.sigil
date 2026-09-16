@@ -1,0 +1,22 @@
+sigil 1
+// e-unresolved-import: names a file the loader cannot find. Covers SIG0012.
+import "does-not-exist.sigil" as missing
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

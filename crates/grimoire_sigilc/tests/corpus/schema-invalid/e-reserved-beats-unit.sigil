@@ -1,0 +1,22 @@
+sigil 1
+// e-reserved-beats-unit: `interval` uses the lexically-valid but reserved `beats` unit; there are
+// no wall-clock units in Sigil. Covers SIG0015.
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 5beats
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-glow-out-of-range.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0016",
+      "severity": "error",
+      "file": "e-glow-out-of-range.sigil",
+      "line": 7,
+      "column": 10,
+      "node_path": "bullets.orb.glow",
+      "token": "1.5",
+      "message": "Field `glow` must be between 0.0 and 1.0.",
+      "fix_hint": "Change `glow` so it must be between 0.0 and 1.0.",
+      "related": null
+    }
+  ]
+}

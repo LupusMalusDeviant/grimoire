@@ -1,0 +1,119 @@
+sigil 1
+// e-cascade-too-deep: e0 spawns b0 at cascade 0; each bullet's `become_emitter` spawns the next
+// generation one cascade level deeper. b0->e1->b1->e2->b2->e3->b3->e4 would need cascade depth 4,
+// past `SigilUnit::MAX_CASCADE_DEPTH` (3). Covers SIG0018.
+
+bullet b0 {
+  silhouette = orb0
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+  transform become_emitter {
+    when = time 10t
+    emitter = e1
+  }
+}
+
+bullet b1 {
+  silhouette = orb1
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+  transform become_emitter {
+    when = time 10t
+    emitter = e2
+  }
+}
+
+bullet b2 {
+  silhouette = orb2
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+  transform become_emitter {
+    when = time 10t
+    emitter = e3
+  }
+}
+
+bullet b3 {
+  silhouette = orb3
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+  transform become_emitter {
+    when = time 10t
+    emitter = e4
+  }
+}
+
+bullet b4 {
+  silhouette = orb4
+  palette = enemy.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter e0 {
+  bullet = b0
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 4
+  }
+}
+
+emitter e1 {
+  role = sub
+  bullet = b1
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 4
+  }
+}
+
+emitter e2 {
+  role = sub
+  bullet = b2
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 4
+  }
+}
+
+emitter e3 {
+  role = sub
+  bullet = b3
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 4
+  }
+}
+
+emitter e4 {
+  role = sub
+  bullet = b4
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 4
+  }
+}

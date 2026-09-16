@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-reserved-beats-unit.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0015",
+      "severity": "error",
+      "file": "e-reserved-beats-unit.sigil",
+      "line": 17,
+      "column": 14,
+      "node_path": "emitters.burst.interval",
+      "token": "beats",
+      "message": "Field `interval` uses the reserved unit `beats`; Sigil has no wall-clock units, only ticks (`t`) and world units (`u`).",
+      "fix_hint": "Use `t` instead.",
+      "related": null
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-cascade-too-deep.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0018",
+      "severity": "error",
+      "file": "e-cascade-too-deep.sigil",
+      "line": 52,
+      "column": 13,
+      "node_path": "",
+      "token": "become_emitter",
+      "message": "This `become_emitter` would create a bullet at cascade depth 4, beyond the maximum of 3.",
+      "fix_hint": "Shorten the cascade chain, or remove this transform.",
+      "related": null
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+sigil 1
+// e-wrong-palette-space: `palette` names the `player` namespace. PRD-0003 rule 4 restricts Sigil
+// bullets (always enemy projectiles) to the enemy palette space. Covers SIG0021.
+
+bullet orb {
+  silhouette = orb
+  palette = player.crimson
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

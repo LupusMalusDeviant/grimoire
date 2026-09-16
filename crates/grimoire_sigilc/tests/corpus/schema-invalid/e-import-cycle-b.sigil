@@ -1,0 +1,22 @@
+sigil 1
+// e-import-cycle-b: the other half of the SIG0013 import-cycle fixture; not compiled directly.
+import "e-import-cycle-a.sigil" as a
+
+bullet shard {
+  silhouette = shard
+  palette = enemy.amber
+  glow = 0.4
+  radius = 0.15u
+  damage = 1
+  flags = []
+}
+
+emitter shards {
+  bullet = shard
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 4
+  }
+}

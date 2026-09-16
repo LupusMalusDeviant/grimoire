@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-cascade-cycle.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0019",
+      "severity": "error",
+      "file": "e-cascade-cycle.sigil",
+      "line": 1,
+      "column": 1,
+      "node_path": "bullets.a",
+      "token": "a",
+      "message": "Cascade cycle: bullet `a` is reachable from itself through a chain of `change_type` transforms.",
+      "fix_hint": "Break the cycle; a bullet's `change_type` chain must eventually stop.",
+      "related": null
+    }
+  ]
+}

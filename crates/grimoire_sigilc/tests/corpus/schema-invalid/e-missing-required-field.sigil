@@ -1,0 +1,20 @@
+sigil 1
+// e-missing-required-field: `orb` has no `radius` field at all. Covers SIG0023.
+
+bullet orb {
+  silhouette = orb
+  palette = enemy.crimson
+  glow = 0.5
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = orb
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

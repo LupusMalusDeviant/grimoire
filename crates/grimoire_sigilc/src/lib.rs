@@ -18,21 +18,28 @@
 //! to the other six determinism-set crates).
 //!
 //! **Status:** lexer, parser and diagnostics land in WP4.1 (this module tree: [`span`],
-//! [`syntax`], [`parser`], [`fmt`], [`diagnostics`]); the schema pass, the `SigilUnit` encoder and
-//! the `sigilc build`/`set`/`simulate` subcommands are Plan 0002 WP4.2/WP4.3/WP5.6.
+//! [`syntax`], [`parser`], [`fmt`], [`diagnostics`]); the schema pass, name resolution,
+//! `from`-composition, static validation and the `SigilUnit` encoder land in WP4.2 ([`compiler`]);
+//! the `sigilc build`/`set`/`simulate` CLI subcommands remain Plan 0002 WP4.3/WP5.6.
 //! [`derive_unit_id`] predates WP4.1 (added in WP1.3, once `grimoire_sigil::UnitId`, contract
 //! §11.1, existed) and is unrelated to parsing.
 //!
 //! WP4.1's own entry point is [`parser::parse`]: it lexes and parses one `.sigil` source file
 //! into a lossless [`syntax::SyntaxNode`] plus every [`diagnostics::Diagnostic`] found along the
-//! way, never panicking regardless of how malformed the input is (contract §2 rule 9). See
-//! `docs/formats/sigil.md` for the grammar, the header and comment rules, and the full diagnostic
-//! code table, and `crates/grimoire_sigilc/tests/corpus/` for the conformance corpus this parser
-//! is checked against.
+//! way, never panicking regardless of how malformed the input is (contract §2 rule 9). WP4.2's
+//! entry point is [`compiler::compile`]: given a loaded entry file and a [`compiler::SourceLoader`]
+//! for its imports, it resolves, validates and lowers a `.sigil` source to
+//! `grimoire_sigil::SigilUnit` bytes, or every diagnostic ([`diagnostics::Diagnostic`], codes
+//! `SIG0012` onward) that stopped it from doing so. See `docs/formats/sigil.md` for the grammar,
+//! the binary format and the full diagnostic code table, and
+//! `crates/grimoire_sigilc/tests/corpus/` (parser corpus) and
+//! `crates/grimoire_sigilc/tests/corpus/schema-invalid/` (compiler corpus) for the conformance
+//! corpora both are checked against.
 
 use grimoire_core::StableHasher;
 use grimoire_sigil::UnitId;
 
+pub mod compiler;
 pub mod diagnostics;
 pub mod fmt;
 mod lexer;

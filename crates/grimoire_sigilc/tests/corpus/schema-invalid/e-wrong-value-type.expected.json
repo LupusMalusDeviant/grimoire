@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "e-wrong-value-type.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0024",
+      "severity": "error",
+      "file": "e-wrong-value-type.sigil",
+      "line": 8,
+      "column": 11,
+      "node_path": "bullets.orb.radius",
+      "token": "huge",
+      "message": "Field `radius` has the wrong shape for this construct.",
+      "fix_hint": "`radius` must be a `u` quantity.",
+      "related": null
+    }
+  ]
+}
