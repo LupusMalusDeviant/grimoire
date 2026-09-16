@@ -55,11 +55,11 @@ use grimoire_gpu::{GpuContext, GpuError, wgpu};
 
 use crate::mesh::{MeshData, MeshError, MeshRegistry};
 use crate::shadow_pass::{ShadowCaster, ShadowPass};
-use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight};
+use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight, MAX_SKIN_JOINTS};
 use crate::texture::{TextureData, TextureError, TextureRegistry};
 use crate::{
     BlobShadowInstance, MeshHandle, MeshInstance, PbrMaterial, PointLight, RenderLayer,
-    ShadowConfig, TextureHandle,
+    ShadowConfig, SkinBinding, TextureHandle,
 };
 
 /// Depth-buffer format of the mesh pass. Guaranteed renderable on every `wgpu` backend, including
@@ -123,6 +123,37 @@ use instance_gpu::MeshInstanceGpu;
 
 /// Size of one [`MeshInstanceGpu`] in the instance buffer.
 const MESH_INSTANCE_SIZE: u64 = std::mem::size_of::<MeshInstanceGpu>() as u64;
+
+mod skinned_instance_gpu {
+    // bytemuck's derive macros expand to `unsafe impl` blocks, like `MeshInstanceGpu` above.
+    #![allow(unsafe_code)]
+
+    /// Per-instance data for the skinning vertex path (P1 skinning addendum, contract §6
+    /// changelog 2026-09-16): exactly [`super::instance_gpu::MeshInstanceGpu`]'s fields, plus
+    /// where this instance's bone matrix palette starts in the storage buffer bound at group 3
+    /// (`bone_offset`, contract §6 `SkinBinding::joint_offset`). Three `u32` of padding keep the
+    /// struct's size a multiple of 16 bytes, matching every other GPU-uploaded struct in this
+    /// crate; the shader never reads them.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+    pub(super) struct SkinnedMeshInstanceGpu {
+        pub transform: [[f32; 4]; 4],
+        pub base_color: [f32; 4],
+        pub emissive: [f32; 4],
+        pub material_params: [f32; 4],
+        pub bone_offset: u32,
+        pub _pad: [u32; 3],
+    }
+}
+use skinned_instance_gpu::SkinnedMeshInstanceGpu;
+
+/// Size of one [`SkinnedMeshInstanceGpu`] in the skinned instance buffer.
+const SKINNED_MESH_INSTANCE_SIZE: u64 = std::mem::size_of::<SkinnedMeshInstanceGpu>() as u64;
+
+/// Size in bytes of one bone matrix in the storage buffer bound at group 3 (`mat4x4<f32>`, std430
+/// layout — a plain `[[f32; 4]; 4]` matches it exactly, no padding). Matches engine ADR-0013's
+/// "256 Knochen x 64 Byte = 16 KiB" headroom calculation.
+const BONE_MATRIX_SIZE: u64 = std::mem::size_of::<[[f32; 4]; 4]>() as u64;
 
 mod camera_gpu {
     // bytemuck's derive macros expand to `unsafe impl` blocks, like `MeshInstanceGpu` above.
@@ -222,6 +253,51 @@ fn create_mesh_instance_buffer(
             label: Some("grimoire mesh instances"),
             size,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    })
+}
+
+/// Largest skinned-instance count a buffer of at most `max_buffer_size` bytes can hold; mirrors
+/// [`mesh_instance_capacity`] for [`SkinnedMeshInstanceGpu`]'s (larger) layout.
+fn skinned_mesh_instance_capacity(max_buffer_size: u64) -> u32 {
+    u32::try_from(max_buffer_size / SKINNED_MESH_INSTANCE_SIZE).unwrap_or(u32::MAX)
+}
+
+fn create_skinned_mesh_instance_buffer(
+    context: &GpuContext,
+    capacity: u32,
+) -> Result<wgpu::Buffer, GpuError> {
+    let size = u64::from(capacity) * SKINNED_MESH_INSTANCE_SIZE;
+    context.capture_errors(|device| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grimoire skinned mesh instances"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    })
+}
+
+/// Largest bone-matrix count a storage buffer of at most `max_storage_buffer_binding_size` bytes
+/// can hold. Engine ADR-0013 measured `max_storage_buffer_binding_size` at 128 MiB or more on
+/// every CI target adapter, so [`MAX_SKIN_JOINTS`] (256, 16 KiB) is nowhere near this ceiling for a
+/// single instance; this only bounds how many *instances'* palettes can be concatenated into one
+/// frame's buffer.
+fn bone_matrix_capacity(max_storage_buffer_binding_size: u64) -> u32 {
+    u32::try_from(max_storage_buffer_binding_size / BONE_MATRIX_SIZE).unwrap_or(u32::MAX)
+}
+
+fn create_bone_buffer(context: &GpuContext, capacity: u32) -> Result<wgpu::Buffer, GpuError> {
+    // At least one matrix: a zero-sized buffer is invalid to create and to bind, and this buffer
+    // is always bound (in the skinned pipeline's bind group) even on a frame with no skinned
+    // instances at all.
+    let size = u64::from(capacity.max(1)) * BONE_MATRIX_SIZE;
+    context.capture_errors(|device| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grimoire mesh bone matrices"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     })
@@ -552,6 +628,24 @@ pub(crate) struct MeshPass {
     blob_pipeline: wgpu::RenderPipeline,
     blob_instance_buffer: wgpu::Buffer,
     blob_instance_capacity: u32,
+    /// Second vertex path for skinned meshes (P1 skinning addendum, contract §6 changelog
+    /// 2026-09-16, this module's header doc comment): its own pipeline (shares `fs_main` with
+    /// `pipeline`), instance buffer and bone matrix storage buffer (group 3). An instance with
+    /// `skin == None` never touches any of these — [`MeshPass::render`] groups instances by
+    /// [`MeshInstance::skin`] before choosing a pipeline.
+    skinned_pipeline: wgpu::RenderPipeline,
+    skinned_instance_buffer: wgpu::Buffer,
+    skinned_instance_capacity: u32,
+    /// Layout of the skinned pipeline's group 3: one read-only storage buffer of bone matrices.
+    bone_bind_group_layout: wgpu::BindGroupLayout,
+    /// Storage buffer holding every skinned instance's bone matrix palette for the current frame,
+    /// concatenated in [`crate::StageFrame::joint_matrices`] order; grows like `instance_buffer`.
+    bone_buffer: wgpu::Buffer,
+    /// Bind group for group 3, rebuilt whenever `bone_buffer` is recreated (buffer identity
+    /// changes the binding, like `shadow_sampling_bind_group` above).
+    bone_bind_group: wgpu::BindGroup,
+    /// Capacity of `bone_buffer` in bone matrices (at least 1, see [`create_bone_buffer`]).
+    bone_capacity: u32,
 }
 
 /// One `texture_2d<f32>` binding entry of the texture bind group layout (group 1), all four
@@ -621,6 +715,143 @@ fn create_shadow_sampling_bind_group(
                 },
             ],
         })
+}
+
+/// Layout of the skinned mesh pipeline's group 3 (P1 skinning addendum, contract §6 changelog
+/// 2026-09-16): a single read-only storage buffer of bone matrices, visible only to the vertex
+/// stage — engine ADR-0013 measured `vertex_storage` (this exact capability) as `true` on all
+/// three CI target adapters, with `max_storage_buffers_per_shader_stage` and
+/// `max_storage_buffer_binding_size` far above what one more bound storage buffer needs.
+fn create_bone_bind_group_layout(context: &GpuContext) -> wgpu::BindGroupLayout {
+    context
+        .device()
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("grimoire mesh bone layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        })
+}
+
+fn create_bone_bind_group(
+    context: &GpuContext,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    context
+        .device()
+        .create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grimoire mesh bone bind group"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        })
+}
+
+/// Builds the skinning vertex path's pipeline (P1 skinning addendum, contract §6 changelog
+/// 2026-09-16, mesh pass module doc comment): the second vertex path alongside [`MeshPass`]'s
+/// existing rigid-mesh pipeline, sharing `mesh.wgsl`'s `fs_main` fragment shader (and therefore
+/// every shading behaviour — PBR, shadows, specular AA) but reading [`crate::MeshVertex::joints`]/
+/// [`crate::MeshVertex::weights`] and a `bone_offset` per instance instead of transforming the raw
+/// vertex position directly. An instance with `skin == None` never touches this pipeline or its
+/// bone buffer (this module's `render` groups instances by `MeshInstance::skin` before choosing a
+/// pipeline), so it costs nothing extra, as the contract requires.
+fn create_skinned_pipeline(
+    context: &GpuContext,
+    shader: &wgpu::ShaderModule,
+    camera_bind_group_layout: &wgpu::BindGroupLayout,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
+    shadow_bind_group_layout: &wgpu::BindGroupLayout,
+    bone_bind_group_layout: &wgpu::BindGroupLayout,
+    color_format: wgpu::TextureFormat,
+) -> Result<wgpu::RenderPipeline, GpuError> {
+    let device = context.device();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("grimoire skinned mesh layout"),
+        bind_group_layouts: &[
+            Some(camera_bind_group_layout),
+            Some(texture_bind_group_layout),
+            Some(shadow_bind_group_layout),
+            Some(bone_bind_group_layout),
+        ],
+        immediate_size: 0,
+    });
+
+    let vertex_attributes: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x3,
+        2 => Float32x2,
+        3 => Uint16x4,
+        4 => Float32x4,
+    ];
+    let instance_attributes: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+        5 => Float32x4,
+        6 => Float32x4,
+        7 => Float32x4,
+        8 => Float32x4,
+        9 => Float32x4,
+        10 => Float32x4,
+        11 => Float32x4,
+        12 => Uint32,
+    ];
+
+    context.capture_errors(|device| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grimoire skinned mesh pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_skinned"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::mesh::MeshVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &vertex_attributes,
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: SKINNED_MESH_INSTANCE_SIZE,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &instance_attributes,
+                    }),
+                ],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    })
 }
 
 /// Builds the blob-shadow decal pipeline (plan 0002 WP2.6, `blob_shadow.wgsl`): alpha-blended,
@@ -719,6 +950,19 @@ fn create_blob_instance_buffer(
             mapped_at_creation: false,
         })
     })
+}
+
+/// Whether `skin`'s range fits entirely inside a `joint_matrices` table of `joint_matrices_len`
+/// entries and `joint_count` is within `1..=MAX_SKIN_JOINTS` (P1 skinning addendum). Same
+/// arithmetic as `crate::stage::skin_binding_is_valid`, duplicated here for the reason
+/// [`MeshPass::is_drawable`]'s doc comment gives for the rest of that predicate.
+fn skin_binding_fits(skin: SkinBinding, joint_matrices_len: usize) -> bool {
+    skin.joint_count > 0
+        && skin.joint_count <= MAX_SKIN_JOINTS
+        && skin
+            .joint_offset
+            .checked_add(skin.joint_count)
+            .is_some_and(|end| (end as usize) <= joint_matrices_len)
 }
 
 impl MeshPass {
@@ -907,6 +1151,30 @@ impl MeshPass {
             16u32.min(blob_instance_capacity(device.limits().max_buffer_size).max(1));
         let blob_instance_buffer = create_blob_instance_buffer(context, blob_instance_capacity)?;
 
+        // Second vertex path for skinned meshes (P1 skinning addendum, contract §6 changelog
+        // 2026-09-16): its own pipeline sharing `fs_main`/`shader` with `pipeline` above, plus a
+        // group-3 bone matrix storage buffer (engine ADR-0013 measured `vertex_storage` on every
+        // CI target adapter with headroom far past a single 256-bone, 16 KiB palette).
+        let bone_bind_group_layout = create_bone_bind_group_layout(context);
+        let skinned_pipeline = create_skinned_pipeline(
+            context,
+            &shader,
+            &camera_bind_group_layout,
+            &texture_bind_group_layout,
+            &shadow_bind_group_layout,
+            &bone_bind_group_layout,
+            color_format,
+        )?;
+        let skinned_instance_capacity =
+            16u32.min(skinned_mesh_instance_capacity(device.limits().max_buffer_size).max(1));
+        let skinned_instance_buffer =
+            create_skinned_mesh_instance_buffer(context, skinned_instance_capacity)?;
+        let bone_capacity = MAX_SKIN_JOINTS
+            .min(bone_matrix_capacity(device.limits().max_storage_buffer_binding_size).max(1));
+        let bone_buffer = create_bone_buffer(context, bone_capacity)?;
+        let bone_bind_group =
+            create_bone_bind_group(context, &bone_bind_group_layout, &bone_buffer);
+
         Ok(Self {
             pipeline,
             camera_buffer,
@@ -931,6 +1199,13 @@ impl MeshPass {
             blob_pipeline,
             blob_instance_buffer,
             blob_instance_capacity,
+            skinned_pipeline,
+            skinned_instance_buffer,
+            skinned_instance_capacity,
+            bone_bind_group_layout,
+            bone_buffer,
+            bone_bind_group,
+            bone_capacity,
         })
     }
 
@@ -1078,11 +1353,20 @@ impl MeshPass {
     /// (even with no usable camera or no drawable instances, so the sprite pass that follows can
     /// unconditionally `LoadOp::Load` afterwards), then draws every [`MeshInstance`] that is
     /// simultaneously: on [`RenderLayer::World`], structurally valid (finite `transform`, a
-    /// `material` index pointing at a valid [`PbrMaterial`] in `materials` — the same rules
-    /// `stage::extract_stage3d` already applies), and whose `mesh` handle is registered with GPU
-    /// buffers here. Grouped by mesh handle and resolved texture set (first-seen order) into one
-    /// `draw_indexed` call per distinct combination referenced this frame — usually one per mesh,
-    /// more only when the same mesh is drawn with materials that resolve to different textures.
+    /// `material` index pointing at a valid [`PbrMaterial`] in `materials`, a [`MeshInstance::skin`]
+    /// that fits `joint_matrices` when present — the same rules `stage::extract_stage3d` already
+    /// applies), and whose `mesh` handle is registered with GPU buffers here. Grouped by mesh
+    /// handle and resolved texture set (first-seen order) into one `draw_indexed` call per distinct
+    /// combination referenced this frame — usually one per mesh, more only when the same mesh is
+    /// drawn with materials that resolve to different textures.
+    ///
+    /// **Skinning (P1 addendum, this module's header doc comment):** an instance with
+    /// `skin == Some(binding)` is drawn through the second vertex path (its own pipeline, instance
+    /// buffer and group-3 bone matrix storage buffer) instead of the rigid one; `joint_matrices` is
+    /// uploaded to that storage buffer verbatim (it is `StageFrame::joint_matrices`, already in the
+    /// layout `SkinBinding::joint_offset` indexes into) once per call, regardless of how many
+    /// instances reference it. An instance with `skin == None` never touches the skinned pipeline,
+    /// its buffers, or an extra draw call.
     ///
     /// `point_lights` are shaded through the same GGX term as the key light, clamped to
     /// [`MAX_POINT_LIGHTS`] (see this module's doc comment); `specular_aa` is the OF-3.5 toggle
@@ -1123,6 +1407,7 @@ impl MeshPass {
         specular_aa: bool,
         shadow_config: &ShadowConfig,
         blob_shadows: &[BlobShadowInstance],
+        joint_matrices: &[[[f32; 4]; 4]],
     ) -> Result<u32, GpuError> {
         let view_proj =
             camera.map(|camera| stage3d::view_projection(camera, aspect, NEAR_PLANE, FAR_PLANE));
@@ -1132,39 +1417,61 @@ impl MeshPass {
         let mut order: Vec<(MeshHandle, TextureBindKey)> = Vec::new();
         let mut groups: HashMap<(MeshHandle, TextureBindKey), Vec<MeshInstanceGpu>> =
             HashMap::new();
+        let mut skinned_order: Vec<(MeshHandle, TextureBindKey)> = Vec::new();
+        let mut skinned_groups: HashMap<(MeshHandle, TextureBindKey), Vec<SkinnedMeshInstanceGpu>> =
+            HashMap::new();
         if usable_view_proj.is_some() {
             for mesh in meshes {
-                if !self.is_drawable(mesh, materials) {
+                if !self.is_drawable(mesh, materials, joint_matrices.len()) {
                     continue;
                 }
                 let material = &materials[mesh.material.0 as usize];
                 let key = (mesh.mesh, self.texture_bind_key(material));
-                groups
-                    .entry(key)
-                    .or_insert_with(|| {
-                        order.push(key);
-                        Vec::new()
-                    })
-                    .push(MeshInstanceGpu {
-                        transform: mesh.transform,
-                        base_color: material.base_color_factor,
-                        emissive: [
-                            material.emissive_factor[0],
-                            material.emissive_factor[1],
-                            material.emissive_factor[2],
-                            0.0,
-                        ],
-                        material_params: [
-                            material.metallic_factor,
-                            material.roughness_factor,
-                            0.0,
-                            0.0,
-                        ],
-                    });
+                let emissive = [
+                    material.emissive_factor[0],
+                    material.emissive_factor[1],
+                    material.emissive_factor[2],
+                    0.0,
+                ];
+                let material_params = [
+                    material.metallic_factor,
+                    material.roughness_factor,
+                    0.0,
+                    0.0,
+                ];
+                if let Some(skin) = mesh.skin {
+                    skinned_groups
+                        .entry(key)
+                        .or_insert_with(|| {
+                            skinned_order.push(key);
+                            Vec::new()
+                        })
+                        .push(SkinnedMeshInstanceGpu {
+                            transform: mesh.transform,
+                            base_color: material.base_color_factor,
+                            emissive,
+                            material_params,
+                            bone_offset: skin.joint_offset,
+                            _pad: [0; 3],
+                        });
+                } else {
+                    groups
+                        .entry(key)
+                        .or_insert_with(|| {
+                            order.push(key);
+                            Vec::new()
+                        })
+                        .push(MeshInstanceGpu {
+                            transform: mesh.transform,
+                            base_color: material.base_color_factor,
+                            emissive,
+                            material_params,
+                        });
+                }
             }
         }
 
-        for &(_, texture_key) in &order {
+        for &(_, texture_key) in order.iter().chain(skinned_order.iter()) {
             self.ensure_texture_bind_group(context, texture_key);
         }
 
@@ -1176,6 +1483,16 @@ impl MeshPass {
             let len = u32::try_from(group.len()).unwrap_or(u32::MAX);
             draw_ranges.push((*key, start, len));
             instances.extend_from_slice(group);
+        }
+
+        let mut skinned_instances = Vec::new();
+        let mut skinned_draw_ranges: Vec<((MeshHandle, TextureBindKey), u32, u32)> = Vec::new();
+        for key in &skinned_order {
+            let group = &skinned_groups[key];
+            let start = u32::try_from(skinned_instances.len()).unwrap_or(u32::MAX);
+            let len = u32::try_from(group.len()).unwrap_or(u32::MAX);
+            skinned_draw_ranges.push((*key, start, len));
+            skinned_instances.extend_from_slice(group);
         }
 
         let eye = camera.map_or([0.0; 3], stage3d::eye_position);
@@ -1210,8 +1527,13 @@ impl MeshPass {
                 camera_ref.target,
                 shadow_config,
             );
-            shadow_draw_calls =
-                self.render_shadow_map(context, light_view_proj, meshes, materials)?;
+            shadow_draw_calls = self.render_shadow_map(
+                context,
+                light_view_proj,
+                meshes,
+                materials,
+                joint_matrices.len(),
+            )?;
         }
         let shadow_params = [
             1.0 / self.shadow_pass.map_size() as f32,
@@ -1301,13 +1623,83 @@ impl MeshPass {
             );
         }
 
+        // Skinned instance buffer (P1 addendum): same growth pattern as `instance_buffer` above,
+        // sized for the larger `SkinnedMeshInstanceGpu` layout.
+        let skinned_count = u32::try_from(skinned_instances.len()).map_err(|_| {
+            GpuError::Validation(format!(
+                "{} skinned mesh instances exceed u32::MAX",
+                skinned_instances.len()
+            ))
+        })?;
+        if skinned_count > 0 {
+            let max_buffer_size = context.device().limits().max_buffer_size;
+            let capacity = crate::sprite_pass::grown_capacity(
+                self.skinned_instance_capacity,
+                skinned_count,
+                skinned_mesh_instance_capacity(max_buffer_size),
+            )
+            .ok_or_else(|| {
+                GpuError::Validation(format!(
+                    "{skinned_count} skinned mesh instances exceed the device buffer limit of {max_buffer_size} bytes"
+                ))
+            })?;
+            if capacity != self.skinned_instance_capacity {
+                self.skinned_instance_buffer =
+                    create_skinned_mesh_instance_buffer(context, capacity)?;
+                self.skinned_instance_capacity = capacity;
+            }
+            context.queue().write_buffer(
+                &self.skinned_instance_buffer,
+                0,
+                bytemuck::cast_slice(skinned_instances.as_slice()),
+            );
+        }
+
+        // Bone matrix storage buffer (P1 addendum, group 3): uploaded verbatim whenever the frame
+        // carries any joint matrices at all, independent of `skinned_count` — cheap (a frame with a
+        // non-empty `StageFrame::joint_matrices` but zero *drawable* skinned instances this frame is
+        // an edge case, not worth a second condition to special-case away).
+        let bone_count = u32::try_from(joint_matrices.len()).unwrap_or(u32::MAX);
+        if bone_count > 0 {
+            let max_binding_size = context.device().limits().max_storage_buffer_binding_size;
+            let capacity = crate::sprite_pass::grown_capacity(
+                self.bone_capacity,
+                bone_count,
+                bone_matrix_capacity(max_binding_size),
+            )
+            .ok_or_else(|| {
+                GpuError::Validation(format!(
+                    "{bone_count} bone matrices exceed the device storage-buffer binding limit of {max_binding_size} bytes"
+                ))
+            })?;
+            if capacity != self.bone_capacity {
+                self.bone_buffer = create_bone_buffer(context, capacity)?;
+                self.bone_bind_group = create_bone_bind_group(
+                    context,
+                    &self.bone_bind_group_layout,
+                    &self.bone_buffer,
+                );
+                self.bone_capacity = capacity;
+            }
+            context.queue().write_buffer(
+                &self.bone_buffer,
+                0,
+                bytemuck::cast_slice(joint_matrices),
+            );
+        }
+
         let mesh_draw_calls = if count > 0 {
             u32::try_from(draw_ranges.len()).unwrap_or(u32::MAX)
         } else {
             0
         };
+        let skinned_draw_calls = if skinned_count > 0 {
+            u32::try_from(skinned_draw_ranges.len()).unwrap_or(u32::MAX)
+        } else {
+            0
+        };
         let blob_draw_calls = u32::from(blob_count > 0);
-        let draw_calls = shadow_draw_calls + mesh_draw_calls + blob_draw_calls;
+        let draw_calls = shadow_draw_calls + mesh_draw_calls + skinned_draw_calls + blob_draw_calls;
 
         let gpu_meshes = &self.gpu_meshes;
         let texture_bind_groups = &self.texture_bind_groups;
@@ -1317,6 +1709,9 @@ impl MeshPass {
         let instance_buffer = &self.instance_buffer;
         let depth_view = &self.depth_view;
         let blob_pipeline = &self.blob_pipeline;
+        let skinned_pipeline = &self.skinned_pipeline;
+        let skinned_instance_buffer = &self.skinned_instance_buffer;
+        let bone_bind_group = &self.bone_bind_group;
         let blob_instance_buffer = &self.blob_instance_buffer;
         context.capture_errors(move |device| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1365,6 +1760,32 @@ impl MeshPass {
                         pass.draw_indexed(0..gpu_mesh.index_count, 0, *start..(*start + *len));
                     }
                 }
+                // Skinned meshes (P1 addendum), same pass, right after the rigid ones: same depth
+                // buffer, same camera and shadow-sampling bind groups (0, 2), but the skinning
+                // pipeline, its own instance buffer, and the bone matrix storage buffer (group 3)
+                // instead. Draw order relative to the rigid meshes does not matter (the depth test
+                // decides occlusion either way, exactly like the blob-shadow ordering note below).
+                if skinned_count > 0 {
+                    pass.set_pipeline(skinned_pipeline);
+                    pass.set_bind_group(0, camera_bind_group, &[]);
+                    pass.set_bind_group(2, shadow_sampling_bind_group, &[]);
+                    pass.set_bind_group(3, bone_bind_group, &[]);
+                    pass.set_vertex_buffer(
+                        1,
+                        skinned_instance_buffer
+                            .slice(..u64::from(skinned_count) * SKINNED_MESH_INSTANCE_SIZE),
+                    );
+                    for ((mesh_handle, texture_key), start, len) in &skinned_draw_ranges {
+                        let gpu_mesh = &gpu_meshes[mesh_handle];
+                        pass.set_bind_group(1, &texture_bind_groups[texture_key], &[]);
+                        pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                        pass.set_index_buffer(
+                            gpu_mesh.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        pass.draw_indexed(0..gpu_mesh.index_count, 0, *start..(*start + *len));
+                    }
+                }
                 // Blob shadows (WP2.6), same pass, right after the opaque meshes: see this
                 // method's doc comment and `blob_shadow.wgsl`'s header comment for why draw order
                 // relative to the opaque meshes does not matter (the depth test already decides
@@ -1390,26 +1811,42 @@ impl MeshPass {
 
     /// Whether `mesh` is drawable this frame under contract §6's shared mesh acceptance rules:
     /// `layer == RenderLayer::World`, a finite `transform`, a `material` index pointing at a valid
-    /// [`PbrMaterial`], and `mesh` registered with this pass. Exactly the predicate
+    /// [`PbrMaterial`], a [`MeshInstance::skin`] that is either absent or fits inside a
+    /// `joint_matrices` table of `joint_matrices_len` entries (P1 skinning addendum; mirrors
+    /// `crate::stage::skin_binding_is_valid`'s arithmetic, duplicated for the same reason as the
+    /// rest of this predicate), and `mesh` registered with this pass. Exactly the predicate
     /// `crate::stage::extract_stage3d` applies for [`crate::StageStats::meshes_drawn`] (and, from
     /// WP2.6, [`crate::StageStats::shadow_casters_drawn`]) — duplicated here, not shared code,
     /// because this module additionally needs the registered [`GpuMesh`] itself, which
     /// `crate::stage` never sees (contract §6: only the boolean registration check crosses that
     /// boundary).
-    fn is_drawable(&self, mesh: &MeshInstance, materials: &[PbrMaterial]) -> bool {
+    fn is_drawable(
+        &self,
+        mesh: &MeshInstance,
+        materials: &[PbrMaterial],
+        joint_matrices_len: usize,
+    ) -> bool {
         mesh.layer == RenderLayer::World
             && mesh.transform.iter().flatten().all(|c| c.is_finite())
             && materials
                 .get(mesh.material.0 as usize)
                 .is_some_and(PbrMaterial::is_valid)
+            && mesh
+                .skin
+                .is_none_or(|skin| skin_binding_fits(skin, joint_matrices_len))
             && self.is_registered(mesh.mesh)
     }
 
-    /// Renders every drawable mesh instance's transform ([`MeshPass::is_drawable`]) into the
-    /// key-light shadow map from `light_view_proj` (plan 0002 WP2.6). Exactly the set of meshes
-    /// [`crate::StageStats::shadow_casters_drawn`] counts (`crate::stage`'s shared, GPU-free
-    /// extraction reaches the same count from the same rule, contract §6 style). Returns the
-    /// number of draw calls issued.
+    /// Renders every drawable, **unskinned** mesh instance's transform
+    /// ([`MeshPass::is_drawable`]) into the key-light shadow map from `light_view_proj` (plan 0002
+    /// WP2.6). A skinned instance (`MeshInstance::skin.is_some()`) is deliberately excluded: this
+    /// package casts a shadow from each mesh's static rest-pose geometry, and drawing that shape
+    /// for a bent, animated figure would read as more wrong than no shadow at all. Consequently
+    /// this is *not quite* the set [`crate::StageStats::shadow_casters_drawn`] counts once a frame
+    /// contains skinned instances — that counter still equals `meshes_drawn` (contract §6
+    /// unchanged), a known, documented gap left for a future work package (correct skinned shadow
+    /// casting needs the same skin matrix the vertex shader applies, run for depth-only output
+    /// too). Returns the number of draw calls issued.
     ///
     /// Builds the caster list in two steps — first collecting `(handle, transform)` pairs with
     /// [`MeshPass::is_drawable`] (which needs `&self` as a whole), then resolving each handle's
@@ -1426,10 +1863,13 @@ impl MeshPass {
         light_view_proj: [[f32; 4]; 4],
         meshes: &[MeshInstance],
         materials: &[PbrMaterial],
+        joint_matrices_len: usize,
     ) -> Result<u32, GpuError> {
         let accepted: Vec<(MeshHandle, [[f32; 4]; 4])> = meshes
             .iter()
-            .filter(|mesh| self.is_drawable(mesh, materials))
+            .filter(|mesh| {
+                mesh.skin.is_none() && self.is_drawable(mesh, materials, joint_matrices_len)
+            })
             .map(|mesh| (mesh.mesh, mesh.transform))
             .collect();
         let gpu_meshes = &self.gpu_meshes;
@@ -1474,6 +1914,11 @@ mod tests {
 
     #[test]
     fn vertex_attributes_match_mesh_vertex_layout() {
+        // The rigid pipeline's vertex attributes: position, normal, uv only. Since P1's skinning
+        // addendum grew `MeshVertex` with trailing `joints`/`weights`, this no longer covers the
+        // whole struct (see `skinned_vertex_attributes_match_mesh_vertex_layout` for those two) —
+        // deliberately: an instance with `skin == None` reads exactly these three fields and never
+        // touches the rest, which is what "costs nothing extra" means for the rigid path.
         let attributes: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
             0 => Float32x3,
             1 => Float32x3,
@@ -1487,11 +1932,113 @@ mod tests {
         for (attribute, offset) in attributes.iter().zip(offsets) {
             assert_eq!(attribute.offset, offset as u64);
         }
-        let last = &attributes[2];
+    }
+
+    #[test]
+    fn skinned_vertex_attributes_match_mesh_vertex_layout() {
+        let attributes: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+            0 => Float32x3,
+            1 => Float32x3,
+            2 => Float32x2,
+            3 => Uint16x4,
+            4 => Float32x4,
+        ];
+        let offsets = [
+            offset_of!(MeshVertex, position),
+            offset_of!(MeshVertex, normal),
+            offset_of!(MeshVertex, uv),
+            offset_of!(MeshVertex, joints),
+            offset_of!(MeshVertex, weights),
+        ];
+        for (attribute, offset) in attributes.iter().zip(offsets) {
+            assert_eq!(attribute.offset, offset as u64);
+        }
+        let last = &attributes[4];
         assert_eq!(
             last.offset + last.format.size(),
-            std::mem::size_of::<MeshVertex>() as u64
+            std::mem::size_of::<MeshVertex>() as u64,
+            "the skinning path reads every byte of MeshVertex, unlike the rigid path"
         );
+    }
+
+    #[test]
+    fn skinned_mesh_instance_gpu_is_128_bytes() {
+        assert_eq!(std::mem::size_of::<SkinnedMeshInstanceGpu>(), 128);
+    }
+
+    #[test]
+    fn skinned_instance_attributes_match_skinned_mesh_instance_gpu_layout() {
+        let attributes: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+            5 => Float32x4,
+            6 => Float32x4,
+            7 => Float32x4,
+            8 => Float32x4,
+            9 => Float32x4,
+            10 => Float32x4,
+            11 => Float32x4,
+            12 => Uint32,
+        ];
+        // The four transform columns are contiguous 16-byte chunks of `transform: [[f32; 4]; 4]`,
+        // immediately followed by `base_color`, `emissive`, `material_params` and `bone_offset`.
+        let offsets = [
+            0,
+            16,
+            32,
+            48,
+            offset_of!(SkinnedMeshInstanceGpu, base_color),
+            offset_of!(SkinnedMeshInstanceGpu, emissive),
+            offset_of!(SkinnedMeshInstanceGpu, material_params),
+            offset_of!(SkinnedMeshInstanceGpu, bone_offset),
+        ];
+        for (attribute, offset) in attributes.iter().zip(offsets) {
+            assert_eq!(attribute.offset, offset as u64);
+        }
+    }
+
+    #[test]
+    fn skinned_mesh_instance_capacity_matches_buffer_size() {
+        assert_eq!(
+            skinned_mesh_instance_capacity(SKINNED_MESH_INSTANCE_SIZE * 10),
+            10
+        );
+        assert_eq!(skinned_mesh_instance_capacity(u64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn bone_matrix_capacity_matches_buffer_size() {
+        assert_eq!(bone_matrix_capacity(BONE_MATRIX_SIZE * 10), 10);
+        assert_eq!(bone_matrix_capacity(u64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn skin_binding_fits_checks_range_and_joint_count() {
+        let binding = SkinBinding {
+            joint_offset: 2,
+            joint_count: 3,
+        };
+        assert!(skin_binding_fits(binding, 5));
+        assert!(!skin_binding_fits(binding, 4), "range reaches past the end");
+        assert!(!skin_binding_fits(
+            SkinBinding {
+                joint_offset: 0,
+                joint_count: 0,
+            },
+            5
+        ));
+        assert!(!skin_binding_fits(
+            SkinBinding {
+                joint_offset: 0,
+                joint_count: MAX_SKIN_JOINTS + 1,
+            },
+            usize::MAX
+        ));
+        assert!(!skin_binding_fits(
+            SkinBinding {
+                joint_offset: u32::MAX,
+                joint_count: 1,
+            },
+            usize::MAX
+        ));
     }
 
     #[test]

@@ -378,6 +378,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-16 | §6 (Registrierung bleibt renderer-spezifisch) | #9 | K | — | nein |
 | 2026-09-16 | §6 (Vorausschau: Fokus-Geschwindigkeit mal 1 s, begrenzt) | #11 | A (PO-Entscheid V-20) | Render-A (WP2.5 ff.) | nein |
 | 2026-09-16 | §6, §9.5 (Kamera nur nach Anmeldung; Marker-Werte vorlaeufig) | #11 | K | — | nein |
+| 2026-09-16 | §6 (Knochenverformung: `MeshVertex` um `joints`/`weights`, `SkinBinding`, `StageFrame::joint_matrices`) | #23 | A (PO-Entscheid V-20) | Render-A/B (P1 „Figuren in der Engine") | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -851,6 +852,81 @@ pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-00
   Lichtbudget in `RendererConfig` (Low 32/High 256) und die tatsächliche Anwendung von `bullet_light_cap` in der
   Shading-Gleichung (WP3.4/WP3.5).
 - **Kamera-Following und Vorausschau (WP2.4, PO-Entscheide 2026-09-16):** Die Fassade fuehrt die Kamera nur, wenn das Spiel sie ausdruecklich anmeldet; ohne Anmeldung bleibt der Frame unveraendert, damit bestehende Spiele und Tests bitgleich bleiben (Klarstellung). Die Vorausschau ist die Fokus-Geschwindigkeit mal einer Sekunde, begrenzt durch `look_ahead_max` (freigegebener Startwert; Feinabstimmung im Spielgefuehl-Test in P2).
+
+**Knochenverformung (Skinning): Ergänzung P1, PO-Entscheid 2026-09-16, Stufe A, PO-Entscheid V-20**
+
+Additiv zum Mesh-Kanal oben (PO-Entscheid „Figuren mit Knochenverformung sichtbar machen"). Kein
+bestehendes Feld ändert Typ oder Bedeutung; eine Instanz ohne Skelett (`skin == None`) verhält sich
+exakt wie vor dieser Ergänzung und kostet den Mesh-Pass nichts Zusätzliches.
+
+```rust
+// grimoire_render::mesh — MeshVertex wächst additiv (56 statt 32 Byte, repr(C), kein Padding):
+pub struct MeshVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub joints: [u16; 4],   // neu: bis zu vier Knochenindizes in die Matrizenpalette der Instanz
+    pub weights: [f32; 4],  // neu: zugehörige Gewichte, Summe 1.0 (Toleranz 1e-3, MeshData::validate)
+}
+// Ohne Skelett: joints = [0, 0, 0, 0], weights = [1.0, 0.0, 0.0, 0.0] (MeshVertex::new/Default) —
+// Gewicht 1 auf Knochen 0, exakt die vor dieser Ergänzung bestehende Geometrie jedes prozeduralen
+// Testmeshes (WP2.3), unverändert.
+
+// grimoire_render::stage3d — additiv:
+pub const MAX_SKIN_JOINTS: u32 = 256;   // engine ADR-0013: 256 Knochen x 64 Byte = 16 KiB Palette
+#[non_exhaustive]
+pub struct SkinBinding {                 // Debug, Clone, Copy, PartialEq, Eq, Default
+    pub joint_offset: u32,               // Index in StageFrame::joint_matrices
+    pub joint_count: u32,                // 1..=MAX_SKIN_JOINTS
+}
+// MeshInstance (§6 oben) wächst additiv um: pub skin: Option<SkinBinding>   // Default: None
+
+// StageFrame (§6 oben) wächst additiv um:
+//   pub joint_matrices: Vec<[[f32; 4]; 4]>,   // von clear() geleert wie meshes/materials/point_lights
+```
+
+**Semantik:**
+- **Herkunft der Matrizen:** `joint_matrices` sind bereits fertig zusammengesetzte
+  Skinning-Matrizen (`Weltpose_des_Knochens * inverse_bind`), eine flache, über alle geskinnten
+  Instanzen des Frames verkettete Tabelle — analog zu `materials`, das `MaterialHandle` indiziert.
+  Dieser Vertrag definiert nur die Tabelle und ihre Indizierung; *wie* eine Pose zu Matrizen wird
+  (`grimoire_render::figure_format::compute_skin_matrices`/`rest_pose_skin_matrices`), ist ein
+  Hilfsprogramm außerhalb dieses Vertrags, kein Vertragsbestandteil und ausdrücklich kein
+  Animationssystem (keine Zeitachse, keine Interpolation) — Animationskurven und Laufzyklen bleiben
+  wie vom PO abgegrenzt außerhalb dieses Pakets.
+- **Gültigkeit:** Eine Instanz mit `skin = Some(binding)`, deren Bereich nicht vollständig in
+  `StageFrame::joint_matrices` liegt, deren `joint_count` `0` ist oder `MAX_SKIN_JOINTS` übersteigt,
+  wird wie jede andere strukturell ungültige Instanz behandelt: verworfen und in
+  `StageStats::meshes_rejected_invalid` gezählt (kein eigener Zähler — eine weitere Vorbedingung an
+  dieselbe Instanz, kein neuer Fehlerfall, den ein Aufrufer unterscheiden müsste), nie ein Absturz.
+- **Zweiter Vertex-Pfad, kein Rückfallweg (`grimoire_render::mesh_pass`):** Der Mesh-Pass bekommt
+  eine zweite Pipeline für geskinnte Instanzen, die Knochenmatrizen aus einem Storage-Buffer im
+  Vertex-Stage liest (Gruppe 3) und densel­ben Fragment-Shader (PBR, Schatten, Spekular-AA) wie der
+  bestehende Pfad speist; der bestehende Pfad für starre Meshes bleibt unverändert und unangetastet.
+  Engine-ADR-0013 hat `vertex_storage` auf allen drei CI-Zieladaptern nachgewiesen, allerdings über
+  einen gesonderten, angehobenen Kontext (`GpuContext::new_offscreen_with_limits`) für genau diese
+  Messung — der tatsächliche Renderer-Pfad (`GpuContext::new_offscreen`/`new_for_window`) forderte
+  bis zu dieser Ergänzung eine bewusst konservative WebGL2-Grenze mit **null** Storage-Buffern an,
+  wodurch die Skinning-Pipeline ohne weitere Änderung nie hätte entstehen können. Diese Ergänzung
+  hebt diese Grenze minimal an (genau ein Storage-Buffer, Vertex-Stage, ≥ 16 MiB Bindungsgröße,
+  gedeckelt auf das tatsächliche Adaptermaximum) — siehe `grimoire_gpu::context::conservative_
+  required_limits` und die Änderung selbst im Pull-Request-Text unter „Abweichungen" für die
+  Begründung und die damit aufgegebene (rein hypothetische, in P1 nirgends benötigte) strikte
+  WebGL2/GLES-3.0-Kompatibilität ohne jeden Storage-Buffer.
+- **Schatten (bekannte Lücke, WP2.6):** Der Schlüssellicht-Schattenwurf zeichnet geskinnte Instanzen
+  bewusst **nicht** — ihre Ruhepose-Geometrie würde einen falsch geformten Schatten werfen. Solange
+  eine geskinnte Instanz gezeichnet wird, bleibt `StageStats::shadow_casters_drawn` unverändert
+  gleich `meshes_drawn` (Vertrag oben), zählt also auch eine tatsächlich nicht schattenwerfende
+  geskinnte Instanz mit — ein bekannter, im Pull-Request-Text gemeldeter Genauigkeitsverlust dieses
+  Zählers, keine neue Falschmeldung für Szenen ohne Skinning.
+- **Laden aus Packs:** `grimoire_render::figure_format` dekodiert die Pack-Nutzlasten reiner
+  Figuren (Mesh, Material, Rohtextur, Skelett, Figuren-Bauplan) aus rohen Bytes, ohne Kante zu
+  `grimoire_assets` (Crate-Karte §1 verbietet diese Kante in beide Richtungen, jede Kantenart); das
+  zusammenführende Laden über `PackReader`/`AssetStore` und die Registrierung über
+  `WgpuRenderer::register_mesh`/`register_texture` liegt in der Fassade
+  (`grimoire::adapters::figure_assets`), die als einzige Crate beide Seiten kennt. Kein
+  Vertragsbestandteil dieses Abschnitts; siehe §12 für das Pack-Format selbst und den
+  Pull-Request-Text für die dort verwendeten `AssetKind`-Werte.
 
 ## 7. `grimoire_ecs`
 

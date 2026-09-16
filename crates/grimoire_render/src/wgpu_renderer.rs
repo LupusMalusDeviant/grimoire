@@ -472,6 +472,7 @@ impl WgpuRenderer {
                 specular_aa,
                 &frame.shadow_config,
                 &frame.blob_shadows,
+                &frame.joint_matrices,
             )
             .map_err(map_gpu_error)?;
 

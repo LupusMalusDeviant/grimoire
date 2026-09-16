@@ -18,10 +18,11 @@ mod vertex {
     // `BulletInstance` elsewhere in this crate.
     #![allow(unsafe_code)]
 
-    /// One mesh vertex: position, normal and texture coordinate. Layout is `#[repr(C)]`, 32
-    /// bytes, no padding, uploaded to the GPU verbatim as a vertex buffer element.
+    /// One mesh vertex: position, normal, texture coordinate, and (P1 skinning addendum, contract
+    /// §6 changelog 2026-09-16) up to four bone influences. Layout is `#[repr(C)]`, 56 bytes, no
+    /// padding, uploaded to the GPU verbatim as a vertex buffer element.
     #[repr(C)]
-    #[derive(Debug, Clone, Copy, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
+    #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct MeshVertex {
         /// Model-space position.
         pub position: [f32; 3],
@@ -33,6 +34,49 @@ mod vertex {
         /// base colour, normal and occlusion-roughness-metallic textures (`mesh.wgsl`); WP2.3's
         /// provisional shading did not read it.
         pub uv: [f32; 2],
+        /// Up to four bone indices this vertex is skinned against, indexing into the instance's
+        /// bone matrix palette ([`crate::MeshInstance::skin`]). A mesh with no skeleton (every
+        /// procedural mesh in this crate) uses `[0, 0, 0, 0]` with [`MeshVertex::weights`]
+        /// `[1.0, 0.0, 0.0, 0.0]` — bone 0 with full weight — which the skinning vertex path
+        /// treats as the identity transform when the instance's palette supplies one. Registration
+        /// does not check these against a skeleton (P1 has no CPU-side skeleton type); the pack
+        /// decoder (`figure_format`) checks each index against its skeleton's joint count before a
+        /// mesh ever reaches [`crate::WgpuRenderer::register_mesh`].
+        pub joints: [u16; 4],
+        /// Skinning weight for each of [`MeshVertex::joints`], summing to `1.0` (tolerance `1e-3`,
+        /// checked by [`crate::mesh::MeshData::validate`] and, before that, by the pack decoder).
+        pub weights: [f32; 4],
+    }
+
+    impl Default for MeshVertex {
+        /// Zero position/normal/uv (unchanged from before this field grew), bone 0 with full
+        /// weight — "no skeleton" per this struct's doc comment, *not* an all-zero weight vector
+        /// (which would skin every vertex to nothing).
+        fn default() -> Self {
+            Self {
+                position: [0.0; 3],
+                normal: [0.0; 3],
+                uv: [0.0; 2],
+                joints: [0; 4],
+                weights: [1.0, 0.0, 0.0, 0.0],
+            }
+        }
+    }
+
+    impl MeshVertex {
+        /// Builds an unskinned vertex: `position`, `normal`, `uv`, and the "no skeleton" bone
+        /// binding from [`MeshVertex::default`] (bone 0, full weight). Every procedural generator
+        /// in [`crate::procedural`] uses this constructor, so their output is byte-for-byte the
+        /// same geometry as before this struct grew skinning fields.
+        #[must_use]
+        pub fn new(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
+            Self {
+                position,
+                normal,
+                uv,
+                ..Self::default()
+            }
+        }
     }
 }
 pub use vertex::MeshVertex;
@@ -50,7 +94,11 @@ pub struct MeshData {
 
 /// Failure registering a [`MeshData`] (plan 0002 WP2.3). Registration never panics: every
 /// structural problem a mesh can have is reported through this type instead.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// No longer `Eq` since the P1 skinning addendum added [`MeshError::WeightSumOutOfTolerance`]'s
+/// `f32` field (`f32` has no total order, hence no `Eq`); every existing comparison only ever used
+/// `PartialEq` (`assert_eq!`), so this is not a behaviour change for any caller.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum MeshError {
     /// The mesh has no vertices.
     #[error("mesh has no vertices")]
@@ -72,6 +120,17 @@ pub enum MeshError {
     /// A vertex position or normal has a non-finite (NaN or infinite) component.
     #[error("vertex {0} has a non-finite position or normal")]
     NonFiniteVertex(u32),
+    /// A vertex's [`MeshVertex::weights`] do not sum to `1.0` within the `1e-3` tolerance (P1
+    /// skinning addendum, contract §6 changelog 2026-09-16). Checked here — not only by the pack
+    /// decoder (`figure_format`) — so a malformed skin binding can never reach the GPU, regardless
+    /// of how the mesh was constructed.
+    #[error("vertex {vertex} skinning weights sum to {sum}, not 1.0 (tolerance 1e-3)")]
+    WeightSumOutOfTolerance {
+        /// The offending vertex.
+        vertex: u32,
+        /// The actual sum of [`MeshVertex::weights`].
+        sum: f32,
+    },
     /// The mesh has more vertices or indices than fit into a `u32`-indexed buffer.
     #[error("mesh exceeds u32::MAX vertices or indices")]
     TooManyElements,
@@ -121,6 +180,14 @@ impl MeshData {
                 #[allow(clippy::cast_possible_truncation)]
                 return Err(MeshError::NonFiniteVertex(vertex_index as u32));
             }
+            let weight_sum: f32 = vertex.weights.iter().sum();
+            if !weight_sum.is_finite() || (weight_sum - 1.0).abs() > 1e-3 {
+                #[allow(clippy::cast_possible_truncation)]
+                return Err(MeshError::WeightSumOutOfTolerance {
+                    vertex: vertex_index as u32,
+                    sum: weight_sum,
+                });
+            }
         }
         Ok(())
     }
@@ -163,29 +230,53 @@ mod tests {
     fn triangle() -> MeshData {
         MeshData {
             vertices: vec![
-                MeshVertex {
-                    position: [0.0, 0.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [0.0, 0.0],
-                },
-                MeshVertex {
-                    position: [1.0, 0.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [1.0, 0.0],
-                },
-                MeshVertex {
-                    position: [0.0, 1.0, 0.0],
-                    normal: [0.0, 0.0, 1.0],
-                    uv: [0.0, 1.0],
-                },
+                MeshVertex::new([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0]),
+                MeshVertex::new([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0]),
+                MeshVertex::new([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0]),
             ],
             indices: vec![0, 1, 2],
         }
     }
 
     #[test]
-    fn mesh_vertex_is_32_bytes() {
-        assert_eq!(std::mem::size_of::<MeshVertex>(), 32);
+    fn mesh_vertex_is_56_bytes() {
+        assert_eq!(std::mem::size_of::<MeshVertex>(), 56);
+    }
+
+    #[test]
+    fn mesh_vertex_new_defaults_to_bone_zero_full_weight() {
+        let vertex = MeshVertex::new([1.0, 2.0, 3.0], [0.0, 0.0, 1.0], [0.5, 0.5]);
+        assert_eq!(vertex.joints, [0, 0, 0, 0]);
+        assert_eq!(vertex.weights, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn mesh_vertex_default_matches_new_with_zeroed_geometry() {
+        assert_eq!(
+            MeshVertex::default(),
+            MeshVertex::new([0.0; 3], [0.0; 3], [0.0; 2])
+        );
+    }
+
+    #[test]
+    fn weight_sum_out_of_tolerance_is_rejected_without_panic() {
+        let mut mesh = triangle();
+        mesh.vertices[1].weights = [0.5, 0.0, 0.0, 0.0]; // sums to 0.5, not 1.0
+        assert_eq!(
+            mesh.validate(),
+            Err(MeshError::WeightSumOutOfTolerance {
+                vertex: 1,
+                sum: 0.5
+            })
+        );
+    }
+
+    #[test]
+    fn weight_sum_within_tolerance_passes() {
+        let mut mesh = triangle();
+        // 1.0 + 1e-4 is within the 1e-3 tolerance.
+        mesh.vertices[0].weights = [1.000_1, 0.0, 0.0, 0.0];
+        assert_eq!(mesh.validate(), Ok(()));
     }
 
     #[test]

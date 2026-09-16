@@ -72,6 +72,35 @@ pub struct MaterialHandle(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TextureHandle(pub u32);
 
+/// Largest number of joints one [`SkinBinding`] may reference (P1 skinning addendum, contract §6
+/// changelog 2026-09-16). Matches engine ADR-0013's measured headroom (256 bones x 64 bytes = 16
+/// KiB, far under every measured `max_storage_buffer_binding_size`) and the pack format's own
+/// `FNP_SKELETON::joint_count` limit, so a mesh decoded from a conforming pack can never exceed
+/// it.
+pub const MAX_SKIN_JOINTS: u32 = 256;
+
+/// A [`MeshInstance`]'s bone matrix palette: a contiguous range of
+/// [`crate::StageFrame::joint_matrices`], analogous to how [`MaterialHandle`] indexes
+/// [`crate::StageFrame::materials`]. `joint_matrices` holds already-composed
+/// (`bone_local_pose * inverse_bind`) skinning matrices for *every* skinned instance in the frame,
+/// concatenated; this binding says which slice belongs to one instance. Computing those matrices
+/// from a skeleton and a pose (animation curves, blending) is explicitly out of this package's
+/// scope — the caller supplies the final matrices already multiplied.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`] (`joint_offset: 0, joint_count: 0`, which [`MeshInstance::skin`] never sets on its
+/// own — a `None` skin binding is the "no skeleton" case, not a zero-length one).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkinBinding {
+    /// Index of this instance's first matrix in [`crate::StageFrame::joint_matrices`].
+    pub joint_offset: u32,
+    /// Number of matrices belonging to this instance, `1..=MAX_SKIN_JOINTS`.
+    /// [`crate::MeshVertex::joints`] indices for this mesh must all be `< joint_count` (checked by
+    /// the pack decoder against the source skeleton, not re-checked per frame here).
+    pub joint_count: u32,
+}
+
 /// Column-major 4x4 identity matrix, in the same convention as [`crate::Camera2D::view_projection`].
 const IDENTITY_TRANSFORM: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
@@ -639,6 +668,14 @@ pub struct MeshInstance {
     /// mesh pass shares layers 1-3 with world sprites); any other value is rejected and counted
     /// (`StageStats::meshes_rejected_layer`), analogous to the bullet pass's palette-space check.
     pub layer: RenderLayer,
+    /// Bone matrix palette for a skinned mesh (P1 skinning addendum, contract §6 changelog
+    /// 2026-09-16), `None` for a rigid mesh (the only case before this field was added). A
+    /// `Some(binding)` whose range does not fit entirely inside
+    /// [`crate::StageFrame::joint_matrices`], or whose `joint_count` is `0` or exceeds
+    /// [`MAX_SKIN_JOINTS`], is rejected like any other structurally invalid instance
+    /// (`StageStats::meshes_rejected_invalid`) — the mesh pass costs nothing extra for an instance
+    /// with `skin == None`, per the second vertex path added alongside this field.
+    pub skin: Option<SkinBinding>,
 }
 
 impl Default for MeshInstance {
@@ -648,6 +685,7 @@ impl Default for MeshInstance {
             material: MaterialHandle::default(),
             transform: IDENTITY_TRANSFORM,
             layer: RenderLayer::World,
+            skin: None,
         }
     }
 }

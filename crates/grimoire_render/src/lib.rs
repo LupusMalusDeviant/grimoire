@@ -23,10 +23,22 @@
 //! ([`ShadowMode::Blob`], [`BlobShadowInstance`]), switchable per frame via
 //! [`StageFrame::shadow_config`] ([`ShadowConfig`]); see the `stage3d` module's WP2.6 section and
 //! this crate's WP2.6 ADR for what is deferred (point-light shadow casters).
+//!
+//! Skinned meshes (P1 "Figuren in der Engine" package, contract §6 changelog 2026-09-16):
+//! [`MeshVertex`] carries up to four bone influences (`joints`/`weights`), [`MeshInstance::skin`]
+//! ([`SkinBinding`]) points a drawn instance at its slice of [`StageFrame::joint_matrices`], and
+//! the mesh pass gains a second vertex path that applies them through a group-3 bone matrix
+//! storage buffer (engine ADR-0013's proven `vertex_storage` capability) — an instance with
+//! `skin == None` never touches any of it. [`figure_format`] decodes the pack payloads a figure is
+//! made of (mesh, material, raw texture, skeleton, figure manifest) into these types; it takes
+//! only raw bytes (never a `grimoire_assets` type — the engine crate map forbids that edge), so the
+//! `grimoire` facade is where a `.pack` file's entries actually become a registered, drawable
+//! figure.
 
 use std::time::Duration;
 
 pub mod cluster_layout;
+pub mod figure_format;
 mod mesh;
 mod mesh_pass;
 pub mod procedural;
@@ -43,8 +55,8 @@ pub use stage::{
 };
 pub use stage3d::{
     AlphaMode, AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, CameraFollow,
-    DirectionalLight, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial, PointLight,
-    ShadowConfig, ShadowMode, TextureHandle,
+    DirectionalLight, MAX_SKIN_JOINTS, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial,
+    PointLight, ShadowConfig, ShadowMode, SkinBinding, TextureHandle,
 };
 pub use texture::{TextureColorSpace, TextureData, TextureError};
 
