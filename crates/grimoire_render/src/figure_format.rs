@@ -330,8 +330,9 @@ fn is_valid_tangent(tangent: [f32; 4]) -> bool {
 /// [`FORMAT_VERSION`] every other decoder in this module uses: [`MESH_FORMAT_VERSION_1`] (56 bytes
 /// per vertex, [`MeshVertex::tangent`] filled with the "no tangent" sentinel `[0.0; 4]`) and
 /// [`MESH_FORMAT_VERSION_2`] (72 bytes per vertex, `f32[4] tangent` read and checked against
-/// [`is_valid_tangent`], any other value rejected as [`FigureFormatError::InvalidTangent`]) are
-/// both accepted; anything else is [`FigureFormatError::UnsupportedVersion`].
+/// `is_valid_tangent` (private to this module), any other value rejected as
+/// [`FigureFormatError::InvalidTangent`]) are both accepted; anything else is
+/// [`FigureFormatError::UnsupportedVersion`].
 ///
 /// Checks `vertex_count` (`<= MAX_MESH_VERTICES`) and `index_count` (`<= MAX_MESH_INDICES`, a
 /// multiple of 3) against the shared spec's documented upper bounds *before* allocating either
