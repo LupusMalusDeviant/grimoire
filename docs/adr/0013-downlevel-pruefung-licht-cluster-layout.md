@@ -54,14 +54,15 @@ erlaubt (`max_storage_buffers_per_shader_stage = 0`, `max_compute_invocations_pe
 
 | Adapter | `fragment_storage` | `fragment_writable_storage` | `compute_shaders` | `vertex_storage` | `shader_model` | `max_storage_buffers_per_shader_stage` | `max_storage_buffer_binding_size` | `max_compute_workgroup_size` | `max_compute_invocations_per_workgroup` | `max_uniform_buffer_binding_size` | `max_bind_groups` | `max_texture_dimension_2d` | Funktionsnachweis |
 |---|---|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---|
-| Windows/WARP (Dx12) | true | true | true | true | Sm5 | 262144 | 2147483644 (≈ 2 GiB) | 1024×1024×64 | 1024 | 65536 (64 KiB) | 8 | 16384 | beide Pipelines liefen wirklich (lokal gemessen, `GRIMOIRE_GPU_ADAPTER=software`) |
-| Linux/lavapipe (Vulkan) | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ |
-| macOS „Apple Paravirtual device" (Metal) | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ | _CI ausstehend_ |
+| Windows/WARP (Dx12) | true | true | true | true | Sm5 | 262144 | 2147483644 (≈ 2 GiB) | 1024×1024×64 | 1024 | 65536 (64 KiB) | 8 | 16384 | beide Pipelines liefen wirklich (lokal gemessen, `GRIMOIRE_GPU_ADAPTER=software`; PR-CI 35049685258 bestätigt) |
+| Linux/lavapipe (Vulkan) | true | true | true | true | Sm5 | 48 | 134217728 (128 MiB) | 1024×1024×1024 | 1024 | 65536 (64 KiB) | 8 | 16384 | beide Pipelines liefen wirklich (PR-CI 35049685258, `ubuntu-latest`, Software-Adapter erzwungen) |
+| macOS „Apple Paravirtual device" (Metal) | true | true | true | true | Sm5 | 29 | 3758096384 (≈ 3,5 GiB) | 1024×1024×1024 | 1024 | 3758096384 (≈ 3,5 GiB) | 8 | 16384 | beide Pipelines liefen wirklich (PR-CI 35049685258, `macos-latest`, automatisch gewählter Adapter — macOS hat keinen CPU-Adapter, siehe „Messung") |
 
-Windows/WARP lokal gemessen (kein Fenster, `GRIMOIRE_GPU_ADAPTER=software`); Linux/lavapipe und
-macOS laufen nur in der CI (Windows-Entwicklungsrechner, keine Belastung der lokalen GPU, Vorgabe
-dieses Arbeitspakets) — diese ADR wird nach dem ersten grünen CI-Lauf mit den echten Zahlen aus dem
-Job-Summary ergänzt, bevor sie als angenommen gilt.
+Windows/WARP zusätzlich lokal gemessen (kein Fenster, `GRIMOIRE_GPU_ADAPTER=software`); alle drei
+Zeilen sind durch den ersten grünen CI-Lauf dieses Pull Requests bestätigt (Pull-Request-CI
+35049685258 und das Benchmark-Gate 35049685350, beide grün auf Windows, Linux und macOS). Auf allen
+drei Betriebssystemen liefen beide Funktionsnachweis-Pipelines tatsächlich durch — kein
+`grimoire-gpu-downlevel-tests-skipped` in keinem der drei Job-Logs.
 
 ## Datenlayout
 
@@ -96,49 +97,55 @@ Alle Typen und Größenberechnungen sind mit `size_of`/`align_of`-Tests eingefro
 
 ### Abgleich gegen die gemessene Grenze
 
-Gegen Windows/WARPs gemessenes `max_storage_buffer_binding_size = 2147483644` (≈ 2 GiB) liegt selbst
-das High-Budget-Total (≈ 3,41 MiB) um mehr als das 500-fache darunter — ein Test
-(`worst_case_high_budget_fits_the_measured_warp_limit` in `cluster_layout.rs`) hält diesen Vergleich
-gegen die aufgezeichnete WARP-Zahl fest. Da jeder der drei Puffer einzeln gebunden wird, ist ohnehin
-nur die *größte einzelne* Grenze relevant (die Index-Liste, ≈ 3,375 MiB im High-Budget) — auch das
-ist auf WARP kein Problem. Lavapipe- und Metal-Zahlen ergänzen diesen Abschnitt nach dem ersten
-grünen CI-Lauf; sollte einer von beiden `max_storage_buffer_binding_size` unter einigen MiB melden
-(unwahrscheinlich für Vulkan/Metal, beide WebGPU-Kernfunktionalität), wäre das der erste konkrete
-Hinweis auf einen nötigen Rückfallweg.
+Der schwächste der drei gemessenen Adapter bei `max_storage_buffer_binding_size` ist
+Linux/lavapipe mit 134.217.728 Byte (128 MiB) — das High-Budget-Total (≈ 3,41 MiB) liegt darunter um
+mehr als das 37-fache, das Low-Budget-Total (≈ 460 KiB) um mehr als das 280-fache. Ein Test
+(`worst_case_high_budget_fits_the_measured_warp_limit` in `cluster_layout.rs`) hält den Vergleich
+gegen die aufgezeichnete WARP-Zahl (≈ 2 GiB, noch großzügiger) fest; lavapipes engerer, aber
+weiterhin komfortabler Wert bestätigt, dass die Wahl von WARP als Referenz in diesem Test keine
+Lücke verdeckt. Da jeder der drei Puffer einzeln gebunden wird, ist ohnehin nur die *größte
+einzelne* Grenze relevant (die Index-Liste, ≈ 3,375 MiB im High-Budget) — auch das ist auf allen drei
+gemessenen Adaptern unproblematisch. Der schwächste Wert bei `max_storage_buffers_per_shader_stage`
+ist macOS mit 29 — die drei Puffer dieses Layouts brauchen davon höchstens drei gleichzeitig
+gebunden, auch das mit großem Abstand erfüllt.
 
 ## Empfehlung
 
-**Vorschlag: WP3.4 mit echten Storage-Buffern im Fragment-Stage und in Compute bauen — kein
-Rückfallweg auf Uniform-Buffer oder Texturen nötig, vorbehaltlich der ausstehenden lavapipe-/
-Metal-Zahlen.**
+**WP3.4 mit echten Storage-Buffern im Fragment-Stage und in Compute bauen — kein Rückfallweg auf
+Uniform-Buffer oder Texturen nötig.** Alle drei gemessenen Zieladapter (Windows/WARP, Linux/lavapipe,
+macOS/Apple-Paravirtual-Metal) erfüllen die vier relevanten Downlevel-Flags und liegen mit ihren
+Speichergrenzen um mindestens das 37-fache über dem berechneten Spitzenbedarf; der Funktionsnachweis
+(Fragment-Storage-Read, Compute-Write plus Readback) lief auf allen dreien tatsächlich durch, ohne
+einen einzigen Skip (siehe „Messung").
 
 Begründung:
 
-- WARP (Windows) erfüllt alle vier relevanten Downlevel-Flags (`fragment_storage`,
-  `fragment_writable_storage`, `compute_shaders`, `vertex_storage`) und hat mit ≈ 2 GiB
-  `max_storage_buffer_binding_size` keinerlei praktische Enge für ≈ 3,41 MiB Spitzenbedarf.
+- Alle drei gemessenen Adapter (WARP, lavapipe, Apple-Paravirtual-Metal) erfüllen alle vier
+  relevanten Downlevel-Flags (`fragment_storage`, `fragment_writable_storage`, `compute_shaders`,
+  `vertex_storage`) und haben mit mindestens 128 MiB `max_storage_buffer_binding_size` (der
+  schwächste Wert, lavapipe) keinerlei praktische Enge für ≈ 3,41 MiB Spitzenbedarf im High-Budget.
 - DX12, Vulkan und Metal sind, anders als WebGL/GLES 3.0 (auf das die bestehende
   `new_offscreen`-Konfiguration bewusst zusätzlich vorbereitet ist), reguläre native Backends, für
   die Storage-Buffer im Fragment-Stage und Compute-Shader Kernfunktionalität sind, keine optionalen
-  Erweiterungen für schwache Hardware. Der Funktionsnachweis (Fragment-Storage-Read, Compute-Write
-  plus Readback) ist deshalb auf Vulkan/lavapipe und Metal/Apple-Paravirtual mit hoher
-  Wahrscheinlichkeit ebenso grün — zu bestätigen durch den ersten CI-Lauf, siehe „Messung".
-- Sollte lavapipe oder die macOS-Paravirtual-Metal-Implementierung wider Erwarten eine der vier
-  Downlevel-Flags oder eine der Speichergrenzen verfehlen, bleibt der hier festgelegte
-  Drei-Puffer-Aufbau (Lichtliste/Cluster-Tabelle/Index-Liste) auch mit Uniform-Buffern denkbar **nur
-  für die Lichtliste selbst** (8.192 Byte im High-Budget passen unter praktisch jede
-  `max_uniform_buffer_binding_size`, auch die hier gemessenen 64 KiB) — Cluster-Tabelle (27.648
-  Byte) und erst recht die Index-Liste (bis zu 3,54 MB) sprengen einen typischen
-  Uniform-Buffer-Grenzwert deutlich. Ein echter Rückfallweg müsste deshalb entweder die
+  Erweiterungen für schwache Hardware — genau das bestätigen die gemessenen Zahlen.
+- Der Funktionsnachweis (Fragment-Storage-Read, Compute-Write plus Readback) lief im ersten
+  Pull-Request-CI-Lauf auf allen drei Betriebssystemen tatsächlich durch, ohne einen einzigen Skip
+  (siehe „Messung") — kein hypothetischer Rückfallweg ist nötig.
+- Zur Vollständigkeit, falls ein künftiger Zieladapter (etwa ein WebGL/GLES-Backend in P2) eine der
+  vier Downlevel-Flags doch verfehlt: der hier festgelegte Drei-Puffer-Aufbau
+  (Lichtliste/Cluster-Tabelle/Index-Liste) wäre auch mit Uniform-Buffern denkbar **nur für die
+  Lichtliste selbst** (8.192 Byte im High-Budget passen unter praktisch jede
+  `max_uniform_buffer_binding_size`, auch die hier gemessenen 64 KiB auf WARP/lavapipe) —
+  Cluster-Tabelle (27.648 Byte) und erst recht die Index-Liste (bis zu 3,54 MB) sprengen einen
+  typischen Uniform-Buffer-Grenzwert deutlich. Ein echter Rückfallweg müsste deshalb entweder die
   Cluster-Auflösung drastisch reduzieren, das Lichtbudget für den Fallback-Pfad weiter senken als
   PRD-0003 FR-11 vorsieht, oder Cluster-Tabelle/Index-Liste als Textur kodieren (z. B. eine
   `R32Uint`-2D-Textur, adressiert über Cluster-Koordinate statt linearem Index) — keine dieser
-  Optionen ist mit dieser ADR entschieden, weil die Messung sie aller Voraussicht nach nicht braucht.
+  Optionen ist mit dieser ADR entschieden, weil keiner der drei P1-Zieladapter sie braucht.
 
-**Offener Punkt für den Product Owner:** Bestätigung dieser Empfehlung, sobald die lavapipe-/
-Metal-Zahlen aus dem ersten grünen CI-Lauf oben eingetragen sind (siehe „Messung"). Meine Empfehlung:
-bei durchweg grünem Funktionsnachweis auf allen drei Betriebssystemen gilt der Rückfallweg als nicht
-nötig und WP3.4 kann direkt auf dem hier festgelegten Storage-Buffer-Layout aufbauen.
+**Offener Punkt für den Product Owner:** Bestätigung dieser Empfehlung. Meine Empfehlung: annehmen —
+der Funktionsnachweis lief auf allen drei Betriebssystemen tatsächlich grün, WP3.4 kann direkt auf
+dem hier festgelegten Storage-Buffer-Layout aufbauen.
 
 ## Entscheidung
 
@@ -166,12 +173,15 @@ Diese ADR gilt erst nach PO-Freigabe als angenommen; bis dahin bleibt die Umsetz
 
 ### Negativ
 
-- Die Empfehlung ist bis zum ersten grünen CI-Lauf vorläufig (nur Windows/WARP lokal bestätigt);
-  diese ADR muss vor der PO-Freigabe mit den lavapipe-/Metal-Zahlen ergänzt werden.
 - Der Rückfallweg (Uniform-Buffer/Texturen) ist nur skizziert, nicht implementiert oder gemessen —
-  sollte er doch gebraucht werden, ist das ein eigenes Arbeitspaket.
+  sollte er für einen künftigen Zieladapter (P2) doch gebraucht werden, ist das ein eigenes
+  Arbeitspaket.
 - Das Index-Listen-Worst-Case (jedes Licht erreicht jeden Cluster) ist bewusst pessimistisch; der
   reale Speicherbedarf nach echtem Culling dürfte deutlich kleiner sein, aber das misst erst WP3.4.
+- Die gemessenen Zahlen sind CI-Runner-Werte (WARP/lavapipe/Apple-Paravirtual-Metal), keine
+  GPU-Budget-Zusage für Referenz-Hardware — wie schon bei ADR-0011/ADR-0012 ist die für P1
+  vorgesehene Messsitzung (Plan 0002 WP3.3) der eigentliche Budget-Nachweis für das 8-ms-GPU-Ziel;
+  diese ADR beantwortet nur, ob die Fähigkeit an sich vorhanden ist, nicht ihre Kosten.
 
 ## Weitere Informationen
 
@@ -180,7 +190,8 @@ Diese ADR gilt erst nach PO-Freigabe als angenommen; bis dahin bleibt die Umsetz
   `crates/grimoire_render/src/cluster_layout.rs`.
 - CI: `.github/scripts/report-gpu-downlevel.sh`, `.github/workflows/ci.yml` (Schritte „Test WP3.1
   downlevel capability probe on the CPU adapter" und „Report WP3.1 downlevel capabilities").
-- V-20-Kandidat für eine künftige PO-Sammelsitzung: Bestätigung der Empfehlung oben nach dem ersten
-  grünen CI-Lauf; ob `grimoire_render::cluster_layout` unverändert in WP3.4 übernommen wird oder vor
-  dessen Start noch einmal per Vertrags-PR angepasst werden soll.
+  Pull-Request-CI 35049685258 und das Benchmark-Gate 35049685350 grün auf Windows, Linux und macOS.
+- V-20-Kandidat für eine künftige PO-Sammelsitzung: Bestätigung der Empfehlung oben; ob
+  `grimoire_render::cluster_layout` unverändert in WP3.4 übernommen wird oder vor dessen Start noch
+  einmal per Vertrags-PR angepasst werden soll.
 - Review dieser Entscheidung an WP3.4s Start (das Layout hier ist Eingabe, keine Umsetzung).

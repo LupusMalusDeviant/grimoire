@@ -187,17 +187,20 @@ mod tests {
     }
 
     #[test]
-    fn worst_case_high_budget_fits_the_measured_warp_limit() {
-        // Windows/WARP, measured by `grimoire_gpu`'s WP3.1 downlevel probe
-        // (`cargo test -p grimoire_gpu --test downlevel -- --nocapture`,
-        // `GRIMOIRE_GPU_ADAPTER=software`): `max_storage_buffer_binding_size=2147483644`. Not a
-        // live query (this crate has no GPU access, contract §6 layer rule) — a recorded number,
-        // updated if a future downlevel probe run measures a smaller value on any of the three CI
-        // adapters. See the WP3.1 PR discussion / ADR for the lavapipe and Metal numbers.
-        const MEASURED_WARP_MAX_STORAGE_BUFFER_BINDING_SIZE: usize = 2_147_483_644;
+    fn worst_case_high_budget_fits_the_weakest_measured_adapter() {
+        // The weakest `max_storage_buffer_binding_size` of the three P1 CI adapters, measured by
+        // `grimoire_gpu`'s WP3.1 downlevel probe (`cargo test -p grimoire_gpu --test downlevel --
+        // --nocapture`) in this work package's pull request (CI run 35049685258): Linux/lavapipe
+        // at 134217728 (128 MiB) — weaker than Windows/WARP's 2147483644 (~2 GiB) and macOS/Apple
+        // Paravirtual Metal's 3758096384 (~3.5 GiB). Not a live query (this crate has no GPU
+        // access, contract §6 layer rule) — a recorded number, updated if a future downlevel probe
+        // run measures a smaller value on any P1 CI adapter. See `docs/adr/
+        // 0013-downlevel-pruefung-licht-cluster-layout.md` for the full table and the other two
+        // adapters' numbers.
+        const MEASURED_WEAKEST_MAX_STORAGE_BUFFER_BINDING_SIZE: usize = 134_217_728;
         assert!(
             worst_case_total_bytes(LIGHT_BUDGET_HIGH)
-                <= MEASURED_WARP_MAX_STORAGE_BUFFER_BINDING_SIZE
+                <= MEASURED_WEAKEST_MAX_STORAGE_BUFFER_BINDING_SIZE
         );
     }
 }
