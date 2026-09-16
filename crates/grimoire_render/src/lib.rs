@@ -16,6 +16,9 @@
 //!
 //! Mesh geometry ([`MeshData`], [`crate::procedural`]) and its GPU upload
 //! ([`WgpuRenderer::register_mesh`]) are plan 0002 WP2.3; see the `mesh` and `mesh_pass` modules.
+//! PBR shading (GGX, geometric specular anti-aliasing, optional textures) is WP2.5; texture
+//! registration ([`TextureData`], [`WgpuRenderer::register_texture`]) mirrors the mesh registry,
+//! see the `texture` module.
 
 use std::time::Duration;
 
@@ -25,6 +28,7 @@ pub mod procedural;
 mod sprite_pass;
 mod stage;
 mod stage3d;
+mod texture;
 mod wgpu_renderer;
 
 pub use mesh::{MeshData, MeshError, MeshVertex};
@@ -35,6 +39,7 @@ pub use stage3d::{
     AlphaMode, AmbientLight, BulletLightCap, Camera25D, CameraFollow, DirectionalLight,
     MaterialHandle, MeshHandle, MeshInstance, PbrMaterial, PointLight, TextureHandle,
 };
+pub use texture::{TextureColorSpace, TextureData, TextureError};
 
 mod instance {
     // bytemuck's derive macros expand to `unsafe impl` blocks.

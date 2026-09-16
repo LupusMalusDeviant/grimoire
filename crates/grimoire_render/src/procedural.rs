@@ -11,8 +11,9 @@
 //! back-face culling (like the existing sprite pass, whose rotation can also flip winding), so a
 //! generator here does not have to reason about front-face orientation. Every generator produces
 //! finite positions and normals; texture coordinates are simple planar, cylindrical or spherical
-//! mappings good enough for the provisional shading of WP2.3 (base colour factor only) and are
-//! not claimed to be seam-free or distortion-free for a future textured pass.
+//! mappings, good enough for factor-only PBR materials (WP2.5) but not claimed to be seam-free or
+//! distortion-free for a textured material — none of these procedural test meshes is UV-unwrapped
+//! for real texture authoring (that needs the Blender pipeline, OF-3.4/P2).
 
 use std::f32::consts::TAU;
 
