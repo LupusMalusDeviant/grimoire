@@ -16,8 +16,8 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 | [0005](0005-grimoire-core-als-blatt-crate.md) | `grimoire_core` als abhängigkeitsfreie Blatt-Crate |
 | [0006](0006-paralleler-scheduler-deterministische-zusammenfuehrung.md) | Paralleler Scheduler mit deterministischer Zusammenführung |
 | [0007](0007-sigil-quelltextsyntax-v1.md) | Sigil-Quelltextsyntax v1 (akzeptiert 2026-09-15) |
-| [0008](0008-crate-map-erweiterung-p1.md) | Crate-Map-Erweiterung P1 (akzeptiert 2026-09-15; Nummer vorläufig bis zum Merge) |
-| [0009](0009-lizenz-alle-rechte-vorbehalten.md) | Lizenz der Engine: Alle Rechte vorbehalten (Nummer vorläufig bis zum Merge der P1-Branches) |
+| [0008](0008-crate-map-erweiterung-p1.md) | Crate-Map-Erweiterung P1 (akzeptiert 2026-09-15) |
+| [0009](0009-lizenz-alle-rechte-vorbehalten.md) | Lizenz der Engine: Alle Rechte vorbehalten ( der P1-Branches) |
 | [0010](0010-benchmark-strategie.md) | Benchmark-Strategie für das Regressions-Gate (OF-17.3, akzeptiert 2026-09-15) |
 | [0011](0011-spekulares-anti-aliasing-statt-taa.md) | Kantenglättung für Glanzlichter: geometrisches Spekular-Anti-Aliasing statt TAA (OF-3.5, angenommen 2026-09-16) |
 | [0012](0012-schatten-key-light-shadowmap-plus-blob.md) | Schatten: Shadowmap für das Key-Light plus Blob-Schatten (OF-3.2, angenommen 2026-09-16; Punktlicht-Schattenwerfer zurückgestellt) |
