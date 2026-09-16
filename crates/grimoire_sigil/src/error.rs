@@ -5,10 +5,10 @@ use crate::unit::{UnitError, UnitId};
 
 /// Errors reported by the content and `BulletPool` APIs of this crate.
 ///
-/// `#[non_exhaustive]`: the full runtime contract (§11) also defines `RegistryMismatch`,
-/// `AlreadyInstalled`, `NotInstalled`, `SwapLimit` and `ContentEpochMismatch`, all of which belong
-/// to `install()`/hot-swap (§11.6/§11.8) and are out of scope for WP1.3. They are omitted here
-/// rather than stubbed, and a later work package can add them without breaking existing matches.
+/// `#[non_exhaustive]`: `AlreadyInstalled` and `RegistryMismatch` (`install()`, contract §11.6)
+/// arrive with WP5.1; `NotInstalled`, `SwapLimit` and `ContentEpochMismatch` still belong to
+/// hot-swap (§11.8, WP5.5) and stay omitted rather than stubbed, so that work package can add them
+/// without breaking existing matches.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SigilError {
@@ -63,5 +63,22 @@ pub enum SigilError {
         unit: UnitId,
         /// The missing behavior id.
         behavior: BehaviorId,
+    },
+    /// [`crate::install`] was called on a [`grimoire_sim::Simulation`] that already has
+    /// [`crate::SigilContent`] installed.
+    #[error("sigil content is already installed on this simulation")]
+    AlreadyInstalled,
+    /// [`crate::install`] was given a library built against a different
+    /// [`BehaviorRegistry`](crate::BehaviorRegistry) (by fingerprint) than the `registry`
+    /// argument.
+    #[error(
+        "library was built against behavior registry fingerprint {loaded:#018x}, but install \
+         was given registry fingerprint {given:#018x}"
+    )]
+    RegistryMismatch {
+        /// Fingerprint the library was validated against ([`crate::SigilLibrary::new`]).
+        loaded: u64,
+        /// Fingerprint of the registry passed to [`crate::install`].
+        given: u64,
     },
 }

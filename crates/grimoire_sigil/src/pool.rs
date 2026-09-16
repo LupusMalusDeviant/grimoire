@@ -1,13 +1,15 @@
-//! `BulletPool`: the SoA bullet store (contract §11.3). This is the centrepiece of WP1.3 — a
-//! self-contained data structure, fully implemented and behaviour-tested, that does not need the
-//! not-yet-implemented tick-phase systems (`sigil.update`/`sigil.resolve`/...) to be useful.
+//! `BulletPool`: the SoA bullet store (contract §11.3). Built as a self-contained data structure
+//! in WP1.3; WP5.1 adds the mutable, data-parallel block view ([`PoolUpdateBlock`],
+//! [`BulletPool::update_blocks_mut`]) and the small bookkeeping hooks (`begin_tick`,
+//! `record_dropped_spawn`, `set_bounds`, `despawn_pending`) the `sigil.*` tick-phase systems
+//! (`crate::systems`) need, without touching the hash layout or the public spawn/despawn API.
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Range;
 
 use grimoire_core::{StableHash, StableHasher, Vec2, impl_stable_hash};
-use grimoire_ecs::slice_block_ranges;
+use grimoire_ecs::{QUERY_BLOCK_SIZE, slice_block_ranges};
 
 use crate::content::{BulletFlags, SigilContent};
 use crate::emitter::ClearFilter;
@@ -128,9 +130,12 @@ impl BulletSpawn {
 
 /// Why a bullet was despawned.
 ///
-/// `#[non_exhaustive]`: `Bounds`, `Transform`, `Behavior` and `Swap` are only ever produced by the
-/// not-yet-implemented tick-phase systems and hot-swap (§11.6/§11.8); they are listed here because
-/// [`BulletEvent`]/the golden pool hash already need a stable, complete set of tags.
+/// `#[non_exhaustive]`: `Lifetime` and `Bounds` are produced by `sigil.update`/`sigil.resolve`
+/// since WP5.1. `Transform` and `Behavior` stay unproduced until a bullet type can name a
+/// transform/behavior at all (`docs/formats/sigil.md` §11.4 open point 4: the `Transforms`
+/// section is still opaque, WP5.2) and `Swap` until hot-swap (§11.8, WP5.5); all three are listed
+/// here regardless because [`BulletEvent`]/the golden pool hash already need a stable, complete
+/// set of tags.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -178,6 +183,17 @@ impl_stable_hash!(BulletEvent {
     position,
     cause
 });
+
+/// One despawn decided by a `sigil.update` block (contract §11.6): the parallel block that found
+/// slot `index` beyond its `lifetime_ticks` or outside the simulation bounds cannot touch the
+/// pool's shared free list itself (it only owns a disjoint sub-slice of the SoA columns), so it
+/// returns this instead. `sigil.resolve` applies every block's list, in block order, through
+/// [`BulletPool::despawn_pending`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingDespawn {
+    pub(crate) index: u32,
+    pub(crate) cause: DespawnCause,
+}
 
 /// Read-only view of one live or dead bullet slot, only ever constructed by [`BulletPool`].
 #[derive(Debug, Clone, Copy)]
@@ -307,6 +323,73 @@ impl<'p> PoolBlock<'p> {
     }
 }
 
+/// One data-parallel, *mutable* block of pool slots for `sigil.update` (contract §11.7), as
+/// produced by [`BulletPool::update_blocks_mut`].
+///
+/// Every column is a disjoint sub-slice of the pool's own `Vec`s, split with `split_at_mut` (no
+/// `unsafe`, matching the contract's "ohne unsafe" requirement), so blocks can run through
+/// [`grimoire_ecs::run_blocks`] without aliasing. Read-only columns not needed by `sigil.update`
+/// (generation, flags, cascade, program) are intentionally omitted; `program` and `unit`/
+/// `bullet_type` are read-only here because WP5.1's interpreter never changes which program or
+/// bullet type a live bullet uses mid-flight (that is `Transforms`/WP5.2 territory).
+pub(crate) struct PoolUpdateBlock<'p> {
+    index: usize,
+    slots: Range<usize>,
+    pub(crate) alive: &'p [bool],
+    pub(crate) unit: &'p [u16],
+    pub(crate) bullet_type: &'p [u16],
+    pub(crate) program: &'p [u16],
+    pub(crate) position: &'p mut [Vec2],
+    pub(crate) previous_position: &'p mut [Vec2],
+    pub(crate) velocity: &'p mut [Vec2],
+    pub(crate) angle: &'p mut [f32],
+    pub(crate) speed: &'p mut [f32],
+    pub(crate) age: &'p mut [u32],
+    pub(crate) state: &'p mut [[f32; 4]],
+}
+
+impl PoolUpdateBlock<'_> {
+    /// Block index (`slots().start / grimoire_ecs::QUERY_BLOCK_SIZE`); the key into
+    /// `derive_block_rng`/random streams (contract §11.7) — unused by `sigil.update` itself in
+    /// WP5.1 (no per-tick randomness), kept for parity with [`PoolBlock::index`] and for WP5.2+.
+    #[allow(dead_code)]
+    pub(crate) const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Slot range covered by this block.
+    pub(crate) fn slots(&self) -> Range<usize> {
+        self.slots.clone()
+    }
+}
+
+/// Splits `slice` into consecutive immutable sub-slices of at most [`QUERY_BLOCK_SIZE`] elements
+/// each, matching [`slice_block_ranges`] exactly.
+fn split_ref_blocks<T>(slice: &[T]) -> Vec<&[T]> {
+    let mut rest = slice;
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let take = QUERY_BLOCK_SIZE.min(rest.len());
+        let (head, tail) = rest.split_at(take);
+        out.push(head);
+        rest = tail;
+    }
+    out
+}
+
+/// Mutable counterpart of [`split_ref_blocks`], built with `split_at_mut` only.
+fn split_mut_blocks<T>(slice: &mut [T]) -> Vec<&mut [T]> {
+    let mut rest = slice;
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let take = QUERY_BLOCK_SIZE.min(rest.len());
+        let (head, tail) = rest.split_at_mut(take);
+        out.push(head);
+        rest = tail;
+    }
+    out
+}
+
 /// Structure-of-arrays store of bullets with a stable-handle, generational free list, exactly like
 /// the ECS entity allocator (contract §7/§11.3).
 ///
@@ -319,11 +402,10 @@ pub struct BulletPool {
     capacity: u32,
     slot_count: u32,
     alive_count: u32,
-    /// Simulation bounds (contract §11.3, §11.6 `SigilConfig`). Read by the not-yet-implemented
-    /// `sigil.update` bounds check (§11.6); WP1.3 has no writer for these fields yet (`install`
-    /// is out of scope here), so they stay at their `Default` (`Vec2::ZERO`) for every pool built
-    /// in this crate today. They are still real fields, not placeholders: the contract freezes
-    /// them into the hash layout regardless of whether anything currently changes them.
+    /// Simulation bounds (contract §11.3, §11.6 `SigilConfig`), checked by `sigil.update`'s bounds
+    /// step (`crate::runtime`) and written once by `install` (`BulletPool::set_bounds`). Stay at
+    /// their `Default` (`Vec2::ZERO`) for a pool built directly (e.g. this crate's own unit tests)
+    /// rather than through `install`.
     bounds_min: Vec2,
     bounds_max: Vec2,
     dropped_spawns: u64,
@@ -424,10 +506,11 @@ impl BulletPool {
 
     /// Spawns deterministically discarded by a caller that has no `Result` to report to.
     ///
-    /// Always `0` in this crate: `BulletPool::spawn` surfaces a full pool as
-    /// [`SigilError::PoolFull`] instead of dropping silently. This counter is reserved for the
-    /// not-yet-implemented `sigil.update`/`sigil.emit` systems (§11.3/§11.6), which spawn
-    /// sub-bullets without a caller able to observe a `Result`.
+    /// A direct call to `BulletPool::spawn` never counts here: it surfaces a full pool as
+    /// [`SigilError::PoolFull`] instead of dropping silently, so it stays `0` unless
+    /// `sigil.emit` (`crate::systems`, §11.3/§11.6) drops a volley shot because the pool was full,
+    /// which it reports through `BulletPool::record_dropped_spawn` instead of a `Result` no
+    /// caller could observe.
     #[must_use]
     pub const fn dropped_spawns(&self) -> u64 {
         self.dropped_spawns
@@ -494,15 +577,103 @@ impl BulletPool {
             })
     }
 
+    /// Takes slots `0..slot_count` out as mutable, data-parallel [`PoolUpdateBlock`]s for
+    /// `sigil.update` (contract §11.7): every needed column is split with `split_at_mut` at
+    /// exactly the [`slice_block_ranges`] boundaries, so the result matches [`BulletPool::blocks`]
+    /// block-for-block but grants each block write access to its own slots only.
+    ///
+    /// # Panics
+    ///
+    /// Only on an internal invariant violation (every split below must yield the same number of
+    /// blocks, since every column has the same `slot_count`); never on caller input.
+    pub(crate) fn update_blocks_mut(&mut self) -> Vec<PoolUpdateBlock<'_>> {
+        let slot_count = self.slot_count as usize;
+        let ranges: Vec<Range<usize>> = slice_block_ranges(slot_count).collect();
+
+        let mut alive = split_ref_blocks(&self.alive[..slot_count]).into_iter();
+        let mut unit = split_ref_blocks(&self.unit[..slot_count]).into_iter();
+        let mut bullet_type = split_ref_blocks(&self.bullet_type[..slot_count]).into_iter();
+        let mut program = split_ref_blocks(&self.program[..slot_count]).into_iter();
+        let mut position = split_mut_blocks(&mut self.position[..slot_count]).into_iter();
+        let mut previous_position =
+            split_mut_blocks(&mut self.previous_position[..slot_count]).into_iter();
+        let mut velocity = split_mut_blocks(&mut self.velocity[..slot_count]).into_iter();
+        let mut angle = split_mut_blocks(&mut self.angle[..slot_count]).into_iter();
+        let mut speed = split_mut_blocks(&mut self.speed[..slot_count]).into_iter();
+        let mut age = split_mut_blocks(&mut self.age[..slot_count]).into_iter();
+        let mut state = split_mut_blocks(&mut self.state[..slot_count]).into_iter();
+
+        ranges
+            .into_iter()
+            .enumerate()
+            .map(|(index, slots)| PoolUpdateBlock {
+                index,
+                slots,
+                alive: alive.next().expect("column block count must match"),
+                unit: unit.next().expect("column block count must match"),
+                bullet_type: bullet_type.next().expect("column block count must match"),
+                program: program.next().expect("column block count must match"),
+                position: position.next().expect("column block count must match"),
+                previous_position: previous_position
+                    .next()
+                    .expect("column block count must match"),
+                velocity: velocity.next().expect("column block count must match"),
+                angle: angle.next().expect("column block count must match"),
+                speed: speed.next().expect("column block count must match"),
+                age: age.next().expect("column block count must match"),
+                state: state.next().expect("column block count must match"),
+            })
+            .collect()
+    }
+
+    /// Resets [`BulletPool::events`]/[`BulletPool::events_tick`] for the start of a new tick
+    /// (`sigil.begin`, contract §11.6).
+    pub(crate) fn begin_tick(&mut self, tick: u64) {
+        self.events.clear();
+        self.events_tick = tick;
+    }
+
+    /// Records a spawn a tick-phase system discarded because it had no `Result` channel to
+    /// report it on (`sigil.emit`, contract §11.3): the pool is otherwise unchanged. A direct
+    /// caller of [`BulletPool::spawn`] must instead handle `Err(SigilError::PoolFull)` itself and
+    /// must not call this (contract §11.3's WP5.1 clarification).
+    pub(crate) fn record_dropped_spawn(&mut self) {
+        self.dropped_spawns += 1;
+    }
+
+    /// Sets the simulation bounds `sigil.update` checks (`install`'s `SigilConfig`, contract
+    /// §11.6).
+    pub(crate) fn set_bounds(&mut self, min: Vec2, max: Vec2) {
+        self.bounds_min = min;
+        self.bounds_max = max;
+    }
+
+    /// Current simulation bounds.
+    pub(crate) const fn bounds(&self) -> (Vec2, Vec2) {
+        (self.bounds_min, self.bounds_max)
+    }
+
+    /// Despawns slot `index`, given a [`PendingDespawn`] collected by a `sigil.update` block
+    /// (`sigil.resolve`, contract §11.6). A no-op if the slot is not alive any more: `index`
+    /// always comes from the same tick's `sigil.update`, in which no other despawn of that slot
+    /// can have happened yet, so this is a defensive guard against a future bug, not a reachable
+    /// path today.
+    pub(crate) fn despawn_pending(&mut self, index: u32, cause: DespawnCause) {
+        if self.alive[index as usize] {
+            self.despawn_slot(index, cause);
+        }
+    }
+
     /// Despawn events recorded since the pool was created or last cleared by `sigil.begin`
-    /// (out of scope for WP1.3, so in this crate's tests events simply accumulate).
+    /// (`BulletPool::begin_tick`, contract §11.3/§11.6; a pool never installed into a `Simulation`
+    /// simply accumulates them, as this crate's own unit tests do).
     #[must_use]
     pub fn events(&self) -> &[BulletEvent] {
         &self.events
     }
 
-    /// Tick at which [`BulletPool::events`] was last reset (always `0` in WP1.3 scope; set by the
-    /// not-yet-implemented `sigil.begin` phase).
+    /// Tick at which [`BulletPool::events`] was last reset by `sigil.begin`
+    /// (`BulletPool::begin_tick`); `0` for a pool that was never installed into a `Simulation`.
     #[must_use]
     pub const fn events_tick(&self) -> u64 {
         self.events_tick
@@ -514,6 +685,17 @@ impl BulletPool {
     /// `request`'s position/angle/speed, in that order, before touching any pool state: on any
     /// error the pool is completely unchanged, which is asserted by hash-equality in this crate's
     /// tests.
+    ///
+    /// **`request.program` numbering** (WP5.1, `crate::runtime::resolve_program`): `0` means "no
+    /// program" (`BulletSpawn::new`'s doc comment); a non-zero value `p` addresses
+    /// `unit.programs()[p - 1]`, one-based so that `0` stays free as the sentinel and every
+    /// compiled program is still reachable — unlike a direct `p` mapping, which would leave
+    /// `programs()[0]` permanently unreachable. Contract §11.3 fixes the *validity* check as
+    /// `program == 0 || program < program_count()`; read against this one-based scheme that
+    /// bound is off by one (it rejects the otherwise-valid `program == program_count()`, the last
+    /// program), so this method checks `program > program_count()` instead — a clarification
+    /// (V-20), not a behaviour change for any caller that only ever used `program` values already
+    /// accepted before (`0` or `1..program_count()`); see the WP5.1 report for the wording.
     ///
     /// # Errors
     ///
@@ -541,7 +723,7 @@ impl BulletPool {
                 bullet_type: request.bullet_type,
             });
         }
-        if request.program != 0 && request.program >= sigil_unit.program_count() {
+        if request.program != 0 && request.program > sigil_unit.program_count() {
             return Err(SigilError::ProgramOutOfRange {
                 unit: request.unit,
                 program: request.program,
@@ -778,14 +960,12 @@ mod tests {
     #[test]
     fn bounds_are_part_of_the_pool_hash() {
         // Contract §11.3 freezes `bounds_min`/`bounds_max` right after `slot_count` in the hash
-        // order. There is no public setter yet (`install`, the only intended writer, is out of
-        // scope until WP4/WP5), so this reaches the private fields directly from the same crate
-        // module to prove the layout, not the not-yet-implemented bounds *behaviour*.
+        // order; `set_bounds` is `install`'s writer (§11.6), exercised end-to-end in
+        // `crate::systems`'s own tests. This test only proves the hash-layout claim.
         let mut pool = BulletPool::with_capacity(4);
         let before = hash_of(&pool);
 
-        pool.bounds_min = Vec2::new(-10.0, -20.0);
-        pool.bounds_max = Vec2::new(10.0, 20.0);
+        pool.set_bounds(Vec2::new(-10.0, -20.0), Vec2::new(10.0, 20.0));
 
         assert_ne!(
             hash_of(&pool),
@@ -979,6 +1159,30 @@ mod tests {
             before,
             "every rejected spawn must leave the pool untouched"
         );
+    }
+
+    /// `spawn`'s doc comment (WP5.1 clarification): `program` is one-based when non-zero, so the
+    /// *last* compiled program is addressed by `program == program_count()`, not
+    /// `program_count() - 1`. `program_count() + 1` still errors.
+    #[test]
+    fn program_equal_to_program_count_is_the_last_program_not_out_of_range() {
+        let content = build_simple_content(1, 0, 2);
+        let mut pool = BulletPool::with_capacity(2);
+
+        let last = pool.spawn(
+            &content,
+            BulletSpawn::new(UnitId(1), 0, Vec2::ZERO, 0.0, 1.0).with_program(2),
+        );
+        assert!(last.is_ok(), "program == program_count() must be valid");
+
+        let one_past = pool.spawn(
+            &content,
+            BulletSpawn::new(UnitId(1), 0, Vec2::ZERO, 0.0, 1.0).with_program(3),
+        );
+        assert!(matches!(
+            one_past,
+            Err(SigilError::ProgramOutOfRange { program: 3, .. })
+        ));
     }
 
     #[test]

@@ -1,24 +1,27 @@
 //! # grimoire_sigil
 //!
 //! Sigil (`.sigil`), the declarative bullet-pattern language of Grimoire: the compact binary unit
-//! format and the deterministic runtime data types (PRD-0004, contract §11).
+//! format and the deterministic runtime that executes it (PRD-0004, contract §11).
 //!
-//! **Status (WP1.3):** the binary header/section-table layer of [`SigilUnit`], the content types
-//! ([`BulletType`], [`SigilLibrary`], [`SigilContent`]), [`BulletPool`] (implemented and fully
-//! behaviour-tested), the emitter/aim/clear data types and the [`BehaviorRegistry`] are
-//! implemented. Installing content into a `Simulation`, the five per-tick systems
-//! (`sigil.begin`/`update`/`resolve`/`emit`/`clear`), hot-swap and Sigil pattern-language execution
-//! are later work (WP4.x/WP5.x) and are not part of this crate yet.
-//!
-//! Several places in this crate invent a minimal, explicitly labelled *provisional* encoding for
-//! section content whose real format is deferred to `docs/formats/sigil.md` (WP4.1); each is
-//! marked with a `PROVISIONAL` doc comment in the `unit` module.
+//! **Status (WP5.1):** the binary header/section-table layer of [`SigilUnit`] (WP4.2) and the
+//! content/pool/emitter/behavior data types (WP1.3) are joined by [`install`] and the five
+//! `sigil.*` tick-phase systems (`crate::systems`), which actually run compiled patterns: the
+//! seven placement blocks and six stackable modifiers (`crate::blocks`, `crate::runtime`) against
+//! a [`BulletPool`] taken as an ECS resource. Sub-spawns, per-bullet-type transforms
+//! (`Transforms`/§10.4's `change_type`/`become_emitter`/`burst`/`reverse`) and calling a
+//! `BulletBehavior` from a tick phase are not: `docs/formats/sigil.md` §11.4's open points 1 and 4
+//! record that nothing in the wire format yet ties a bullet type to either, so this work package
+//! stops at the boundary the format already draws. Hot-swap (§11.8) and the leader performance
+//! target (10k active bullets, §11.6) are separate, later work packages.
 
 mod behavior;
+mod blocks;
 mod content;
 mod emitter;
 mod error;
 mod pool;
+mod runtime;
+mod systems;
 mod unit;
 
 #[cfg(test)]
@@ -37,4 +40,5 @@ pub use pool::{
     BulletColumns, BulletEvent, BulletId, BulletPool, BulletRef, BulletSpawn, DespawnCause,
     PoolBlock,
 };
+pub use systems::{POOL_BLOCK_SIZE, SigilConfig, install, stream, system_names};
 pub use unit::{SigilUnit, UnitError, UnitId};
