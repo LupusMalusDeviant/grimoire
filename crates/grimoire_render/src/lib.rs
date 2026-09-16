@@ -261,8 +261,52 @@ impl LightBudget {
     }
 }
 
+/// Multisampling level for [`WgpuRenderer`]'s mesh pass (texture-quality package, strand B1: no
+/// engine work-package number of its own yet, PO decision 2026-09-16 "erst die Engine" — see
+/// `docs/adr/0016-multisampling-fuer-geometriekanten.md`, proposed). Chosen once at construction
+/// like [`LightBudget`] — see [`StageRendererConfig`]'s doc comment for why this is an additive
+/// neighbour field rather than a new [`RendererConfig`] one.
+///
+/// **What is (and is not) multisampled:** only the mesh pass's own colour and depth targets
+/// (opaque meshes, skinned meshes and the blob-shadow decals drawn into the same pass — see
+/// `mesh_pass.rs`'s header comment on draw order) resolve into the pass's previous, single-sample
+/// target before the sprite pass draws on top with `LoadOp::Load`, exactly as before this field
+/// existed. The key-light shadow map (`shadow_pass`, depth-only) and the WP3.4 clustered forward+
+/// compute dispatch (`cluster_pass`) stay single-sampled regardless of this setting: a shadow map
+/// is sampled with PCF already, and cluster assignment operates on light volumes, not screen-space
+/// edges, so multisampling either would not apply or would not help.
+///
+/// Not `#[non_exhaustive]`: contract §2 rule 13 requires that only for structs with public fields
+/// and error enums, not plain data enums like [`LightBudget`] itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Msaa {
+    /// No multisampling: the mesh pass renders straight into its single-sample colour and depth
+    /// targets, exactly like every render before this field existed.
+    Off,
+    /// 4x multisampling: the mesh pass renders into a 4x colour and depth target and resolves the
+    /// colour into the pass's previous, single-sample target before the sprite pass draws on top.
+    /// The default (see [`StageRendererConfig`]'s doc comment for why a default was chosen at all,
+    /// and the pull request text for the measured relative cost).
+    #[default]
+    X4,
+}
+
+impl Msaa {
+    /// The `wgpu` sample count this level renders at: `1` for [`Msaa::Off`], `4` for
+    /// [`Msaa::X4`]. Mirrors [`LightBudget::light_count`]'s "the enum is the contract type, the
+    /// method is the internal number a renderer actually sizes things by" shape.
+    #[must_use]
+    pub const fn sample_count(self) -> u32 {
+        match self {
+            Msaa::Off => 1,
+            Msaa::X4 => 4,
+        }
+    }
+}
+
 /// Additive construction parameters for [`WgpuRenderer`]'s clustered forward+ pass (plan 0002
-/// WP3.4) — see [`LightBudget`]'s doc comment for why this is a separate type layered over
+/// WP3.4) and, additively again (texture-quality package, strand B1), its mesh-pass multisampling
+/// — see [`LightBudget`]'s doc comment for why this is a separate type layered over
 /// [`RendererConfig`] rather than a new field on it.
 ///
 /// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
@@ -274,6 +318,11 @@ pub struct StageRendererConfig {
     pub base: RendererConfig,
     /// The point-light budget WP3.4's clustered forward+ pass sizes its buffers for.
     pub light_budget: LightBudget,
+    /// The mesh pass's multisampling level (texture-quality package, strand B1). Defaults to
+    /// [`Msaa::X4`] — see [`Msaa`]'s doc comment. `WgpuRenderer::new_for_window`/`new_offscreen`
+    /// (unchanged signatures) pick this default up the same way they already pick up
+    /// `LightBudget::default()`.
+    pub msaa: Msaa,
 }
 
 /// Renderer failures.

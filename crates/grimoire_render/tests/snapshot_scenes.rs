@@ -542,3 +542,152 @@ fn camera_tilt_scene() {
         check_scene(&format!("camera_tilt_{}", tilt_degrees as i32), &image);
     }
 }
+
+// --- Edge-adjacency check (texture-quality package, strand B1) ------------------------------------
+//
+// B1 adds multisampling (`crate::Msaa::X4`, default) to the mesh pass, which smooths geometry
+// silhouettes and is expected to move every one of this file's seven scene/variant references off
+// their previous bit-exact match (see `mesh_pass.rs`'s module doc comment, "Mipmaps and
+// multisampling"). The Festlegung this package follows requires proving *where* the resulting
+// mismatch lands before deliberately regenerating any reference: at a colour edge in the old
+// (non-multisampled) reference image, never in the middle of a flat region — the latter would be a
+// bug, not anti-aliasing. This test renders every scene above without touching any reference file,
+// and for every pixel whose largest per-channel difference against the still-checked-in reference
+// reaches `HIGH_DIFF_THRESHOLD`, checks whether any of its 8 neighbours in the *reference* image
+// differs from it in luminance by at least `EDGE_THRESHOLD` — a plain, auditable proxy for "this
+// pixel sits on a colour or silhouette boundary" that needs no depth read-back (none of this
+// crate's public API exposes one).
+
+/// A pixel counts as "changed" once any RGBA channel differs by at least this much between the old
+/// reference and a freshly rendered (MSAA-on) candidate — well below
+/// [`support::MAX_ABS_DIFF_TOLERANCE`] (60), so this also catches partially-covered edge pixels
+/// whose difference alone would not have failed the tolerance check.
+const HIGH_DIFF_THRESHOLD: u8 = 20;
+
+/// A neighbouring pixel counts as forming an edge with the centre pixel once their luminance
+/// (ITU-R BT.601 luma weights, `0..=255`) differs by at least this much in the *reference* image.
+const EDGE_THRESHOLD: i32 = 12;
+
+fn luminance(image: &Image, x: u32, y: u32) -> i32 {
+    let index = (y as usize * image.width as usize + x as usize) * 4;
+    let r = i32::from(image.rgba[index]);
+    let g = i32::from(image.rgba[index + 1]);
+    let b = i32::from(image.rgba[index + 2]);
+    (r * 299 + g * 587 + b * 114) / 1000
+}
+
+/// Whether `(x, y)` has at least one of its up-to-8 neighbours in `image` differing in luminance by
+/// [`EDGE_THRESHOLD`] or more — see this section's header comment.
+fn is_near_an_edge(image: &Image, x: u32, y: u32) -> bool {
+    let center = luminance(image, x, y);
+    for dy in -1i64..=1 {
+        for dx in -1i64..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let (nx, ny) = (i64::from(x) + dx, i64::from(y) + dy);
+            if nx < 0 || ny < 0 || nx >= i64::from(image.width) || ny >= i64::from(image.height) {
+                continue;
+            }
+            let neighbor = luminance(image, nx as u32, ny as u32);
+            if (center - neighbor).abs() >= EDGE_THRESHOLD {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// For every scene this file has a reference for, renders it fresh (MSAA on, per this package's
+/// `StageRendererConfig::msaa` default) and reports how many pixels changed by
+/// [`HIGH_DIFF_THRESHOLD`] or more against the still-checked-in reference, and what fraction of
+/// those sit next to a colour edge in that reference ([`is_near_an_edge`]). Never asserts anything
+/// itself — the Festlegung asks for this to be *measured and reported* before a human decides to
+/// regenerate references, not gated automatically (the same "warn, do not fail" posture
+/// `check_scene` already applies to the tolerance check above). Run explicitly:
+/// `GRIMOIRE_GPU_ADAPTER=software cargo test -p grimoire_render --test snapshot_scenes -- --ignored
+/// --nocapture edge_adjacency`.
+#[test]
+#[ignore = "texture-quality B1 measurement, run explicitly (see this test's doc comment)"]
+fn edge_adjacency_of_snapshot_mismatches() {
+    let Some(mut renderer) = try_offscreen_renderer() else {
+        return;
+    };
+
+    let mut scenes: Vec<(String, Image)> = Vec::new();
+
+    let pbr_frame = pbr_materials_frame(&mut renderer);
+    scenes.push((
+        "pbr_materials".to_string(),
+        render_frame(&mut renderer, &pbr_frame),
+    ));
+
+    let mut shadow_frame = shadows_frame(&mut renderer);
+    let mut key_light_config = ShadowConfig::default();
+    key_light_config.mode = ShadowMode::KeyLight;
+    shadow_frame.shadow_config = key_light_config;
+    shadow_frame.blob_shadows.clear();
+    scenes.push((
+        "shadows_keylight".to_string(),
+        render_frame(&mut renderer, &shadow_frame),
+    ));
+    let mut blob_config = ShadowConfig::default();
+    blob_config.mode = ShadowMode::Blob;
+    shadow_frame.shadow_config = blob_config;
+    shadow_frame.blob_shadows.push(BlobShadowInstance {
+        position: [1.5, 0.5],
+        radius: 1.0,
+        softness: 0.45,
+        strength: 0.85,
+    });
+    scenes.push((
+        "shadows_blob".to_string(),
+        render_frame(&mut renderer, &shadow_frame),
+    ));
+
+    for &tilt_degrees in &CAMERA_TILT_ANGLES_DEGREES {
+        let frame = camera_tilt_frame(&mut renderer, tilt_degrees);
+        let image = render_frame(&mut renderer, &frame);
+        scenes.push((format!("camera_tilt_{}", tilt_degrees as i32), image));
+    }
+
+    for (name, candidate) in &scenes {
+        let path = reference_path(name);
+        if !path.exists() {
+            println!("grimoire-edge-adjacency: name={name} skipped (no reference yet)");
+            continue;
+        }
+        let reference = Image::read_png(&path)
+            .unwrap_or_else(|error| panic!("reading reference {}: {error}", path.display()));
+        if reference.width != candidate.width || reference.height != candidate.height {
+            println!("grimoire-edge-adjacency: name={name} skipped (resolution changed)");
+            continue;
+        }
+        let mut high_diff_total = 0u32;
+        let mut high_diff_near_edge = 0u32;
+        for y in 0..reference.height {
+            for x in 0..reference.width {
+                let index = (y as usize * reference.width as usize + x as usize) * 4;
+                let max_channel_diff = (0..4)
+                    .map(|c| reference.rgba[index + c].abs_diff(candidate.rgba[index + c]))
+                    .max()
+                    .unwrap_or(0);
+                if max_channel_diff < HIGH_DIFF_THRESHOLD {
+                    continue;
+                }
+                high_diff_total += 1;
+                if is_near_an_edge(&reference, x, y) {
+                    high_diff_near_edge += 1;
+                }
+            }
+        }
+        let percent_near_edge = if high_diff_total > 0 {
+            100.0 * f64::from(high_diff_near_edge) / f64::from(high_diff_total)
+        } else {
+            100.0
+        };
+        println!(
+            "grimoire-edge-adjacency: name={name} high_diff_pixels={high_diff_total} near_edge={high_diff_near_edge} percent_near_edge={percent_near_edge:.1}"
+        );
+    }
+}

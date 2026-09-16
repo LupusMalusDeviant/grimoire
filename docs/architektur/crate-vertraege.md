@@ -1024,6 +1024,53 @@ impl WgpuRenderer {
   weiterhin jedes strukturell gültige Licht bzw. jedes davon mit `is_bullet_light`, unabhängig vom
   konfigurierten Budget (dieser Vertrag, WP2.2).
 
+**Multisampling im Mesh-Pass (Ergänzung P1, Paket „Texturqualität" Strang B1, engine ADR-0016
+„Multisampling für Geometriekanten", Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-16)**
+
+Additiv zu `StageRendererConfig` (oben, WP3.4): ein weiteres Konstruktionsfeld, kein neues
+`RendererConfig`-Feld — derselbe additive Weg, aus demselben Grund (§2b Stufe A, kein
+`#[non_exhaustive]` auf `RendererConfig`). Kein bestehendes Feld ändert Typ oder Bedeutung.
+
+```rust
+// grimoire_render — additiv (Texturqualität-Paket, Strang B1):
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Msaa { Off, #[default] X4 }
+impl Msaa { pub const fn sample_count(self) -> u32; }   // 1 bzw. 4
+
+#[non_exhaustive]
+pub struct StageRendererConfig {
+    pub base: RendererConfig,
+    pub light_budget: LightBudget,
+    pub msaa: Msaa,                      // neu, additiv
+}
+```
+
+**Semantik:**
+
+- **Was multisampled wird:** ausschließlich der Mesh-Pass' eigenes Farb- und Tiefenziel (die opaken
+  Meshes, geskinnte Meshes und Blob-Schatten-Decals, die in denselben Render-Pass zeichnen —
+  `mesh_pass.rs`s Kopfkommentar zur Zeichenreihenfolge) — unter `Msaa::X4` bei 4 Samples gerendert
+  und vor dem Sprite-Pass in das bisherige, einfach abgetastete Ziel aufgelöst; der Sprite-Pass
+  zeichnet danach unverändert mit `LoadOp::Load` auf dieses aufgelöste Ziel, wie vor diesem Paket.
+  Schattenpass (reine Tiefe, ohnehin PCF-weichgezeichnet) und die WP3.4-Cluster-Compute-Zuordnung
+  (Lichtvolumen, keine Bildschirmpixel) bleiben unter jeder `Msaa`-Einstellung bei 1× — siehe
+  engine ADR-0016 für die Begründung, warum keiner der beiden davon profitieren würde.
+- **`WgpuRenderer::new_for_window`/`new_offscreen`** (unveränderte Signatur) wählen `Msaa::default()`
+  (`X4`) automatisch, wie sie es für `LightBudget::default()` bereits tun; `..._staged`-Gegenstücke
+  wählen die Einstellung explizit über `StageRendererConfig::msaa`.
+- **Vorgabe `X4`, nicht `Off`:** anders als bei `LightBudget` (wo `Low` die bisherige interne
+  Obergrenze fortschreibt) gab es vor diesem Paket keine Multisampling-Vorgabe, gegen die
+  fortzuschreiben wäre — die Vorgabe `X4` ist der Vorschlag dieses Pull Requests zur gebündelten
+  Freigabe (siehe engine ADR-0016 für die gemessenen Kosten), nicht selbst ein PO-Entscheid.
+- **Größenänderung:** [`WgpuRenderer::resize`] erneuert unter `Msaa::X4` sowohl den Tiefenpuffer als
+  auch das multisample Farbziel auf die neue Größe; unter `Msaa::Off` entfällt Letzteres vollständig
+  (kein Speicher dafür reserviert).
+- **Mipmaps (dasselbe Paket, keine Vertragsänderung):** `upload_texture` erzeugt neu die vollständige
+  Mip-Kette auf der CPU (2×2-Boxfilter, sRGB im linearen Raum gemittelt) und lädt jede Stufe hoch;
+  der Sampler filtert trilinear zwischen Stufen. `TextureData` und dieser Vertragsabschnitt ändern
+  sich dadurch nicht — reine Implementierungsdetails von `grimoire_render::mesh_pass`, wie schon vor
+  diesem Paket (WP2.5s Abschnitt oben nennt `TextureData` als einzigen Vertragstyp).
+
 ## 7. `grimoire_ecs`
 
 ```rust
