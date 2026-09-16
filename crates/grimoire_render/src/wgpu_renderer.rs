@@ -11,9 +11,10 @@ use grimoire_platform::PlatformWindow;
 use crate::mesh_pass::MeshPass;
 use crate::sprite_pass::SpritePass;
 use crate::stage;
+use crate::texture::{TextureData, TextureError};
 use crate::{
     MeshData, MeshError, MeshHandle, RenderError, RenderFrame, RenderStats, Renderer,
-    RendererConfig, StageFrame, StageStats,
+    RendererConfig, StageFrame, StageStats, TextureHandle,
 };
 
 enum Target {
@@ -214,6 +215,26 @@ impl WgpuRenderer {
     pub fn register_mesh(&mut self, mesh: MeshData) -> Result<MeshHandle, MeshError> {
         self.mesh_pass.register(&self.context, mesh)
     }
+
+    /// Registers `texture`'s CPU pixels, uploads them to the GPU, and returns a
+    /// [`TextureHandle`] a [`crate::PbrMaterial`]'s texture slots can reference afterwards (plan
+    /// 0002 WP2.5, mirroring [`WgpuRenderer::register_mesh`]). Registration is deterministic:
+    /// handles are assigned in call order, starting at `0` for the first texture registered with
+    /// this renderer.
+    ///
+    /// A material referencing a handle this renderer never registered (or one from a different
+    /// renderer) is not an error: [`Renderer::render_stage`] falls back to that texture slot's
+    /// plain factor instead, exactly as if the slot were `None` (`mesh.wgsl`'s header comment).
+    ///
+    /// # Errors
+    /// [`TextureError`] if `texture` is structurally invalid ([`TextureData::validate`]) or its
+    /// GPU texture could not be created (for example out of memory). Never panics.
+    pub fn register_texture(
+        &mut self,
+        texture: TextureData,
+    ) -> Result<TextureHandle, TextureError> {
+        self.mesh_pass.register_texture(&self.context, texture)
+    }
 }
 
 impl WgpuRenderer {
@@ -365,18 +386,20 @@ impl Renderer for WgpuRenderer {
     }
 
     /// Applies the full stage semantics of contract §6 and, from WP2.3, actually draws pixels:
-    /// the mesh pass (this module's `mesh_pass::MeshPass`, depth-tested, provisional shading) runs
-    /// first, clearing colour and depth, then the unchanged sprite pass draws `frame.base.sprites`
-    /// on top with `LoadOp::Load` — both share [`crate::RenderLayer::World`] per contract §6, mesh
-    /// pass first. Bullets are validated (palette space, finiteness, `radius > 0`) and counted
-    /// into [`StageStats`] — including the debug-only `debug_assert!` on a foreign palette space —
-    /// but still never rasterised: the GPU bullet pass is WP3.5's job. `marker_sprites` and
-    /// `debug_sprites` are likewise only counted, not drawn (no pipeline for them yet). Point
-    /// lights, the key light and ambient are validated and counted (as before WP2.3) and now also
-    /// *consumed* by the mesh pass's provisional shading (key light + ambient only; point lights
-    /// stay WP3.4's clustered forward+ job). `StageStats::base.draw_calls` counts every pass
-    /// (contract §6: "draw_calls: alle Pässe") — the mesh pass's draw calls plus the sprite pass's.
-    /// A structurally valid mesh instance whose `mesh` handle was never registered with this
+    /// the mesh pass (this module's `mesh_pass::MeshPass`, depth-tested, real PBR shading from
+    /// WP2.5) runs first, clearing colour and depth, then the unchanged sprite pass draws
+    /// `frame.base.sprites` on top with `LoadOp::Load` — both share [`crate::RenderLayer::World`]
+    /// per contract §6, mesh pass first. Bullets are validated (palette space, finiteness,
+    /// `radius > 0`) and counted into [`StageStats`] — including the debug-only `debug_assert!` on
+    /// a foreign palette space — but still never rasterised: the GPU bullet pass is WP3.5's job.
+    /// `marker_sprites` and `debug_sprites` are likewise only counted, not drawn (no pipeline for
+    /// them yet). Point lights, the key light and ambient are validated and counted (as before
+    /// WP2.3) and, from WP2.5, actually shaded — every valid point light through the same GGX term
+    /// as the key light, clamped to `mesh_pass::MAX_POINT_LIGHTS` (a smaller, internal
+    /// pre-clustering limit; the `Low 32`/`High 256` count budget and clustered forward+ stay
+    /// WP3.4's job, contract §6). `StageStats::base.draw_calls` counts every pass (contract §6:
+    /// "draw_calls: alle Pässe") — the mesh pass's draw calls plus the sprite pass's. A
+    /// structurally valid mesh instance whose `mesh` handle was never registered with this
     /// renderer (`WgpuRenderer::register_mesh`) is not counted in [`StageStats::meshes_drawn`]
     /// but in [`StageStats::meshes_rejected_unregistered`] instead (contract §6, PO decision V-20,
     /// 2026-09-16).
@@ -384,6 +407,19 @@ impl Renderer for WgpuRenderer {
     /// # Errors
     /// Same as [`Renderer::render`], applied across both passes.
     fn render_stage(&mut self, frame: &StageFrame) -> Result<StageStats, RenderError> {
+        self.render_stage_impl(frame, true)
+    }
+}
+
+impl WgpuRenderer {
+    /// Shared implementation of [`Renderer::render_stage`], parameterised over the OF-3.5
+    /// geometric specular anti-aliasing toggle. See
+    /// [`WgpuRenderer::render_stage_with_specular_aa`] for why this parameter exists.
+    fn render_stage_impl(
+        &mut self,
+        frame: &StageFrame,
+        specular_aa: bool,
+    ) -> Result<StageStats, RenderError> {
         let start = Instant::now();
         if self.context.is_device_lost() {
             return Err(RenderError::Backend(String::from("GPU device lost")));
@@ -430,8 +466,10 @@ impl Renderer for WgpuRenderer {
                 frame.camera_25d.as_ref(),
                 frame.key_light.as_ref(),
                 &frame.ambient,
+                &frame.point_lights,
                 &frame.meshes,
                 &frame.materials,
+                specular_aa,
             )
             .map_err(map_gpu_error)?;
 
@@ -453,5 +491,29 @@ impl Renderer for WgpuRenderer {
             frame,
             Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
         ))
+    }
+
+    /// Measurement hook for plan 0002 OF-3.5 (WP2.5): renders exactly like
+    /// [`Renderer::render_stage`], except the caller chooses whether the mesh pass's geometric
+    /// specular anti-aliasing is active, instead of it always being on.
+    ///
+    /// **Not part of the render contract (§6)** and not meant for production rendering — a game
+    /// always calls [`Renderer::render_stage`], which is equivalent to
+    /// `render_stage_with_specular_aa(frame, true)`. This exists only so `tests/offscreen.rs` can
+    /// compare the technique against a no-AA baseline on the same public API a game would use,
+    /// without a `RendererConfig` field (contract §6: `RendererConfig` is not `#[non_exhaustive]`,
+    /// so a new field would be incompatible) or an environment variable (which — unlike
+    /// `GRIMOIRE_GPU_ADAPTER` — would need to be mutated per-test in a suite that runs tests
+    /// in parallel). May change or disappear once OF-3.5 is decided and, if TAA is chosen instead,
+    /// no longer applies.
+    ///
+    /// # Errors
+    /// Same as [`Renderer::render_stage`].
+    pub fn render_stage_with_specular_aa(
+        &mut self,
+        frame: &StageFrame,
+        specular_aa: bool,
+    ) -> Result<StageStats, RenderError> {
+        self.render_stage_impl(frame, specular_aa)
     }
 }

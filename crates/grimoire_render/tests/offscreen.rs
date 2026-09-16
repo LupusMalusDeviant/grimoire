@@ -16,11 +16,11 @@ use std::sync::Once;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use grimoire_render::procedural::{altar_block, floor_tile_grid};
+use grimoire_render::procedural::{altar_block, floor_tile_grid, icosphere};
 use grimoire_render::{
     AmbientLight, Camera2D, Camera25D, DirectionalLight, MaterialHandle, MeshHandle, MeshInstance,
-    PbrMaterial, RenderError, RenderFrame, Renderer, RendererConfig, SpriteInstance, StageFrame,
-    WgpuRenderer, shape,
+    PbrMaterial, PointLight, RenderError, RenderFrame, Renderer, RendererConfig, SpriteInstance,
+    StageFrame, TextureColorSpace, TextureData, TextureHandle, WgpuRenderer, shape,
 };
 
 const SIZE: u32 = 64;
@@ -479,14 +479,24 @@ fn mesh_instance(
     instance
 }
 
-/// A bright, straight-down key light plus a flat white ambient term, chosen so every up-facing
-/// surface in the tests below is lit at (or above, before clamping) full brightness: pixel colours
-/// then read as the material's `base_color_factor`, independent of the provisional shading maths.
+/// A very bright, straight-down key light plus a modest flat white ambient term, chosen so every
+/// up-facing surface in the tests below (a horizontal top face, straight-down camera) saturates
+/// its lit channels to (at or above, before clamping) full brightness.
+///
+/// `flat_material` leaves `metallic_factor` at [`PbrMaterial::default`]'s `1.0`: a fully metallic
+/// surface has no diffuse term at all (`mesh.wgsl`'s `kd = (1 - F) * (1 - metallic)`), and its
+/// Fresnel reflectance `F0` *is* `base_color_factor`, so an unlit channel (`base_color_factor`
+/// component `0.0`) gets exactly `F0 = 0.0` and therefore exactly zero contribution from every
+/// light — cleaner for these pixel assertions than PBR's usual dielectric default (`F0 = 0.04`
+/// grey for every channel, which would tint "pure" colours slightly grey). The key light's
+/// intensity is high because the physically normalised GGX specular this pass now uses is far
+/// dimmer per unit of light intensity than WP2.3's provisional Lambert term was (no `/PI`
+/// normalisation there, and no dependence on `roughness`/`F` at all).
 fn full_bright_lighting(frame: &mut StageFrame) {
     let mut key_light = DirectionalLight::default();
     key_light.direction = [0.0, 0.0, -1.0];
     key_light.color = [1.0, 1.0, 1.0];
-    key_light.intensity = 1.0;
+    key_light.intensity = 60.0;
     frame.key_light = Some(key_light);
     frame.ambient = AmbientLight::Flat {
         color: [1.0, 1.0, 1.0],
@@ -618,6 +628,466 @@ fn render_stage_still_draws_sprites_on_top_of_the_mesh_pass() {
         20,
         "mesh centre, unaffected by the sprite pass drawn on top of it",
     );
+}
+
+// --- PBR shading (WP2.5): point lights, metal vs. dielectric, specular anti-aliasing, textures --
+
+/// Perceptually-irrelevant but monotonic brightness measure, good enough to rank pixels or compare
+/// two renders of the same scene; not a real luminance transform.
+fn luminance(pixel: [u8; 4]) -> u32 {
+    2 * u32::from(pixel[0]) + 4 * u32::from(pixel[1]) + u32::from(pixel[2])
+}
+
+/// A white point light, not a bullet light (contract §6 `PointLight`). Built from
+/// [`PointLight::default`] rather than a struct literal: it is `#[non_exhaustive]` (contract §2
+/// rule 13), so an external crate like this integration test cannot construct one with a literal
+/// at all, even with `..Default::default()`.
+fn point_light(position: [f32; 3], range: f32, intensity: f32) -> PointLight {
+    let mut light = PointLight::default();
+    light.position = position;
+    light.color = [1.0, 1.0, 1.0];
+    light.intensity = intensity;
+    light.range = range;
+    light
+}
+
+/// No key light, no ambient: only whatever [`PointLight`]s a test adds can light anything, so an
+/// unlit pixel is exactly the clear colour.
+fn dark_scene(camera: Camera25D) -> StageFrame {
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(camera);
+    frame.ambient = AmbientLight::Flat {
+        color: [0.0, 0.0, 0.0],
+        intensity: 0.0,
+    };
+    frame
+}
+
+#[test]
+fn point_light_range_is_a_hard_cutoff() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let floor = renderer
+        .register_mesh(floor_tile_grid(4, 20.0))
+        .expect("valid mesh");
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+    material.metallic_factor = 0.0;
+    material.roughness_factor = 0.8;
+
+    let mut frame = dark_scene(top_down_camera());
+    frame.materials.push(material);
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    // The centre pixel's world point is (0, 0, 0) (`top_down_camera`'s doc comment); a light
+    // straight above it at height `h` is exactly `h` world units from that point.
+    frame
+        .point_lights
+        .push(point_light([0.0, 0.0, 8.0], 5.0, 100.0)); // 8 > range 5: out of range
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(
+        stats.point_lights_drawn, 1,
+        "structurally valid (contract §6 PointLight::is_valid), even though it lights nothing here"
+    );
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    assert_near(
+        pixel(&image, SIZE, SIZE / 2, SIZE / 2),
+        [0, 0, 0, 255],
+        3,
+        "beyond range: zero contribution, not just a small one",
+    );
+
+    // The same light, moved within range: now it must light the floor.
+    frame.point_lights[0].position = [0.0, 0.0, 3.0]; // 3 < range 5
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.point_lights_drawn, 1);
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let lit = pixel(&image, SIZE, SIZE / 2, SIZE / 2);
+    assert!(
+        lit[0] > 30,
+        "within range: the floor must be visibly lit, got {lit:?}"
+    );
+}
+
+#[test]
+fn point_light_specular_highlight_tracks_the_lights_horizontal_offset() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mesh = renderer
+        .register_mesh(icosphere(3, 2.0))
+        .expect("valid mesh");
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = [0.9, 0.9, 0.9, 1.0];
+    material.metallic_factor = 1.0;
+    material.roughness_factor = 0.3;
+
+    let mut frame = dark_scene(top_down_camera());
+    frame.materials.push(material);
+    frame.meshes.push(mesh_instance(
+        mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    // Offset well to the +X side and above: the specular lobe peaks where the surface normal
+    // bisects the view and light directions, which (for a camera looking straight down) tilts the
+    // highlight toward the light's horizontal offset.
+    frame
+        .point_lights
+        .push(point_light([8.0, 0.0, 8.0], 40.0, 40.0));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.point_lights_drawn, 1);
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let mut brightest = (0u32, 0u32, 0u32);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let l = luminance(pixel(&image, SIZE, x, y));
+            if l > brightest.2 {
+                brightest = (x, y, l);
+            }
+        }
+    }
+    assert!(
+        brightest.0 > SIZE / 2,
+        "expected the highlight on the +X (light) side of the sphere, brightest pixel at x={} (centre {})",
+        brightest.0,
+        SIZE / 2
+    );
+}
+
+/// Renders a single sphere with the given material parameters, lit by one `light`, on an
+/// otherwise unlit background, and returns the brightest pixel's [`luminance`] — `None` if no GPU
+/// adapter is available (the caller must then skip, like every other offscreen test).
+fn render_sphere_peak_luminance(metallic: f32, roughness: f32, light: PointLight) -> Option<u32> {
+    let mut renderer = offscreen_renderer(SIZE, SIZE, 16)?;
+    let mesh = renderer
+        .register_mesh(icosphere(3, 2.0))
+        .expect("valid mesh");
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = [0.8, 0.8, 0.8, 1.0];
+    material.metallic_factor = metallic;
+    material.roughness_factor = roughness;
+
+    let mut frame = dark_scene(top_down_camera());
+    frame.materials.push(material);
+    frame.meshes.push(mesh_instance(
+        mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    frame.point_lights.push(light);
+
+    renderer.render_stage(&frame).expect("render_stage");
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    Some(
+        (0..image.len() / 4)
+            .map(|i| {
+                luminance([
+                    image[i * 4],
+                    image[i * 4 + 1],
+                    image[i * 4 + 2],
+                    image[i * 4 + 3],
+                ])
+            })
+            .max()
+            .unwrap_or(0),
+    )
+}
+
+#[test]
+fn metal_sphere_has_a_brighter_specular_peak_than_a_dielectric_sphere_at_matched_settings() {
+    // Aligned camera-above/light-above geometry (like `point_light_range_is_a_hard_cutoff`'s
+    // centre pixel), so both spheres' highlights land near the same, easily comparable point: a
+    // metal's Fresnel reflectance F0 *is* its albedo (0.8 here), a dielectric's is a fixed 0.04 —
+    // a 20x difference in the (shared) GGX specular term, which a dielectric's diffuse term (which
+    // a metal has none of) cannot make up at this roughness.
+    let light = point_light([0.0, 0.0, 8.0], 40.0, 0.3);
+    let Some(metal_peak) = render_sphere_peak_luminance(1.0, 0.4, light) else {
+        return;
+    };
+    let Some(dielectric_peak) = render_sphere_peak_luminance(0.0, 0.4, light) else {
+        return;
+    };
+    assert!(
+        metal_peak > dielectric_peak,
+        "metal peak luminance {metal_peak} must exceed the dielectric's {dielectric_peak} at matched albedo/roughness/light"
+    );
+}
+
+#[test]
+fn specular_anti_aliasing_changes_the_highlight_but_leaves_the_background_alone() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mesh = renderer
+        .register_mesh(icosphere(3, 2.0))
+        .expect("valid mesh");
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = [0.8, 0.8, 0.8, 1.0];
+    material.metallic_factor = 1.0;
+    // Sharp highlight: geometric specular AA (OF-3.5) widens the roughness the most here, so any
+    // effect is easiest to see.
+    material.roughness_factor = 0.05;
+
+    let mut frame = dark_scene(top_down_camera());
+    frame.materials.push(material);
+    frame.meshes.push(mesh_instance(
+        mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    frame
+        .point_lights
+        .push(point_light([0.0, 0.0, 8.0], 40.0, 0.05));
+
+    renderer
+        .render_stage_with_specular_aa(&frame, true)
+        .expect("render with AA");
+    let with_aa = renderer.read_offscreen_rgba().expect("read-back");
+    renderer
+        .render_stage_with_specular_aa(&frame, false)
+        .expect("render without AA");
+    let without_aa = renderer.read_offscreen_rgba().expect("read-back");
+
+    assert_eq!(with_aa.len(), without_aa.len());
+    let (with_aa_pixels, _) = with_aa.as_chunks::<4>();
+    let (without_aa_pixels, _) = without_aa.as_chunks::<4>();
+    let differing = with_aa_pixels
+        .iter()
+        .zip(without_aa_pixels)
+        .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 2))
+        .count();
+    assert!(
+        differing > 0,
+        "expected specular AA to change at least some pixels near the highlight"
+    );
+    // Layers 4 (telegraphy) and 6 (bullets, PRD-0003 rule 1) have no channel in this pass at all
+    // (contract §6: the mesh pass only ever draws `RenderLayer::World`), so they are untouched by
+    // construction; this checks the analogous claim the mesh pass itself can make: pixels far
+    // outside any specular content (here, the clear-coloured background corners) are unaffected.
+    for (x, y) in [(0, 0), (SIZE - 1, 0), (0, SIZE - 1), (SIZE - 1, SIZE - 1)] {
+        assert_eq!(
+            pixel(&with_aa, SIZE, x, y),
+            pixel(&without_aa, SIZE, x, y),
+            "background corners must be unaffected by the specular-AA toggle"
+        );
+    }
+}
+
+#[test]
+fn base_color_texture_tints_the_material_factor() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mesh = renderer
+        .register_mesh(altar_block(2.0, 2.0, 2.0))
+        .expect("valid mesh");
+    let texture = renderer
+        .register_texture(TextureData {
+            width: 1,
+            height: 1,
+            pixels: vec![0, 128, 0, 255],
+            color_space: TextureColorSpace::Srgb,
+        })
+        .expect("valid texture");
+
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+    // Metallic, like `flat_material`: isolates the texture's own colour as F0 (see
+    // `full_bright_lighting`'s doc comment) instead of mixing in a grey dielectric specular tint.
+    material.metallic_factor = 1.0;
+    material.roughness_factor = 1.0;
+    material.base_color_texture = Some(texture);
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(top_down_camera());
+    full_bright_lighting(&mut frame);
+    frame.materials.push(material);
+    frame.meshes.push(mesh_instance(
+        mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 2.0]),
+    ));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.meshes_drawn, 1);
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let center = pixel(&image, SIZE, SIZE / 2, SIZE / 2);
+    assert!(
+        center[1] > center[0] && center[1] > center[2],
+        "the texture's green must dominate: {center:?}"
+    );
+    assert!(
+        center[0] < 40 && center[2] < 40,
+        "red/blue must stay near zero (F0 is zero on those channels): {center:?}"
+    );
+}
+
+#[test]
+fn unregistered_texture_handle_falls_back_to_the_material_factor() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mesh = renderer
+        .register_mesh(altar_block(2.0, 2.0, 2.0))
+        .expect("valid mesh");
+
+    let mut material = flat_material([1.0, 0.0, 0.0, 1.0]);
+    // Never registered with this renderer (its texture registry is empty): contract-wise
+    // indistinguishable from `None` (see `mesh.wgsl`'s header comment), not a validation error.
+    material.base_color_texture = Some(TextureHandle(0));
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(top_down_camera());
+    full_bright_lighting(&mut frame);
+    frame.materials.push(material);
+    frame.meshes.push(mesh_instance(
+        mesh,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 2.0]),
+    ));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(
+        stats.meshes_drawn, 1,
+        "an unregistered *texture* handle is never a rejection reason"
+    );
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    assert_near(
+        pixel(&image, SIZE, SIZE / 2, SIZE / 2),
+        [255, 0, 0, 255],
+        20,
+        "falls back to the plain red factor, exactly like flat_material's other tests",
+    );
+}
+
+/// Deterministic pseudo-random mesh field for the OF-3.5 stress scene: `count` small spheres
+/// scattered across the same world area [`swarm`] covers, each with a distinct, plausible PBR
+/// material so the specular term has real work to do across the scene.
+fn mesh_swarm(renderer: &mut WgpuRenderer, count: usize) -> (Vec<MeshInstance>, Vec<PbrMaterial>) {
+    let mesh = renderer
+        .register_mesh(icosphere(1, 0.5))
+        .expect("valid mesh");
+    let mut state: u32 = 0x2545_F491;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        (state >> 8) as f32 / (1u32 << 24) as f32
+    };
+    let mut meshes = Vec::with_capacity(count);
+    let mut materials = Vec::with_capacity(count);
+    for i in 0..count {
+        let x = next() * 100.0 - 50.0;
+        let y = next() * 100.0 - 50.0;
+        let mut material = PbrMaterial::default();
+        material.base_color_factor = [next(), next(), next(), 1.0];
+        material.metallic_factor = next();
+        material.roughness_factor = 0.05 + next() * 0.9;
+        materials.push(material);
+        meshes.push(mesh_instance(
+            mesh,
+            MaterialHandle(u32::try_from(i).unwrap_or(u32::MAX)),
+            translation([x, y, 0.5]),
+        ));
+    }
+    (meshes, materials)
+}
+
+/// OF-3.5 spike measurement (plan 0002 WP2.5): relative CPU-side frame cost and a shimmer proxy
+/// (per-pixel luminance RMS difference between two frames rendered 0.5 degrees of camera tilt
+/// apart, standing in for the frame-to-frame specular flicker TAA would otherwise smooth over) for
+/// geometric specular anti-aliasing versus no anti-aliasing at all, on a stress scene of 500 PBR
+/// meshes plus 10k sprites. Software-adapter timings only (labelled below), never a GPU budget; run
+/// explicitly with `GRIMOIRE_GPU_ADAPTER=software cargo test -p grimoire_render --test offscreen --
+/// --ignored --nocapture measure_specular_aa`.
+#[test]
+#[ignore = "OF-3.5 spike measurement, run explicitly (see this test's doc comment)"]
+fn measure_specular_aa_relative_cost_and_shimmer() {
+    let Some(mut renderer) = offscreen_renderer(1280, 720, 16_384) else {
+        return;
+    };
+    let (meshes, materials) = mesh_swarm(&mut renderer, 500);
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.02, 0.02, 0.03, 1.0];
+    frame.base.camera = Camera2D {
+        center: [0.0, 0.0],
+        world_height: 100.0,
+    };
+    frame.base.sprites = swarm(10_000);
+    frame.camera_25d = Some(top_down_camera());
+    full_bright_lighting(&mut frame);
+    frame.materials = materials;
+    frame.meshes = meshes;
+    for i in 0..8 {
+        frame.point_lights.push(point_light(
+            [(i as f32 - 4.0) * 12.0, (i as f32 * 7.0).sin() * 20.0, 6.0],
+            25.0,
+            2.0,
+        ));
+    }
+
+    let frames = 30;
+    for &specular_aa in &[true, false] {
+        for _ in 0..5 {
+            renderer
+                .render_stage_with_specular_aa(&frame, specular_aa)
+                .expect("warm-up render");
+        }
+        renderer.read_offscreen_rgba().expect("flush");
+        let mut total = Duration::ZERO;
+        for _ in 0..frames {
+            let stats = renderer
+                .render_stage_with_specular_aa(&frame, specular_aa)
+                .expect("render");
+            total += stats.base.cpu_time;
+        }
+        renderer.read_offscreen_rgba().expect("flush");
+        println!(
+            "backend {} (software adapter, NOT a GPU budget): specular_aa={specular_aa}, 500 meshes + 10k sprites, {frames} frames: cpu_time avg {:?}",
+            renderer.backend_name(),
+            total / frames
+        );
+    }
+
+    let mut rotated_frame = frame.clone();
+    if let Some(camera) = rotated_frame.camera_25d.as_mut() {
+        camera.tilt_degrees += 0.5;
+    }
+    for &specular_aa in &[true, false] {
+        renderer
+            .render_stage_with_specular_aa(&frame, specular_aa)
+            .expect("render a");
+        let image_a = renderer.read_offscreen_rgba().expect("read-back a");
+        renderer
+            .render_stage_with_specular_aa(&rotated_frame, specular_aa)
+            .expect("render b");
+        let image_b = renderer.read_offscreen_rgba().expect("read-back b");
+        let mut sum_sq_diff = 0f64;
+        let mut count = 0f64;
+        let (image_a_pixels, _) = image_a.as_chunks::<4>();
+        let (image_b_pixels, _) = image_b.as_chunks::<4>();
+        for (&a, &b) in image_a_pixels.iter().zip(image_b_pixels) {
+            let la = f64::from(luminance(a));
+            let lb = f64::from(luminance(b));
+            sum_sq_diff += (la - lb) * (la - lb);
+            count += 1.0;
+        }
+        let shimmer = (sum_sq_diff / count).sqrt();
+        println!(
+            "shimmer (RMS luminance difference between two 0.5-degree-rotated frames), specular_aa={specular_aa}: {shimmer:.3}"
+        );
+    }
 }
 
 /// Deterministic pseudo-random sprite field covering the view.

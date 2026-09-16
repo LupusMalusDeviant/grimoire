@@ -21,12 +21,19 @@
 //! drives it from the player proxy's interpolated position once per frame and feeds axes 2/3 of
 //! `TickInput` from `grimoire::sample_aim`/`grimoire::quantize_aim` (contract §9.4).
 //!
-//! **Deferred to later work packages:** the real PBR shading including shadows and specular
-//! anti-aliasing (WP2.5/WP2.6), and the point-light *count* budget (`Low 32` / `High 256`)
-//! together with clustered forward+ lighting (WP3.4, plan 0002). Mesh geometry, its GPU upload and
-//! a first (deliberately provisional) directional-light-plus-ambient shading are WP2.3's job (see
-//! [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this module
-//! still owns only the data contract those steps consume, plus the `view_projection` helper
+//! **WP2.5 (real PBR shading):** `mesh_pass`'s fragment shader (`mesh.wgsl`) now shades every
+//! [`MeshInstance`] with GGX microfacet specular, height-correlated Smith visibility, Schlick
+//! Fresnel, an analytic ambient term and geometric specular anti-aliasing (OF-3.5), consuming
+//! [`PointLight`], [`DirectionalLight`] and [`AmbientLight`] for real; this module still owns only
+//! their data contract, plus [`eye_position`] (added for the shading's view vector) and
+//! [`view_projection`] below. Shadows (OF-3.2) stay WP2.6's job. [`PointLight::is_bullet_light`]/
+//! [`BulletLightCap`] are validated and counted (as before) but not yet applied to the shading
+//! equation — contract §6 assigns that to WP3.4/WP3.5, once bullet-cloud lights exist. The
+//! point-light *count* budget (`Low 32` / `High 256`) together with clustered forward+ lighting is
+//! WP3.4's job; `mesh_pass`'s simple P1 light loop uses a smaller, internal pre-clustering limit
+//! instead (see `mesh_pass::MAX_POINT_LIGHTS`). Mesh geometry and its GPU upload are WP2.3's job
+//! (see [`crate::mesh`], [`crate::procedural`] and [`crate::WgpuRenderer::register_mesh`]); this
+//! module still owns only the data contract those steps consume, plus the `view_projection` helper
 //! WP2.3's mesh pass builds on ([`Camera25D::screen_to_ground`]/[`Camera25D::ground_to_screen`]
 //! stay ray-casts, not a matrix, so both keep working without a GPU) and that [`CameraFollow`] now
 //! keeps fed with a followed [`Camera25D::target`] every frame.
@@ -168,6 +175,19 @@ const GROUND_PLANE_EPSILON: f32 = f32::EPSILON;
 /// both fail.
 fn is_positive_and_finite(value: f32) -> bool {
     value > 0.0 && value.is_finite()
+}
+
+/// World-space eye point of `camera` (plan 0002 WP2.5): the same basis
+/// [`view_projection`]/[`Camera25D::screen_to_ground`] use, exposed so the mesh pass's PBR shading
+/// can compute a view vector for specular lighting without duplicating the camera basis maths.
+/// Not part of the crate's public API, for the same reason as [`view_projection`].
+///
+/// Never NaN for a well-formed camera, by construction of [`camera_basis`]; a non-finite `camera`
+/// (for example `tilt_degrees: f32::NAN`) may still produce a non-finite eye, which the mesh pass
+/// treats the same as "no camera" (it already discards a non-finite `view_projection` from the
+/// same camera).
+pub(crate) fn eye_position(camera: &Camera25D) -> [f32; 3] {
+    camera_basis(camera).eye
 }
 
 /// Builds the column-major view-projection matrix for `camera` (plan 0002 WP2.3): a perspective
@@ -1025,6 +1045,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- eye_position (WP2.5) -----------------------------------------------------------------
+
+    #[test]
+    fn eye_position_matches_camera_basis_eye() {
+        let camera = Camera25D {
+            target: [5.0, 7.0],
+            tilt_degrees: 65.0,
+            distance: 15.0,
+            ..Camera25D::default()
+        };
+        assert_eq!(eye_position(&camera), camera_basis(&camera).eye);
+    }
+
+    #[test]
+    fn eye_position_is_finite_for_a_well_formed_camera() {
+        let eye = eye_position(&Camera25D::default());
+        assert!(eye.iter().all(|c| c.is_finite()), "{eye:?}");
     }
 
     // --- view_projection: consistency with the ray-cast basis --------------------------------

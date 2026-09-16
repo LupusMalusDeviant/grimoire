@@ -29,8 +29,9 @@ mod vertex {
         /// (generation and, later, authoring tools may leave tiny deviations); the mesh pass
         /// re-normalises it after applying the model transform.
         pub normal: [f32; 3],
-        /// Texture coordinate. Unused by WP2.3's provisional shading (base colour factor only);
-        /// carried through for WP2.5's textured PBR pass.
+        /// Texture coordinate, used from WP2.5 onward to sample [`crate::PbrMaterial`]'s optional
+        /// base colour, normal and occlusion-roughness-metallic textures (`mesh.wgsl`); WP2.3's
+        /// provisional shading did not read it.
         pub uv: [f32; 2],
     }
 }
