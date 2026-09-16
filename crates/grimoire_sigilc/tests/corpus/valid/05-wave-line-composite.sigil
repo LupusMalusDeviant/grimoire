@@ -1,0 +1,76 @@
+sigil 1
+// 05-wave-line-composite: a curved wave of blades, a rail of orbiting satellites and the ring
+// of 01-ring-burst reused as a finale.
+// Covers: import with parameter overrides (composition), block wave, block line, modifier
+//         curve, transform reverse on an event trigger, flags env_active + reflectable,
+//         behaviour reference (escape hatch), meta patron.
+
+import "01-ring-burst.sigil" as ring
+
+meta {
+  name = "Tide and Rail"
+  difficulty = [normal, mixed]
+  density = 220
+  patron = ember_court
+}
+
+// Blade: interacts with the level (env_active) and can be parried back (reflectable).
+bullet blade {
+  silhouette = blade
+  palette = enemy.teal
+  glow = 0.5
+  radius = 0.3u
+  damage = 2
+  flags = [env_active, reflectable]
+  transform reverse {
+    when = event phase_end // all blades turn around when the boss phase ends
+  }
+}
+
+// Satellite: motion comes from a registered Rust behaviour (FR-10).
+bullet satellite {
+  silhouette = crescent
+  palette = enemy.teal
+  glow = 0.9
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+  behaviour = orbit_parent
+}
+
+emitter tide {
+  bullet = blade
+  repeat = 8
+  interval = 20t
+  speed = 0.06u/t
+  block wave {
+    count = 9
+    amplitude = 1.5u
+    wavelength = 6u
+    direction = 270deg
+  }
+  modifier curve {
+    turn = 0.8deg/t // bends the wave front into an arc
+  }
+}
+
+emitter rail {
+  bullet = satellite
+  offset = (x = -4u, y = 2u)
+  delay = 60t
+  repeat = 3
+  interval = 40t
+  speed = 0.04u/t
+  block line {
+    count = 7
+    spacing = 0.8u
+    direction = 0deg
+  }
+}
+
+// Reuses the ring emitter of 01-ring-burst; only the listed parameters differ.
+emitter finale from ring.burst {
+  delay = 240t
+  repeat = 1
+  block.count = 12
+}

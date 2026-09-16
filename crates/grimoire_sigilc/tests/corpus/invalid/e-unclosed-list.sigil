@@ -1,0 +1,6 @@
+sigil 1
+// e-unclosed-list: the `flags` list is missing its closing `]` before the body ends.
+bullet orb {
+  silhouette = orb
+  flags = [smashable, grazeable
+}

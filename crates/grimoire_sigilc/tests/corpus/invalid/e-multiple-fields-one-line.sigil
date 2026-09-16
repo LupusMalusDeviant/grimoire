@@ -1,0 +1,8 @@
+sigil 1
+// e-multiple-fields-one-line: two fields crammed onto one line (the grammar wants one per line).
+emitter burst {
+  bullet = orb
+  block ring {
+    count = 24 start = 7.5deg
+  }
+}

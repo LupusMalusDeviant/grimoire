@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-truncated-mid-body.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0011",
+      "severity": "error",
+      "file": "invalid/e-truncated-mid-body.sigil",
+      "line": 5,
+      "column": 1,
+      "node_path": "meta.difficulty",
+      "token": "",
+      "message": "Unexpected end of file: this list is never closed with `]`.",
+      "fix_hint": "Add `]`.",
+      "related": {
+        "label": "opening list",
+        "line": 4,
+        "column": 16,
+        "token": "["
+      }
+    },
+    {
+      "code": "SIG0007",
+      "severity": "error",
+      "file": "invalid/e-truncated-mid-body.sigil",
+      "line": 5,
+      "column": 1,
+      "node_path": "meta",
+      "token": "",
+      "message": "Unexpected end of file: this body is never closed with `}`.",
+      "fix_hint": "Add a `}` to close the body.",
+      "related": {
+        "label": "opening brace",
+        "line": 2,
+        "column": 6,
+        "token": "{"
+      }
+    }
+  ]
+}

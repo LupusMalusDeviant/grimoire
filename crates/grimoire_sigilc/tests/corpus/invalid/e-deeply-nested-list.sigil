@@ -1,0 +1,6 @@
+sigil 1
+// e-deeply-nested-list: exceeds the parser's nesting guard (SIG0010) instead of
+// overflowing the stack. Depth chosen well past MAX_NESTING_DEPTH (64).
+meta {
+  x = [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+}

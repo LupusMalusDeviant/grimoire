@@ -1,0 +1,10 @@
+sigil 1
+// e-unclosed-body: `bullet seed`'s body is missing its closing `}` before the next item.
+bullet seed {
+  silhouette = orb
+  radius = 0.35u
+
+bullet shard {
+  silhouette = shard
+  radius = 0.15u
+}

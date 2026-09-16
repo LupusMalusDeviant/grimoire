@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-unknown-unit-wallclock.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0006",
+      "severity": "error",
+      "file": "invalid/e-unknown-unit-wallclock.sigil",
+      "line": 5,
+      "column": 11,
+      "node_path": "emitters.burst.delay",
+      "token": "5s",
+      "message": "Unknown unit `s` on `5s`.",
+      "fix_hint": "Use one of the known units: deg/t, deg, u/t2, u/t, u, t, beats.",
+      "related": null
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+sigil 1
+// e-colon-instead-of-eq: RON/JSON habit ("key: value") instead of Sigil's "key = value".
+emitter burst {
+  bullet = orb
+  block ring {
+    count: 24
+  }
+}

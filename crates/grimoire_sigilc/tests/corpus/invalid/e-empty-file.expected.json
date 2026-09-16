@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "file": "invalid/e-empty-file.sigil",
+  "diagnostics": [
+    {
+      "code": "SIG0001",
+      "severity": "error",
+      "file": "invalid/e-empty-file.sigil",
+      "line": 1,
+      "column": 1,
+      "node_path": "version",
+      "token": "",
+      "message": "Missing or malformed `sigil <N>` version header: it must be the first line of the file, in column 1, with no byte-order mark or comment before it.",
+      "fix_hint": "Add `sigil 1` as the very first line of the file.",
+      "related": null
+    }
+  ]
+}

@@ -17,12 +17,23 @@ path = "src/bin/sigilc.rs"
 # golden masters and replays and must be byte-identical on Windows, Linux and macOS, so it obeys
 # the same rules as the simulation crates even though it never runs at game time. `sim`/`ecs` are
 # needed for the future `sigilc simulate` subcommand (Plan 0002 WP5.6), not for compiling alone.
+# `serde`/`serde_json` back the diagnostic JSON documents of WP4.1 (contract §2 rule 11,
+# `sigilc --json`); both are already workspace-pinned third-party dependencies (used the same way
+# by `grimoire_bench`, contract §15), so wiring them into this crate needs no new pin (rule 4).
 [dependencies]
 grimoire_core.workspace = true
 grimoire_ecs.workspace = true
 grimoire_sigil.workspace = true
 grimoire_sim.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+
+# `proptest` (already workspace-pinned, used the same way by five other crates) drives the
+# roundtrip and no-panic properties required by WP4.1 (parse -> fmt -> parse over the corpus and
+# over arbitrary generated sources; arbitrary bytes and truncated files never panic or hang).
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
