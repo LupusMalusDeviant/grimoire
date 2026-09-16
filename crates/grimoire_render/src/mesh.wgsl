@@ -36,8 +36,15 @@
 // Winding is not assumed to be consistent (see procedural.rs); the pipeline disables back-face
 // culling, like the sprite pass.
 //
-// Layout must match `mesh_pass.rs`'s `CameraGpu`/`PointLightGpu` (1184 bytes) and
+// Layout must match `mesh_pass.rs`'s `CameraGpu`/`PointLightGpu` (1264 bytes) and
 // `MeshInstanceGpu` (112 bytes) exactly; both sides are hand-kept in sync (no shared codegen).
+//
+// Shadows (plan 0002 WP2.6, OF-3.2): `camera.light_view_proj`/`camera.shadow_params` (see
+// `mesh_pass.rs`'s `CameraGpu` doc comment for the packing) drive a PCF-filtered lookup into the
+// key-light shadow map (group 2, `shadow_pass.rs`), applied only to the key light's own
+// contribution — point lights and ambient are unaffected, matching how a single key-light shadow
+// map behaves. `shadow_params.z <= 0.5` (no shadow map wanted this frame, or no valid key
+// light/camera) skips the texture reads entirely rather than sampling a possibly-stale map.
 
 const PI: f32 = 3.14159265358979;
 // Mirrors `mesh_pass::MIN_ROUGHNESS` (the Rust side clamps the same way before upload; this clamp
@@ -83,6 +90,13 @@ struct Camera {
     specular_aa_strength: f32,
     _pad1: u32,
     _pad2: u32,
+    // World-to-light-space view-projection for the key-light shadow map
+    // (`stage3d::key_light_view_projection`).
+    light_view_proj: mat4x4<f32>,
+    // x: shadow-map texel size (`1.0 / map_size`). y: PCF kernel radius in texels (float; `0` = a
+    // single tap). z: `1.0` to sample the shadow map this frame, `0.0` to skip it entirely. w
+    // unused.
+    shadow_params: vec4<f32>,
     lights: array<PointLightGpu, 32>,
 }
 
@@ -93,6 +107,13 @@ var<uniform> camera: Camera;
 @group(1) @binding(1) var normal_texture: texture_2d<f32>;
 @group(1) @binding(2) var orm_texture: texture_2d<f32>;
 @group(1) @binding(3) var material_sampler: sampler;
+
+// Key-light shadow map (plan 0002 WP2.6): a depth texture rendered by `shadow_pass.rs`, sampled
+// here through a comparison sampler for hardware-filtered PCF taps
+// (`textureSampleCompareLevel` returns the fraction of nearby samples the surface is closer than,
+// i.e. already "how lit is this point", not a raw depth value).
+@group(2) @binding(0) var shadow_map: texture_depth_2d;
+@group(2) @binding(1) var shadow_sampler: sampler_comparison;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -237,6 +258,42 @@ fn ggx_light(
     return (diffuse + specular) * n_l * radiance;
 }
 
+// PCF-filtered key-light shadow factor at `world_position` (plan 0002 WP2.6): `1.0` fully lit,
+// `0.0` fully in shadow. Averages a `(2*radius+1)^2` square kernel of hardware-filtered comparison
+// taps (`camera.shadow_params.y`, a small integer clamped by `ShadowConfig::is_valid` so the tap
+// count stays bounded). `textureSampleCompareLevel` (the explicit-level variant, unlike the
+// implicit-derivative `textureSampleCompare`) is legal inside this data-dependent loop because it
+// makes no uniformity demand on control flow. A point outside the shadow map's fitted frustum
+// (light-space `x`/`y` outside `[0, 1]` after the NDC-to-UV remap, or outside its near/far range)
+// is treated as fully lit — the frustum is fitted to cover the visible arena
+// (`stage3d::key_light_view_projection`), so this only matters right at its edge. Called only when
+// `camera.shadow_params.z > 0.5` (see `fs_main`), so the texture is never sampled on a frame that
+// does not want it.
+fn key_light_shadow_factor(world_position: vec3<f32>) -> f32 {
+    let clip = camera.light_view_proj * vec4<f32>(world_position, 1.0);
+    if clip.w <= 0.0 {
+        return 1.0; // Degenerate light matrix (`key_light_view_projection`'s identity fallback).
+    }
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    let depth = ndc.z;
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth < 0.0 || depth > 1.0 {
+        return 1.0;
+    }
+    let texel = camera.shadow_params.x;
+    let radius = i32(camera.shadow_params.y);
+    var lit = 0.0;
+    var taps = 0.0;
+    for (var dy = -radius; dy <= radius; dy = dy + 1) {
+        for (var dx = -radius; dx <= radius; dx = dx + 1) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
+            lit = lit + textureSampleCompareLevel(shadow_map, shadow_sampler, uv + offset, depth);
+            taps = taps + 1.0;
+        }
+    }
+    return lit / max(taps, 1.0);
+}
+
 // Karis' analytic approximation of the split-sum environment BRDF ("Real Shading in Unreal Engine
 // 4", mobile appendix): the specular ambient response for a given Fresnel-at-normal-incidence
 // `f0`, `roughness` and `n_dot_v`, without an environment map (PRD-0003 FR-01 "einfacher
@@ -297,7 +354,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         1.0,
     );
 
-    var direct = ggx_light(n, v, camera.light_dir.xyz, base_color, f0, metallic, alpha_squared, camera.key_light.rgb);
+    // Shadow map (plan 0002 WP2.6): only the key light's own contribution is attenuated — point
+    // lights and ambient are unaffected, matching a single key-light shadow map's usual scope.
+    var shadow_factor = 1.0;
+    if camera.shadow_params.z > 0.5 {
+        shadow_factor = key_light_shadow_factor(in.world_position);
+    }
+    var direct = shadow_factor * ggx_light(n, v, camera.light_dir.xyz, base_color, f0, metallic, alpha_squared, camera.key_light.rgb);
 
     for (var i = 0u; i < camera.light_count; i = i + 1u) {
         let light = camera.lights[i];

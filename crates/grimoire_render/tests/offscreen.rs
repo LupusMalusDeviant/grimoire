@@ -18,9 +18,10 @@ use std::time::Duration;
 
 use grimoire_render::procedural::{altar_block, floor_tile_grid, icosphere};
 use grimoire_render::{
-    AmbientLight, Camera2D, Camera25D, DirectionalLight, MaterialHandle, MeshHandle, MeshInstance,
-    PbrMaterial, PointLight, RenderError, RenderFrame, Renderer, RendererConfig, SpriteInstance,
-    StageFrame, TextureColorSpace, TextureData, TextureHandle, WgpuRenderer, shape,
+    AmbientLight, BlobShadowInstance, Camera2D, Camera25D, DirectionalLight, MaterialHandle,
+    MeshHandle, MeshInstance, PbrMaterial, PointLight, RenderError, RenderFrame, Renderer,
+    RendererConfig, ShadowMode, SpriteInstance, StageFrame, TextureColorSpace, TextureData,
+    TextureHandle, WgpuRenderer, shape,
 };
 
 const SIZE: u32 = 64;
@@ -879,6 +880,172 @@ fn specular_anti_aliasing_changes_the_highlight_but_leaves_the_background_alone(
             "background corners must be unaffected by the specular-AA toggle"
         );
     }
+}
+
+// --- Shadows (plan 0002 WP2.6, OF-3.2): key-light shadow map and blob shadows ------------------
+
+#[test]
+fn key_light_shadow_map_darkens_the_floor_behind_an_occluder() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let floor = renderer
+        .register_mesh(floor_tile_grid(4, 20.0))
+        .expect("valid mesh");
+    let occluder = renderer
+        .register_mesh(altar_block(2.0, 2.0, 2.0))
+        .expect("valid mesh");
+
+    let mut floor_material = PbrMaterial::default();
+    floor_material.base_color_factor = [1.0, 1.0, 1.0, 1.0];
+    floor_material.metallic_factor = 0.0;
+    floor_material.roughness_factor = 0.9;
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(top_down_camera());
+    frame.ambient = AmbientLight::Flat {
+        color: [0.0, 0.0, 0.0],
+        intensity: 0.0,
+    };
+    let mut key_light = DirectionalLight::default();
+    // Travels down and to the +X side, at 45 degrees: the occluder's shadow falls on the floor's
+    // +X side, away from the light, where the top-down camera can still see it (unlike a straight-
+    // down light, whose shadow would hide directly under the occluder, out of view).
+    key_light.direction = [1.0, 0.0, -1.0];
+    key_light.color = [1.0, 1.0, 1.0];
+    key_light.intensity = 4.0;
+    frame.key_light = Some(key_light);
+    frame.materials.push(floor_material);
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    // Sits on the floor (bottom at Z = 0, like the floor itself): `altar_block(2, 2, 2)` is
+    // centred on the origin with half-height 1, so a Z translation of 1 puts its base at Z = 0.
+    frame.meshes.push(mesh_instance(
+        occluder,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 1.0]),
+    ));
+
+    frame.shadow_config.mode = ShadowMode::None;
+    let stats_none = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(
+        stats_none.shadow_casters_drawn, 0,
+        "ShadowMode::None never wants a key-light shadow map"
+    );
+    let without_shadow = renderer.read_offscreen_rgba().expect("read-back");
+
+    frame.shadow_config.mode = ShadowMode::KeyLight;
+    let stats_key_light = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(
+        stats_key_light.shadow_casters_drawn, 2,
+        "both the floor and the occluder are valid, registered casters"
+    );
+    let with_shadow = renderer.read_offscreen_rgba().expect("read-back");
+
+    // Layers 4 (telegraphy) and 6 (bullets) have no channel in this pass at all (contract §6: the
+    // mesh pass only ever draws `RenderLayer::World`), so PRD-0003 rule 1 is unaffected by
+    // construction, the same reasoning `specular_anti_aliasing_...` already relies on above.
+    let mut darkened = 0usize;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let before = luminance(pixel(&without_shadow, SIZE, x, y));
+            let after = luminance(pixel(&with_shadow, SIZE, x, y));
+            if after + 10 < before {
+                darkened += 1;
+            }
+        }
+    }
+    assert!(
+        darkened > 0,
+        "expected the key-light shadow map to measurably darken at least one floor pixel"
+    );
+}
+
+#[test]
+fn shadow_mode_none_never_samples_the_shadow_map_even_with_casters_present() {
+    // A structural counterpart to the pixel-based test above: with the exact same occluder scene,
+    // `ShadowMode::None` must report zero shadow casters regardless of how many meshes could have
+    // cast a shadow, and the renderer must not fail or panic while a shadow-casting scene exists
+    // but shadows are switched off (the shadow map render is skipped, not merely unused).
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let floor = renderer
+        .register_mesh(floor_tile_grid(4, 20.0))
+        .expect("valid mesh");
+    let mut frame = StageFrame::new();
+    frame.camera_25d = Some(top_down_camera());
+    frame.key_light = Some(DirectionalLight::default());
+    frame.materials.push(flat_material([1.0, 1.0, 1.0, 1.0]));
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    frame.shadow_config.mode = ShadowMode::None;
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.meshes_drawn, 1);
+    assert_eq!(stats.shadow_casters_drawn, 0);
+}
+
+#[test]
+fn blob_shadow_darkens_the_ground_under_the_disc() {
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let floor = renderer
+        .register_mesh(floor_tile_grid(4, 20.0))
+        .expect("valid mesh");
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(top_down_camera());
+    full_bright_lighting(&mut frame);
+    frame.materials.push(flat_material([1.0, 1.0, 1.0, 1.0]));
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    frame.blob_shadows.push(BlobShadowInstance {
+        position: [0.0, 0.0],
+        radius: 2.0,
+        softness: 0.3,
+        strength: 0.9,
+    });
+
+    frame.shadow_config.mode = ShadowMode::None;
+    let stats_none = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(
+        stats_none.blob_shadows_drawn, 1,
+        "counted as a valid instance regardless of whether the mode actually draws it, like \
+         `StageStats::meshes_drawn` counting a mesh a renderer without a registry cannot draw"
+    );
+    let without_blob = renderer.read_offscreen_rgba().expect("read-back");
+
+    frame.shadow_config.mode = ShadowMode::Blob;
+    let stats_blob = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats_blob.blob_shadows_drawn, 1);
+    let with_blob = renderer.read_offscreen_rgba().expect("read-back");
+
+    let before = pixel(&without_blob, SIZE, SIZE / 2, SIZE / 2);
+    let after = pixel(&with_blob, SIZE, SIZE / 2, SIZE / 2);
+    assert!(
+        luminance(after) + 20 < luminance(before),
+        "expected the blob shadow to darken the centre pixel: before {before:?}, after {after:?}"
+    );
+    // Regression against `blob_shadow.wgsl` accidentally writing outside the disc: a far corner,
+    // well beyond `radius`, must stay unaffected.
+    assert_eq!(
+        pixel(&without_blob, SIZE, 2, 2),
+        pixel(&with_blob, SIZE, 2, 2),
+        "a corner far outside the disc's radius must be untouched"
+    );
 }
 
 #[test]

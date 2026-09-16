@@ -6,12 +6,13 @@
 //! types [`RenderFrame`], [`RenderStats`] and [`SpriteInstance`] are reused unchanged.
 //!
 //! [`StageFrame`] and [`StageStats`] also carry the WP2.2 camera, mesh, material and light
-//! channels defined in the sibling `stage3d` module; this module wires them into the frame, its
-//! `clear()` and the shared extraction/counting logic, alongside the P1 bullet channel.
+//! channels, and (from WP2.6) the shadow channels, defined in the sibling `stage3d` module; this
+//! module wires them into the frame, its `clear()` and the shared extraction/counting logic,
+//! alongside the P1 bullet channel.
 
 use crate::stage3d::{
-    AmbientLight, BulletLightCap, Camera25D, DirectionalLight, MeshHandle, MeshInstance,
-    PbrMaterial, PointLight,
+    AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, DirectionalLight, MeshHandle,
+    MeshInstance, PbrMaterial, PointLight, ShadowConfig,
 };
 use crate::{RenderFrame, RenderStats, SpriteInstance};
 
@@ -153,6 +154,14 @@ pub struct StageFrame {
     /// Bullet-light cap for this frame (PRD-0003 rule 5 / FR-15, WP2.2). Persists across
     /// [`StageFrame::clear`], like [`StageFrame::camera_25d`].
     pub bullet_light_cap: BulletLightCap,
+    /// Blob shadow discs (plan 0002 WP2.6, OF-3.2), drawn on the ground under an actor as a cheap
+    /// alternative to the key-light shadow map (`docs/art/stilbibel.md`, preset "Low"). Only drawn
+    /// when [`StageFrame::shadow_config`]'s [`crate::ShadowMode`] is [`crate::ShadowMode::Blob`];
+    /// still validated and counted otherwise, like [`StageFrame::bullets`]'s palette-space check.
+    pub blob_shadows: Vec<BlobShadowInstance>,
+    /// Shadow technique and its parameters for this frame (plan 0002 WP2.6, OF-3.2). Persists
+    /// across [`StageFrame::clear`], like [`StageFrame::camera_25d`].
+    pub shadow_config: ShadowConfig,
 }
 
 impl StageFrame {
@@ -164,9 +173,10 @@ impl StageFrame {
 
     /// Removes all instances from every channel but keeps their allocations, the camera(s), the
     /// clear colour and the lighting fields ([`StageFrame::key_light`], [`StageFrame::ambient`],
-    /// [`StageFrame::bullet_light_cap`]) — like [`StageFrame::camera_25d`], these describe the
-    /// current scene rather than a per-frame instance list, so the extraction step overwrites them
-    /// directly instead of re-adding them after a clear.
+    /// [`StageFrame::bullet_light_cap`], [`StageFrame::shadow_config`]) — like
+    /// [`StageFrame::camera_25d`], these describe the current scene rather than a per-frame
+    /// instance list, so the extraction step overwrites them directly instead of re-adding them
+    /// after a clear.
     pub fn clear(&mut self) {
         self.base.clear();
         self.bullets.clear();
@@ -175,6 +185,7 @@ impl StageFrame {
         self.meshes.clear();
         self.materials.clear();
         self.point_lights.clear();
+        self.blob_shadows.clear();
     }
 }
 
@@ -233,6 +244,28 @@ pub struct StageStats {
     /// Whether [`StageFrame::bullet_light_cap`] failed [`BulletLightCap::is_valid`]; shading falls
     /// back to [`BulletLightCap::clamped_floor_contribution`] in that case.
     pub bullet_light_cap_invalid: bool,
+    /// Number of blob shadow discs accepted (see [`BlobShadowInstance::is_valid`]); drawn only
+    /// when [`StageFrame::shadow_config`]'s mode is [`crate::ShadowMode::Blob`] (plan 0002 WP2.6).
+    pub blob_shadows_drawn: u32,
+    /// Number of blob shadow discs rejected because [`BlobShadowInstance::is_valid`] returned
+    /// `false`.
+    pub blob_shadows_rejected_invalid: u32,
+    /// Whether [`StageFrame::shadow_config`] failed [`ShadowConfig::is_valid`]; an invalid config
+    /// falls back to no shadows at all for this frame, never to guessed-at clamped values (plan
+    /// 0002 WP2.6, the same "reject and count, do not guess" rule contract §6 already applies to
+    /// [`PbrMaterial`] and the light types).
+    pub shadow_config_invalid: bool,
+    /// Number of [`MeshInstance`]s that are, this frame, casters for the key-light shadow map:
+    /// exactly [`StageStats::meshes_drawn`] whenever [`StageFrame::shadow_config`] is valid, its
+    /// [`crate::ShadowMode`] wants a key-light shadow map
+    /// (`crate::ShadowMode::wants_key_light_shadow_map`) and [`StageFrame::key_light`] is present
+    /// and valid — `0` otherwise. P1 has no per-instance opt-out (every drawn mesh casts a
+    /// shadow); a future work package may add one.
+    pub shadow_casters_drawn: u32,
+    /// Reserved for point-light shadow casters (plan 0002 WP2.6, deferred — see
+    /// [`crate::ShadowMode::KeyLightPlusPoints`]'s doc comment): always `0` in this version,
+    /// regardless of how many [`PointLight`]s have [`PointLight::casts_shadow`] set.
+    pub point_shadow_casters_drawn: u32,
 }
 
 /// Outcome of classifying a [`StageFrame::bullets`] channel against the bullet pass rules.
@@ -268,7 +301,18 @@ pub(crate) fn stage_stats_from_base(
 ) -> StageStats {
     let bullets = extract_bullets(&frame.bullets);
     let stage3d = extract_stage3d(frame, is_mesh_registered);
+    let blob_shadows = extract_blob_shadows(&frame.blob_shadows);
     let sprite_channels = frame.marker_sprites.len() + frame.debug_sprites.len();
+    let shadow_config_invalid = !frame.shadow_config.is_valid();
+    let key_light_castable = frame.key_light.is_some_and(|light| light.is_valid());
+    let shadow_casters_drawn = if !shadow_config_invalid
+        && frame.shadow_config.mode.wants_key_light_shadow_map()
+        && key_light_castable
+    {
+        stage3d.meshes_drawn
+    } else {
+        0
+    };
     StageStats {
         base: RenderStats {
             sprites_drawn: base.sprites_drawn + u32::try_from(sprite_channels).unwrap_or(u32::MAX),
@@ -289,6 +333,35 @@ pub(crate) fn stage_stats_from_base(
         key_light_rejected_invalid: stage3d.key_light_rejected_invalid,
         ambient_rejected_invalid: stage3d.ambient_rejected_invalid,
         bullet_light_cap_invalid: stage3d.bullet_light_cap_invalid,
+        blob_shadows_drawn: blob_shadows.drawn,
+        blob_shadows_rejected_invalid: blob_shadows.rejected_invalid,
+        shadow_config_invalid,
+        shadow_casters_drawn,
+        point_shadow_casters_drawn: 0,
+    }
+}
+
+/// Outcome of classifying a [`StageFrame::blob_shadows`] channel (plan 0002 WP2.6).
+struct BlobShadowExtraction {
+    drawn: u32,
+    rejected_invalid: u32,
+}
+
+/// Applies [`BlobShadowInstance::is_valid`] to `blob_shadows`; used by [`stage_stats_from_base`].
+/// Mirrors [`extract_bullets`]'s shape but has no palette-space equivalent to check first.
+fn extract_blob_shadows(blob_shadows: &[BlobShadowInstance]) -> BlobShadowExtraction {
+    let mut drawn = 0u32;
+    let mut rejected_invalid = 0u32;
+    for blob in blob_shadows {
+        if blob.is_valid() {
+            drawn += 1;
+        } else {
+            rejected_invalid += 1;
+        }
+    }
+    BlobShadowExtraction {
+        drawn,
+        rejected_invalid,
     }
 }
 
@@ -428,7 +501,7 @@ fn extract_stage3d(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage3d::MaterialHandle;
+    use crate::stage3d::{MaterialHandle, ShadowMode};
 
     #[test]
     fn bullet_instance_layout() {
@@ -481,6 +554,7 @@ mod tests {
         frame.meshes.push(MeshInstance::default());
         frame.materials.push(PbrMaterial::default());
         frame.point_lights.push(PointLight::default());
+        frame.blob_shadows.push(BlobShadowInstance::default());
         frame.base.camera.world_height = 42.0;
         frame.base.clear_color = [0.1, 0.2, 0.3, 1.0];
         frame.camera_25d = Some(Camera25D::default());
@@ -489,6 +563,11 @@ mod tests {
             floor_contribution: 0.3,
         };
         frame.bullet_light_cap = cap;
+        let shadow_config = ShadowConfig {
+            mode: ShadowMode::KeyLight,
+            ..ShadowConfig::default()
+        };
+        frame.shadow_config = shadow_config;
 
         frame.clear();
 
@@ -499,11 +578,13 @@ mod tests {
         assert!(frame.meshes.is_empty());
         assert!(frame.materials.is_empty());
         assert!(frame.point_lights.is_empty());
+        assert!(frame.blob_shadows.is_empty());
         assert!((frame.base.camera.world_height - 42.0).abs() < f32::EPSILON);
         assert_eq!(frame.base.clear_color, [0.1, 0.2, 0.3, 1.0]);
         assert_eq!(frame.camera_25d, Some(Camera25D::default()));
         assert_eq!(frame.key_light, Some(DirectionalLight::default()));
         assert_eq!(frame.bullet_light_cap, cap);
+        assert_eq!(frame.shadow_config, shadow_config);
     }
 
     fn valid_bullet() -> BulletInstance {
@@ -780,5 +861,126 @@ mod tests {
         );
         assert!(!result.ambient_rejected_invalid, "default ambient is valid");
         assert!(!result.bullet_light_cap_invalid, "default cap is valid");
+    }
+
+    // --- extract_blob_shadows (WP2.6) --------------------------------------------------------
+
+    fn valid_blob() -> BlobShadowInstance {
+        BlobShadowInstance {
+            position: [0.0, 0.0],
+            radius: 1.0,
+            softness: 0.4,
+            strength: 0.6,
+        }
+    }
+
+    #[test]
+    fn extract_blob_shadows_counts_valid_instances() {
+        let blobs = vec![valid_blob(), valid_blob()];
+        let result = extract_blob_shadows(&blobs);
+        assert_eq!(result.drawn, 2);
+        assert_eq!(result.rejected_invalid, 0);
+    }
+
+    #[test]
+    fn extract_blob_shadows_rejects_invalid_instances_without_panic() {
+        let blobs = vec![
+            BlobShadowInstance {
+                radius: 0.0,
+                ..valid_blob()
+            },
+            BlobShadowInstance {
+                softness: 2.0,
+                ..valid_blob()
+            },
+            BlobShadowInstance {
+                position: [f32::NAN, 0.0],
+                ..valid_blob()
+            },
+        ];
+        let result = extract_blob_shadows(&blobs);
+        assert_eq!(result.drawn, 0);
+        assert_eq!(result.rejected_invalid, 3);
+    }
+
+    // --- stage_stats_from_base: shadow_casters_drawn (WP2.6) ---------------------------------
+
+    fn frame_with_one_valid_mesh_and_key_light(mode: ShadowMode) -> StageFrame {
+        let mut frame = StageFrame::new();
+        frame.materials.push(PbrMaterial::default());
+        frame.meshes.push(MeshInstance {
+            material: MaterialHandle(0),
+            ..MeshInstance::default()
+        });
+        frame.key_light = Some(DirectionalLight::default());
+        frame.shadow_config = ShadowConfig {
+            mode,
+            ..ShadowConfig::default()
+        };
+        frame
+    }
+
+    #[test]
+    fn shadow_casters_drawn_matches_meshes_drawn_when_key_light_shadows_are_wanted() {
+        let frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        assert_eq!(stats.meshes_drawn, 1);
+        assert_eq!(stats.shadow_casters_drawn, 1);
+        assert_eq!(
+            stats.point_shadow_casters_drawn, 0,
+            "point-light shadow casters are deferred past WP2.6"
+        );
+    }
+
+    #[test]
+    fn shadow_casters_drawn_is_zero_when_the_mode_does_not_want_key_light_shadows() {
+        for mode in [ShadowMode::None, ShadowMode::Blob] {
+            let frame = frame_with_one_valid_mesh_and_key_light(mode);
+            let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+            assert_eq!(stats.meshes_drawn, 1);
+            assert_eq!(stats.shadow_casters_drawn, 0, "mode {mode:?}");
+        }
+    }
+
+    #[test]
+    fn shadow_casters_drawn_is_zero_without_a_valid_key_light() {
+        let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
+        frame.key_light = None;
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        assert_eq!(stats.shadow_casters_drawn, 0, "no key light at all");
+
+        let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
+        frame.key_light = Some(DirectionalLight {
+            direction: [0.0, 0.0, 0.0], // zero-length: DirectionalLight::is_valid rejects it
+            ..DirectionalLight::default()
+        });
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        assert_eq!(stats.shadow_casters_drawn, 0, "invalid key light");
+    }
+
+    #[test]
+    fn shadow_casters_drawn_is_zero_with_an_invalid_shadow_config() {
+        let mut frame = frame_with_one_valid_mesh_and_key_light(ShadowMode::KeyLight);
+        frame.shadow_config.map_size = 0; // ShadowConfig::is_valid rejects a zero map size
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        assert!(stats.shadow_config_invalid);
+        assert_eq!(
+            stats.shadow_casters_drawn, 0,
+            "an invalid config falls back to no shadows, never a guessed-at value"
+        );
+    }
+
+    #[test]
+    fn blob_shadows_and_shadow_config_flow_through_stage_stats_from_base() {
+        let mut frame = StageFrame::new();
+        frame.blob_shadows.push(valid_blob());
+        frame.blob_shadows.push(BlobShadowInstance {
+            radius: -1.0,
+            ..valid_blob()
+        });
+        let stats = stage_stats_from_base(RenderStats::default(), &frame, None);
+        assert_eq!(stats.blob_shadows_drawn, 1);
+        assert_eq!(stats.blob_shadows_rejected_invalid, 1);
+        assert!(!stats.shadow_config_invalid, "default config is valid");
     }
 }
