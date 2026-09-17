@@ -123,9 +123,11 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
   Quelltext in den besitzenden Crates, nicht über eine Cargo-Kante.
 - **`tools/`** (C#-Suite, P-1): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
   Formatdokumente (`docs/formats/`), Golden-Fixtures und die JSON-Ausgaben von `sigilc` an der Engine.
-  *Umsetzung (WP9.1), Klarstellung:* Solution `tools/Grimoire.Tools.slnx` mit `Grimoire.Formats` (Codecs aus
-  `grimoire_schemagen`, Debug-Protokoll-Frames, Pack-v1-Leser und -Schreiber) und `Grimoire.LiveLink`
-  (Werkzeugseite von §13). Dort gelten sinngemäß die Regeln aus §2: Code und Kommentare auf Englisch (Regel 1),
+  *Umsetzung (WP9.1, WP9.2), Klarstellung:* Solution `tools/Grimoire.Tools.slnx` mit `Grimoire.Formats` (Codecs aus
+  `grimoire_schemagen`, Debug-Protokoll-Frames, Pack-v1-Leser und -Schreiber), `Grimoire.LiveLink`
+  (Werkzeugseite von §13) und `Grimoire.AssetCompiler` (Asset-Compiler `grimoire-ac`: Content-Discovery,
+  Normalisierung der Pfade zu `AssetPath`, Aufruf von `sigilc build --json`, Pack und Manifest; keine
+  Sigil-Grammatik und kein Interpreter in C#, Projekt-ADR-0010). Dort gelten sinngemäß die Regeln aus §2: Code und Kommentare auf Englisch (Regel 1),
   jede öffentliche Einheit dokumentiert und Warnungen als Fehler (Regel 2), Drittpakete nur zentral und exakt
   gepinnt in `tools/Directory.Packages.props` mit Lock-Dateien (Regel 4), Fehleingaben werfen nur die
   Format-Ausnahme der Bibliothek (`WireFormatException`, `PackFormatException`) und prüfen Längen vor der
@@ -134,7 +136,14 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
   Handshake liest der Build aus der Workspace-Version in `Cargo.toml`, den Build-Hash aus `GRIMOIRE_BUILD_HASH`.
   CI: Workflow `tools.yml` (`dotnet build/test` auf Windows, Linux und macOS mit Pfadfiltern und NuGet-Cache,
   Socket-Tests mit `GRIMOIRE_SOCKET_TESTS=1`); der Drift-Check von `grimoire_schemagen` umfasst die C#-Codecs,
-  das Standalone-Gate `tools/**` (siehe oben).
+  das Standalone-Gate `tools/**` (siehe oben). Seit WP9.2 baut derselbe Workflow zusätzlich `sigilc` aus
+  dem Arbeitsstand und fährt den Konformitätskorpus von §11.1 durch `grimoire-ac`
+  (`GRIMOIRE_REQUIRE_SIGILC=1`, damit ein fehlendes Binary das Gate nicht still bestehen lässt); die Zeit
+  eines vollständigen Pack-Rebuilds (PRD-0016 NFR, Ziel < 60 s) messen ausschließlich CI-Runner.
+  Die Pack-Einträge tragen den Asset-Pfad der Quelle, sodass `AssetId` und `UnitId` übereinstimmen (§11.1,
+  §12); Compiler-Name im Manifest ist `grimoire-ac`, Compiler-Version die des aufgerufenen `sigilc`.
+  Eigene Diagnosen des Werkzeugs führen den Präfix `AC` und stehen in `tools/README.md`; Diagnosen von
+  `sigilc` reicht es unverändert durch (Projekt-ADR-0010).
 - Abbildungen zwischen `grimoire_sigil`, `grimoire_collide`, `grimoire_render`, `grimoire_assets` und
   `grimoire_debug` liegen ausschließlich in der Fassade (Adapter-Tabelle in §9.1).
 - Neue Kanten nur per Crate-Map-ADR und gleichzeitiger Änderung dieser Tabelle (§2 Regel 15). Ein Kanten-Check
