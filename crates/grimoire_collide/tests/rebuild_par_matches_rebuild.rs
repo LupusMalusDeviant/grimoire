@@ -79,6 +79,10 @@ proptest! {
 /// own test suite already covers that `run_blocks` never swallows a block panic and resumes the
 /// lowest-index one; this test only checks the grid's state on the near side of that call.
 #[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the duplicate key only panics under debug assertions; without the panic there is no failed rebuild to observe"
+)]
 fn rebuild_par_leaves_the_grid_empty_after_a_panic() {
     let items: Vec<GridItem> = (0..10)
         .map(|index| GridItem {
@@ -94,16 +98,15 @@ fn rebuild_par_leaves_the_grid_empty_after_a_panic() {
     grid.rebuild(items.iter().copied());
     assert!(!grid.items().is_empty());
 
-    // A duplicate key makes the debug-only validation panic before any block runs; either way
-    // (debug or release) the grid ends up cleared afterwards.
+    // A duplicate key makes the debug-only validation panic before any block runs, and the grid
+    // must end up cleared afterwards. Release builds skip that validation, so the test only runs
+    // with debug assertions.
     let mut duplicated = items.clone();
     duplicated.push(items[0]);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         grid.rebuild_par(&SequentialExecutor, duplicated);
     }));
-    if cfg!(debug_assertions) {
-        assert!(result.is_err());
-    }
+    assert!(result.is_err());
     assert!(
         grid.items().is_empty(),
         "grid must be empty after a failed rebuild_par"

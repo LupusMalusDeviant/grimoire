@@ -16,7 +16,8 @@ use grimoire_sim::Simulation;
 /// 2. [`GamePlugin::window_created`] once per plugin on the desktop, after the renderer exists.
 /// 3. Per frame: all simulation ticks due, then [`GamePlugin::extract`] and
 ///    [`GamePlugin::extract_stage`] for every plugin in registration order, rendering, then
-///    [`GamePlugin::on_frame`] for every plugin.
+///    [`GamePlugin::on_frame`] for every plugin, then [`GamePlugin::on_profile`] for every plugin
+///    (unless the profiler is off).
 /// 4. [`GamePlugin::shutdown`] once per plugin, in registration order, when the frame loop ends.
 ///
 /// Only `build` may shape simulation state (components, resources, systems, initial entities);
@@ -66,6 +67,19 @@ pub trait GamePlugin {
     /// Receives the measurements of the frame that was just rendered.
     fn on_frame(&mut self, stats: &FrameStats) {
         let _ = stats;
+    }
+
+    /// Receives the profile of the frame that was just rendered, after every plugin's
+    /// [`GamePlugin::on_frame`] (contract §9.2, §9.7, plan 0002 WP6.3): time per scope with
+    /// budgets and estimate flags, plus the bullet counters. Scope names are the loop scopes of
+    /// [`crate::adapters::debug::LOOP_SCOPES`] and the subsystem of each system name
+    /// ([`crate::adapters::debug::subsystem_scope`]). Not called when
+    /// [`crate::AppBuilder::profiler`] turned the profiler off.
+    ///
+    /// Presentation only, like `on_frame`. [`crate::adapters::debug::stats_frame`] turns the
+    /// frame's [`FrameStats`] into the frame values an export or a `Stats` message needs.
+    fn on_profile(&mut self, profile: &grimoire_debug::FrameProfile) {
+        let _ = profile;
     }
 
     /// Receives the main window once it and the renderer exist (desktop runs only), e.g. to

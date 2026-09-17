@@ -69,6 +69,7 @@ use grimoire_gpu::{GpuContext, GpuError, wgpu};
 
 use crate::cluster_layout::GpuPointLight;
 use crate::cluster_pass::{ClusterCameraParams, ClusterFrameStats, ClusterPass};
+use crate::gpu_timer::{GpuTimer, PassTimestamps};
 use crate::mesh::{MeshData, MeshError, MeshRegistry};
 use crate::shadow_pass::{ShadowCaster, ShadowPass};
 use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight, MAX_SKIN_JOINTS};
@@ -1899,6 +1900,7 @@ impl MeshPass {
         shadow_config: &ShadowConfig,
         blob_shadows: &[BlobShadowInstance],
         joint_matrices: &[[[f32; 4]; 4]],
+        gpu_timer: &mut GpuTimer,
     ) -> Result<MeshPassStats, GpuError> {
         let view_proj =
             camera.map(|camera| stage3d::view_projection(camera, aspect, NEAR_PLANE, FAR_PLANE));
@@ -2008,9 +2010,12 @@ impl MeshPass {
             }
             _ => ClusterCameraParams::degenerate(NEAR_PLANE, FAR_PLANE),
         };
-        let cluster_stats = self
-            .cluster_pass
-            .dispatch(context, &gpu_lights, &cluster_camera)?;
+        let cluster_stats = self.cluster_pass.dispatch(
+            context,
+            &gpu_lights,
+            &cluster_camera,
+            gpu_timer.next_pass(),
+        )?;
 
         // Key-light shadow map (WP2.6): skipped entirely (no `configure`/render cost) unless the
         // mode wants it and there is a valid key light and camera to fit it around.
@@ -2041,6 +2046,7 @@ impl MeshPass {
                 meshes,
                 materials,
                 joint_matrices.len(),
+                gpu_timer,
             )?;
         }
         let shadow_params = [
@@ -2233,6 +2239,7 @@ impl MeshPass {
         // pipelines below (both share `mesh.wgsl`'s `fs_main`), already refreshed by
         // `self.cluster_pass.dispatch` above this frame.
         let cluster_fragment_bind_group = self.cluster_pass.fragment_bind_group();
+        let timestamps = gpu_timer.next_pass();
         context.capture_errors(move |device| {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("grimoire mesh encoder"),
@@ -2257,7 +2264,7 @@ impl MeshPass {
                         }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: None,
+                    timestamp_writes: timestamps.as_ref().map(PassTimestamps::render),
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
@@ -2389,6 +2396,7 @@ impl MeshPass {
         meshes: &[MeshInstance],
         materials: &[PbrMaterial],
         joint_matrices_len: usize,
+        gpu_timer: &mut GpuTimer,
     ) -> Result<u32, GpuError> {
         let accepted: Vec<(MeshHandle, [[f32; 4]; 4])> = meshes
             .iter()
@@ -2410,7 +2418,8 @@ impl MeshPass {
                 }
             })
             .collect();
-        self.shadow_pass.render(context, light_view_proj, &casters)
+        self.shadow_pass
+            .render(context, light_view_proj, &casters, gpu_timer.next_pass())
     }
 }
 
