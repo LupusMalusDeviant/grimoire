@@ -1886,6 +1886,77 @@ pub mod stream {
   ein. Das Hash-Layout von `state_hash` ändert sich dadurch nicht. Hot-Swap und Restore mit fremder Epoche regelt
   §11.8.
 
+### 8.5 Subsystem-Hashes und Divergenz-Diagnose (Ergänzung P1, WP7.2)
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung von OF-18.1 über den Beobachter aus §7.2 und
+§8.4. Welche Dichte Harness und Golden Master verwenden, schlägt [ADR-0018](../adr/0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md)
+vor (Status Vorgeschlagen); die API trägt jede Dichte.
+
+```rust
+pub struct TraceGranularity;                      // private Felder; Copy, Eq, Hash, Debug
+                                                  // PER_SYSTEM_PER_TICK; every(NonZeroU64) -> Self (ohne System-Hashes);
+                                                  // with_system_hashes(self) -> Self; interval() -> NonZeroU64;
+                                                  // has_system_hashes() -> bool
+#[non_exhaustive]
+pub struct TraceCheckpoint { pub tick: u64, pub state_hash: u64, pub system_hashes: Vec<u64> }  // Clone, Eq, Debug; new(..)
+#[non_exhaustive]
+pub struct HashTrace { pub granularity: TraceGranularity, pub system_names: Vec<String>,
+                       pub checkpoints: Vec<TraceCheckpoint> }                                  // Clone, Eq, Debug; new(..)
+pub fn system_hash(world: &World) -> u64;         // frischer StableHasher über World::stable_hash, ohne Tick und Seed
+pub struct SystemHasher;                          // Default, Clone, Debug; impl SystemObserver;
+                                                  // new(), hashes() -> &[u64], clear()
+pub fn trace(sim: &mut Simulation, log: &InputLog, granularity: TraceGranularity) -> HashTrace;
+#[non_exhaustive]
+pub struct DivergentSystem { pub index: usize, pub name: String }   // Clone, Eq, Debug; subsystem() -> &str
+#[non_exhaustive]
+pub struct Divergence { pub tick: u64, pub last_matching_tick: Option<u64>,
+                        pub system: Option<DivergentSystem> }       // Clone, Eq, Debug, Display; is_exact() -> bool
+pub fn first_divergence(reference: &HashTrace, candidate: &HashTrace) -> Option<Divergence>;
+```
+
+**Semantik:**
+- **System-Hash:** `SystemHasher` bildet in `system_finished` `system_hash(world)` und legt ihn am Listenindex des
+  Systems ab (`SystemInfo::index`). Nach §7.2 ist das für exklusive Systeme der Zustand direkt nach ihrem Lauf, für
+  parallele der Zustand direkt nach Anwendung ihres Puffers, also bit-gleich mit `StageMode::Isolated`. System-Hashes
+  hängen damit weder von `StageMode` noch vom Executor ab. Ein System, das wegen eines Panics nicht fertig wird,
+  hinterlässt `0` an seinem und allen späteren Indizes.
+- **`trace`:** Der erste Checkpoint ist der Zustand vor dem ersten Schritt (`sim.tick()`, `state_hash`, keine
+  System-Hashes). Danach folgt ein Checkpoint nach jedem Schritt, der `sim.tick()` zu einem Vielfachen von
+  `interval` macht, und immer nach dem letzten Schritt. `tick` zählt wie `replay` nach dem Schritt. Mit
+  System-Hashes läuft genau der Schritt zu einem Checkpoint über `step_observed` mit `SystemHasher`; alle anderen
+  Schritte laufen ohne Beobachter. Zustände und `state_hash` sind exakt die von `replay`. Aufzeichnen ändert keinen
+  Hash (§8.4). `system_names` sind die Namen aus `Schedule::system_names` beim Aufruf.
+- **`first_divergence`:** Verglichen werden nur Ticks, die in beiden Traces vorkommen, aufsteigend. Ein Tick weicht
+  ab, wenn die Zustands-Hashes verschieden sind oder beide Checkpoints System-Hashes haben, die verschieden sind.
+  Am ersten solchen Tick ist `last_matching_tick` der letzte vorherige gemeinsame Tick mit gleichem Zustands-Hash
+  (`None`, wenn es keinen gibt). `system` ist der erste Listenindex mit verschiedenem System-Hash, sofern beide
+  Checkpoints System-Hashes haben und beide Traces dieselben `system_names` führen; sonst `None`. Traces
+  verschiedener Länge oder Dichte sind vergleichbar; ohne Abweichung in den gemeinsamen Ticks ist das Ergebnis
+  `None`.
+- **`is_exact`:** `last_matching_tick == Some(tick - 1)`. Nur dann entstand die Abweichung im Schritt zu `tick`, und
+  `system` ist das System, in dem sie entstand. Sonst liegt die Ursache in einem Schritt nach `last_matching_tick`,
+  und `system` ist nur das erste System, dessen Welt an `tick` abweicht. Eine Abweichung, die zwischen zwei Schritten
+  entsteht (`replace_unit`, `restore`), zeigt sich am ersten System des folgenden Schritts.
+- **Subsystem:** `DivergentSystem::subsystem` ist der Namensteil vor dem ersten `.` (`sigil` für `sigil.update`),
+  dasselbe Präfix, nach dem der Profiler Systeme gruppiert (§9.7). Ein Name ohne Punkt oder mit leerem Präfix ist
+  hier sein eigenes Subsystem; der Profiler zählt ihn zu `app`. Die Meldung nennt immer auch den vollen Systemnamen.
+- **Eingrenzung (ADR-0018, Option D):** Ein Aufrufer, der alle N Ticks erkennt, spielt beide Läufe mit `replay`
+  bis `last_matching_tick` ab und ruft danach `trace` mit `PER_SYSTEM_PER_TICK` nur über die Frames bis `tick` auf;
+  `first_divergence` über diese Fenster ist dann exakt.
+- **Kein Simulationszustand:** Traces gehen weder in Hash, Snapshot noch Replay ein. Ein Dateiformat für
+  gespeicherte Traces legt WP7.5 fest; `HashTrace::new` und `TraceCheckpoint::new` erlauben den Aufbau aus
+  gelesenen Daten.
+- **Tests (WP7.2, `grimoire_sim/tests/trace.rs`):** Checkpoints jeder Dichte stimmen mit `replay` überein;
+  System-Hashes folgen der Welt nach jedem System; Aufzeichnen ändert keinen `state_hash`; im Parallel-Szenario
+  identische Traces unter `Isolated` und `Grouped` mit sequentiellem und permutiertem Executor; ein eingebauter
+  Fehler in `collide.resolve` ab Tick 37 wird je System je Tick exakt gemeldet (Tick 38, System, Subsystem), alle 10
+  Ticks als Fenster (30, 40], mit System-Hashes an den Checkpoints als erstes abweichendes System ohne
+  Ursachen-Anspruch, und über die Fenster-Eingrenzung wieder exakt; verschiedene Schedules nennen kein System;
+  verschiedene Startzustände weichen an Tick 0 ohne übereinstimmenden Tick ab.
+- **Kosten (Spike, ADR-0018):** Der Beobachter-Haken kostet 5 `Ir` je Tick. Ein Welt-Hash bei 10.000 Bullets kostet
+  84 % eines Sigil-Schritts; je System je Tick die 6,1-fache, alle 60 Ticks die 1,03-fache Instruktionszahl eines
+  Schritts.
+
 ## 9. `grimoire` — Fassade
 
 Abhängigkeiten in P0: `grimoire_core`, `grimoire_ecs`, `grimoire_platform`, `grimoire_render`,
@@ -4075,7 +4146,9 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     bleibt das Gitter unverändert, `out` wird geleert.
 - **Leistung:** `overlapping` und `graze_ring` allokieren nicht, sobald `out` ausreichend Kapazität hat; `rebuild`
   allokiert nach dem Einschwingen nicht. `BatchHits` behält seine Kapazität; `overlapping_batch` darf je Aufruf
-  abhängig von der Blockanzahl allokieren, nie je Treffer.
+  abhängig von der Blockanzahl allokieren, nie je Treffer. *Stufe K (Klarstellung, WP6.5):* `tests/alloc.rs` belegt
+  diese Zusagen mit einem zählenden Allokator, auch für den Debug-Build (dessen Schlüsselprüfung nutzt einen
+  wiederverwendeten Puffer).
 - **Konformanz (WP1.3):**
   - `tests/conformance.rs` ruft `grimoire_collide::conformance` generisch über einen Erzeuger
     `impl CollisionQuery` gegen `NullCollision`, `BruteForceQuery` und `SpatialGrid` auf. Geprüft wird: `out` wird
@@ -4086,6 +4159,16 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     mit `SequentialExecutor`, `PermutedExecutor::new(1..=3)` und `reversed()`.
   - Goldener Hash `GOLDEN_QUERY_HASH` über die Treffer einer festen Szene. In `grimoire_exec/tests/hash_gate.rs`
     folgt dieselbe Szene mit 1, 2 und N Threads (Dev-Kante nach §1, PO-Entscheid V-1, §11.7).
+  - *Stufe K (Klarstellung, WP6.5):*
+    - Die Suite ist hinter dem Feature `conformance`, das kein Workspace-Mitglied einschaltet. CI führt sie deshalb
+      im eigenen Schritt „Test (grimoire_collide, feature conformance)“ aus.
+    - Ein weiterer Proptest prüft `overlapping_batch` gegen Einzelabfragen mit denselben Executoren und einem
+      wiederverwendeten `BatchHits`.
+    - Die Szene zu `GOLDEN_QUERY_HASH` passt in einen einzigen Block, erreicht die Thread-Pools also nie. Dazu
+      kommt die feste Blockszene `GOLDEN_BLOCK_QUERY_HASH` mit 3.000 Objekten und 64 Anfragen, die auf beiden
+      datenparallelen Wegen mehrere Blöcke bildet.
+    - Beide Szenen liegen in `grimoire_collide/tests/golden_scene/mod.rs` und laufen im Hash-Gate über
+      `rebuild_par`, `overlapping_batch` und `graze_ring`.
 - **Bench (WP6.5, PO-Entscheid P-3 A):** In `grimoire_bench` laufen die Szenarien `collide_uniform` und
   `collide_cluster`. Beide haben dieselbe Last: 10.000 Bullet-Kreise, 100 Dummy-Gegner mit `Collider`, je Tick
   `rebuild_par`, `overlapping_batch` der 100 Gegner und eine `graze_ring`-Abfrage. In `collide_cluster` liegen alle
@@ -4094,6 +4177,13 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
   `collide_uniform`; `collide_cluster` wird als Trend geführt, und eine Überschreitung ergibt ein Folge-Issue für die
   P2-Entscheidung über hierarchische oder adaptive Gitter (PO-Entscheid V-17). Dazu das Beispiel
   `collide_query` (Konsole, nur gebaut).
+  *Stufe K (Klarstellung, WP6.5), Szenenparameter:*
+  - Gitter wie die Vorgabe des Adapters (§9.6).
+  - Bullets: Radius 0,3, auf `ColliderKey::pool` in Slot-Reihenfolge. Sie bewegen sich je Tick mit festen Geschwindigkeiten und bleiben in ihrem Quadrat: in `collide_uniform` 64 × 64 Einheiten um den Ursprung, in `collide_cluster` so, dass jede Hülle in den vier Zellen um den Ursprung liegt.
+  - Gegner: 100 Entities mit `Collider` auf einem 10 × 10-Raster, jede fünfte eine Kapsel. Sie folgen den Bullets in Query-Reihenfolge und stellen je eine Anfrage mit der Bullet-Maske.
+  - Graze-Ring: um den Ursprung mit 0,5 und 2,5.
+  - Gemessen wird `Ir` nur mit einem Thread (§15.1). N Threads (`ThreadPoolExecutor`, N = Kernzahl des Runners) messen nur Wanduhr.
+  - `collide_uniform` bekommt ein Urteil, sobald `bench-accept-baseline` einen Commit mit dem Szenario annimmt.
 - **Nicht in v0:** kontinuierliche Kollision — ein Objekt, das sich je Tick weiter als seinen Durchmesser bewegt,
   kann eine Überlappung überspringen. Außerdem nicht enthalten: Strahlabfragen, Parade-Bogen, Trefferantworten,
   hierarchisches Gitter.

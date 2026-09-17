@@ -186,6 +186,14 @@ jobs:
       # dedicated step so the player proxy (§9.5) is actually exercised in CI (Umsetzung WP1.3).
       - name: Test (grimoire, feature fixtures)
         run: cargo test -p grimoire --features fixtures --locked --no-fail-fast
+      # The same applies to the collision trait conformance suite (contract §2 rule 12, §14): it sits
+      # behind the non-default feature `conformance`, which no workspace member enables, so the Test
+      # step above compiles `grimoire_collide/tests/conformance.rs` to an empty binary. Until plan
+      # 0002 WP6.5 this suite had never run in CI; this step runs it and lints the feature code.
+      - name: Test (grimoire_collide, feature conformance)
+        run: |
+          cargo clippy -p grimoire_collide --all-targets --features conformance --locked -- -D warnings
+          cargo test -p grimoire_collide --features conformance --locked --no-fail-fast
       # The trait conformance suites of grimoire_assets (`tests/source_conformance.rs`) and
       # grimoire_debug (`tests/transport_conformance.rs`) sit behind the non-default feature
       # `conformance`, which no workspace member enables, so the Test step above compiles both to

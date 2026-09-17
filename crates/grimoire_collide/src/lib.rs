@@ -19,6 +19,11 @@
 //! wall-clock time, no threads of its own — data-parallel work runs through
 //! [`grimoire_ecs::run_blocks`] behind the caller-supplied [`grimoire_ecs::Executor`].
 //!
+//! Queries allocate nothing once their output has capacity, and a rebuild allocates nothing once
+//! warmed up (`tests/alloc.rs`). The console example `collide_query` shows the API end to end;
+//! the budget proof is `grimoire_bench`'s `collide_uniform` and `collide_cluster` (plan 0002
+//! WP6.5).
+//!
 //! ```
 //! use grimoire_collide::{
 //!     BruteForceQuery, Circle, ColliderKey, CollisionQuery, GridItem, Hit, LayerMask, Shape,

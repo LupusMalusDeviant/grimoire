@@ -25,5 +25,6 @@ Eine ersetzte Entscheidung bleibt stehen und verweist auf ihre Nachfolgerin.
 | [0014](0014-bullet-darstellung-billboard-impostor.md) | Bullet-Darstellung: Billboard-Impostor statt instanzierte Low-Poly-Meshes (OF-3.3, angenommen 2026-09-16) |
 | [0015](0015-licht-culling-compute-clustering.md) | Licht-Culling: Compute-Clustering statt CPU-Froxel-Zuordnung (angenommen 2026-09-16) |
 | [0016](0016-multisampling-fuer-geometriekanten.md) | Multisampling für Geometriekanten (Texturqualität, Strang B1, angenommen 2026-09-17) |
+| [0018](0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md) | Subsystem-Hashes: erkennen alle 60 Ticks, eingrenzen je System (OF-18.1, vorgeschlagen 2026-09-17) |
 
 Den aktuellen Status jeder Entscheidung nennt ihre Datei.
