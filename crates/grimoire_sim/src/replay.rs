@@ -271,6 +271,44 @@ impl ReplayHeader {
     pub fn is_golden_eligible(&self) -> bool {
         self.swaps.is_empty()
     }
+
+    /// Records a content hot-swap that takes effect at `record.tick` (contract §8.1, §11.8).
+    ///
+    /// A recording session calls this once per successful swap, in the order the swaps happen
+    /// (`grimoire_sigil` turns its `SwapReport` into a [`SwapRecord`]). A swap at the same tick
+    /// as the last recorded one replaces that entry's content manifest, so several swaps at one
+    /// tick boundary leave a single entry with the final content. Whether `record.tick` lies
+    /// within the recorded frames is checked when the replay is encoded
+    /// ([`SimError::SwapOutOfRange`]). On error nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// - [`SimError::SwapOrder`] if `record.tick` is earlier than the last recorded swap; `index`
+    ///   is the position the record would have taken.
+    /// - [`SimError::TooManyEntries`] if a new entry would exceed [`MAX_SWAP_RECORDS`].
+    pub fn record_swap(&mut self, record: SwapRecord) -> Result<(), SimError> {
+        match self.swaps.last_mut() {
+            Some(last) if last.tick == record.tick => {
+                last.content_manifest = record.content_manifest;
+                return Ok(());
+            }
+            Some(last) if record.tick < last.tick => {
+                return Err(SimError::SwapOrder {
+                    index: self.swaps.len(),
+                });
+            }
+            _ => {}
+        }
+        if self.swaps.len() >= MAX_SWAP_RECORDS {
+            return Err(SimError::TooManyEntries {
+                field: "swaps",
+                count: self.swaps.len() as u64 + 1,
+                max: MAX_SWAP_RECORDS,
+            });
+        }
+        self.swaps.push(record);
+        Ok(())
+    }
 }
 
 /// A recorded run in the version-1 or version-2 binary format; see the module documentation.

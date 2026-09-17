@@ -8,7 +8,7 @@
 //! the swap.
 
 use grimoire_ecs::World;
-use grimoire_sim::{SimSnapshot, Simulation};
+use grimoire_sim::{SimSnapshot, Simulation, SwapRecord};
 
 use crate::content::{ContentEpoch, SigilContent};
 use crate::emitter::Emitter;
@@ -32,6 +32,15 @@ pub struct SwapReport {
     pub restarted_emitters: u32,
     /// Bullets of the unit despawned by the swap.
     pub despawned_bullets: u32,
+}
+
+/// The replay v2 swap marker of a swap (contract §8.1, §11.8): the tick the new content takes
+/// effect at and the content manifest after the swap. A recording session hands it to
+/// `ReplayHeader::record_swap`, which merges several swaps at one tick boundary.
+impl From<SwapReport> for SwapRecord {
+    fn from(report: SwapReport) -> Self {
+        SwapRecord::new(report.effective_tick, report.epoch.manifest_hash)
+    }
 }
 
 /// Replaces the loaded unit with `unit`'s id by `unit`, at the tick boundary the simulation is at

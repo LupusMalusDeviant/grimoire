@@ -561,6 +561,104 @@ fn swap_tick_equal_to_the_frame_count_is_allowed() {
     assert!(replay.to_bytes().is_ok());
 }
 
+// --- record_swap -----------------------------------------------------------------------------
+
+#[test]
+fn record_swap_appends_in_tick_order_and_merges_swaps_at_one_tick_boundary() {
+    let mut header = fixture_header(ContentManifestHash(1));
+    assert!(header.is_golden_eligible());
+    header
+        .record_swap(SwapRecord::new(0, ContentManifestHash(2)))
+        .unwrap();
+    header
+        .record_swap(SwapRecord::new(3, ContentManifestHash(3)))
+        .unwrap();
+    // Two more swaps at the same boundary: one entry with the final content.
+    header
+        .record_swap(SwapRecord::new(3, ContentManifestHash(4)))
+        .unwrap();
+    header
+        .record_swap(SwapRecord::new(3, ContentManifestHash(5)))
+        .unwrap();
+    header
+        .record_swap(SwapRecord::new(5, ContentManifestHash(6)))
+        .unwrap();
+    assert_eq!(
+        header.swaps,
+        vec![
+            SwapRecord::new(0, ContentManifestHash(2)),
+            SwapRecord::new(3, ContentManifestHash(5)),
+            SwapRecord::new(5, ContentManifestHash(6)),
+        ]
+    );
+    assert_eq!(header.content_manifest, ContentManifestHash(1));
+    assert!(!header.is_golden_eligible());
+
+    let replay = Replay {
+        header: Some(header),
+        log: sample_log(5),
+    };
+    let bytes = replay.to_bytes().expect("recorded swaps encode");
+    assert_eq!(Replay::from_bytes(&bytes), Ok(replay));
+}
+
+#[test]
+fn record_swap_rejects_an_earlier_tick_and_changes_nothing() {
+    let mut header = fixture_header(ContentManifestHash::EMPTY);
+    header
+        .record_swap(SwapRecord::new(4, ContentManifestHash(7)))
+        .unwrap();
+    let before = header.clone();
+    assert_eq!(
+        header.record_swap(SwapRecord::new(3, ContentManifestHash(8))),
+        Err(SimError::SwapOrder { index: 1 })
+    );
+    assert_eq!(header, before);
+}
+
+#[test]
+fn record_swap_rejects_one_entry_beyond_the_maximum_but_still_merges_at_the_last_tick() {
+    let mut header = fixture_header(ContentManifestHash::EMPTY);
+    for tick in 0..MAX_SWAP_RECORDS as u64 {
+        header
+            .record_swap(SwapRecord::new(tick, ContentManifestHash(tick)))
+            .unwrap();
+    }
+    let last_tick = MAX_SWAP_RECORDS as u64 - 1;
+    assert_eq!(
+        header.record_swap(SwapRecord::new(last_tick + 1, ContentManifestHash(9))),
+        Err(SimError::TooManyEntries {
+            field: "swaps",
+            count: MAX_SWAP_RECORDS as u64 + 1,
+            max: MAX_SWAP_RECORDS,
+        })
+    );
+    assert_eq!(header.swaps.len(), MAX_SWAP_RECORDS);
+    header
+        .record_swap(SwapRecord::new(last_tick, ContentManifestHash(9)))
+        .expect("a swap at the last recorded tick merges");
+    assert_eq!(
+        header.swaps.last(),
+        Some(&SwapRecord::new(last_tick, ContentManifestHash(9)))
+    );
+}
+
+#[test]
+fn a_recorded_swap_beyond_the_frames_fails_when_encoding() {
+    let mut header = fixture_header(ContentManifestHash::EMPTY);
+    header
+        .record_swap(SwapRecord::new(9, ContentManifestHash(1)))
+        .unwrap();
+    let replay = Replay {
+        header: Some(header),
+        log: sample_log(4),
+    };
+    assert_eq!(
+        replay.to_bytes(),
+        Err(SimError::SwapOutOfRange { tick: 9, frames: 4 })
+    );
+}
+
 // --- BuildHash / ContentManifestHash ------------------------------------------------------------
 
 #[test]
