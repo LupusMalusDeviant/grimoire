@@ -1162,11 +1162,13 @@ pub mod bullet_silhouette {                      // Werte von BulletInstance::si
     pub const RICE: u16 = 1;                     // Kapsel entlang der Flugrichtung
     pub const DIAMOND: u16 = 2;                  // Raute mit Spitze in Flugrichtung
     pub const COUNT: u16 = 3;
+    pub const NAMES: [&str; COUNT as usize] = ["orb", "rice", "diamond"];   // Katalog-Namen, siehe unten
 }
 pub mod bullet_palette {                         // Werte von BulletInstance::palette im Raum HOSTILE
     pub const HEX_MAGENTA: u16 = 0;              // H0: Körper #FF2FB4, Kern #FFE3F4
     pub const POISON_LIME: u16 = 1;              // H1: Körper #B6FF2E, Kern #F6FFE0
     pub const COUNT: u16 = 2;
+    pub const NAMES: [&str; COUNT as usize] = ["hex_magenta", "poison_lime"];   // Katalog-Namen, siehe unten
 }
 impl WgpuRenderer {
     pub fn last_stage_pass_order(&self) -> &[RenderLayer];   // Diagnose-Haken, siehe unten
@@ -1181,6 +1183,12 @@ impl WgpuRenderer {
   voraus. Umgesetzt ist nur die Tabelle des einzigen Raums, den der Pass zeichnet (`HOSTILE`); eigene Projektile laufen
   weiter über Sprite- und Mesh-Kanäle. Farbwerte und Formen sind vorläufig bis zum Look-Review (P-11). Die Tabellen
   werden vor der Content-Produktion erweitert (PO-Entscheid 2026-09-17; Umsetzung offen).
+- **Katalog-Namen** (*Stufe A, PO-Freigabe offen*; Umsetzung des PO-Entscheids 2026-09-17 zum gemeinsamen Katalog):
+  `bullet_silhouette::NAMES` und `bullet_palette::NAMES` nennen jede Tabellenzeile mit ihrem festen Namen aus dem
+  Visual-Katalog von `docs/formats/sigil.md` §10.9. Die Tabellen sind genau die gezeichneten Zeilen dieses Katalogs,
+  Zeile für Zeile und in derselben Reihenfolge; eine neue Silhouette oder Palette kommt als nächste Katalogzeile
+  hinzu, nie dazwischen. Geprüft durch `crates/grimoire/tests/visual_catalog.rs` gegen die Katalogtabelle der
+  Formatdoku, gegen die `grimoire_sigilc` seine Indizes ebenfalls prüft (§9.9, §11.2).
 - **Darstellung (Engine-ADR-0014):** Jede Instanz ist ein kamerazugewandtes Billboard, dessen Mitte exakt auf der
   Bodenebene (`Z = 0`) an `position` liegt, damit die gezeichnete Mitte der Trefferposition entspricht. Mit
   `StageFrame::camera_25d` projiziert der Pass mit derselben Kamera und denselben Clip-Ebenen wie der Mesh-Pass,
@@ -2321,11 +2329,14 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
   (Fixture `tests/fixtures/bullet_showcase_unit_v1.bin`, Aktualität geprüft in
   `grimoire_sigilc/tests/unit_fixtures.rs`, §1): Interpolation, Abbildung, nicht abbildbare Kennungen, Hash-Neutralität,
   Zähler von `NullRenderer` und ein Offscreen-Bild über einer beleuchteten Bühne.
-- **Bekannte Lücke (sigil.md §11, offener Punkt 5):** `sigilc` vergibt Silhouetten- und Palettenindizes je Unit in
-  alphabetischer Reihenfolge der Namen, nicht aus einem gemeinsamen Katalog. Unter der Identität landet eine Silhouette
-  deshalb nur dann auf der gleichnamigen Tabellenzeile, wenn die Namen zufällig passend sortieren. Entschieden
-  (PO, 2026-09-17): ein gemeinsamer Katalog für Silhouetten und Paletten mit festen Namen ersetzt die Nummerierung je
-  Unit, vor weiterem Sigil-Content; Umsetzung offen.
+- **Visual-Katalog** (*Stufe I, PO-Freigabe offen*; ersetzt die bisherige „Bekannte Lücke", sigil.md §11.4 Punkt 5):
+  Entschieden (PO, 2026-09-17): ein gemeinsamer Katalog für Silhouetten und Paletten mit festen Namen ersetzt die
+  Nummerierung je Unit. `sigilc` schreibt für einen Namen seine Zeile im Visual-Katalog (`docs/formats/sigil.md`
+  §10.9), in jeder Unit dieselbe Zahl; ein Name außerhalb des Katalogs übersetzt nicht (`SIG0027`). Die gezeichneten
+  Katalogzeilen sind die Tabellen des Bullet-Passes (§6 „Katalog-Namen"), die Identität landet deshalb immer auf der
+  gleichnamigen Tabellenzeile. Reservierte Katalogzeilen übersetzen, liegen aber außerhalb der Tabellen und zählen
+  in `unmapped_visual`. `map_visual` bleibt unverändert. Vorher vergab `sigilc` die Indizes je Unit in alphabetischer
+  Reihenfolge der benutzten Namen.
 
 ## 10. `grimoire_exec`
 
@@ -2459,6 +2470,7 @@ pub struct BulletType {                          // Copy, Debug, PartialEq, Stab
 }
 pub struct BulletVisual { pub silhouette: u16, pub palette: u16, pub palette_space: u8, pub glow: u8 }
                                                  // Copy, Eq, Hash, Debug, StableHash; neutrale Kennungen, Abbildung in der Fassade (§6)
+                                                 // silhouette/palette: Zeilen des Visual-Katalogs, sigil.md §10.9 (Stufe I, PO-Freigabe offen)
 pub struct BulletFlags(pub u8);                  // Copy, Eq, Hash, Debug, StableHash; SMASHABLE = 1, REFLECTABLE = 2,
                                                  // ENV_ACTIVE = 4, GRAZEABLE = 8; übrige Bits 0; contains(BulletFlags) -> bool
 pub struct SigilLibrary;                         // Debug, Send + Sync; unveränderlich
