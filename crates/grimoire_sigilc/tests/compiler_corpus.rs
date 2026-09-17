@@ -32,10 +32,14 @@ impl SourceLoader for DirLoader {
     }
 }
 
+/// The corpus' behaviour manifest (`tests/corpus/behaviors.json`), the same file the platform
+/// identity gate passes to `sigilc` (Plan 0002 WP4.4).
 fn behavior_ids() -> BTreeMap<String, u32> {
-    let mut map = BTreeMap::new();
-    map.insert("orbit_parent".to_string(), 1);
-    map
+    let path = support::corpus_root().join("behaviors.json");
+    let text =
+        fs::read_to_string(&path).unwrap_or_else(|error| panic!("reading {path:?}: {error}"));
+    grimoire_sigilc::behaviors::parse_behavior_manifest(&text)
+        .unwrap_or_else(|error| panic!("{path:?}: {error}"))
 }
 
 #[test]

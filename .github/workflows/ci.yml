@@ -1,4 +1,5 @@
-# Engine CI: format, standalone gate, docs, three-OS test matrix and float-probe comparison.
+# Engine CI: format, standalone gate, docs, three-OS test matrix, float-probe comparison and the
+# Sigil unit identity gate.
 # Every push that triggers this workflow is watched until it finishes:
 #   gh run watch --exit-status        (red run: gh run view --log-failed)
 name: CI
@@ -261,6 +262,21 @@ jobs:
           path: target/float-probe/
           if-no-files-found: error
           retention-days: 14
+      # Plan 0002 WP4.4, platform identity gate: this runner's `sigilc` (debug, already built by the
+      # test step) compiles the Sigil corpus, the reference patterns and the facade's unit fixtures;
+      # `sigil-identity` compares the bytes across all three operating systems. Runs after a red
+      # test step too, so a test failure does not hide a compiler difference.
+      - name: Build Sigil units (WP4.4)
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/build-sigil-units.sh target/sigil-units
+      - name: Upload Sigil units
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sigil-units-${{ matrix.os }}
+          path: target/sigil-units/
+          if-no-files-found: error
+          retention-days: 14
 
   float-compare:
     name: Float probe comparison
@@ -289,6 +305,45 @@ jobs:
           # Missing core probes fail the comparison only if every test job succeeded.
           TESTS_RESULT: ${{ needs.test.result }}
         run: bash .github/scripts/compare-float-probes.sh float-probe "Debug-Build"
+
+  sigil-identity:
+    name: Sigil unit identity (WP4.4)
+    needs: test
+    # Compare whatever units exist, even if one OS failed its tests.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+      # One directory per operating system, downloaded by name; a missing artifact must still reach
+      # the comparison step, which reports it.
+      - name: Download Sigil units (windows-latest)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sigil-units-windows-latest
+          path: sigil-units/windows-latest
+      - name: Download Sigil units (ubuntu-latest)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sigil-units-ubuntu-latest
+          path: sigil-units/ubuntu-latest
+      - name: Download Sigil units (macos-latest)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sigil-units-macos-latest
+          path: sigil-units/macos-latest
+      - name: Self-test the Sigil unit comparison
+        run: bash .github/scripts/test-compare-sigil-units.sh
+      - name: Compare Sigil units across operating systems
+        env:
+          # Missing artifacts fail the comparison only if every test job succeeded.
+          TESTS_RESULT: ${{ needs.test.result }}
+        run: bash .github/scripts/compare-sigil-units.sh sigil-units "Debug-Build"
 
   showcase-gif:
     name: M1 showcase GIF (pbr_stage)
