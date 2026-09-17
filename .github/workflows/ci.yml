@@ -409,7 +409,7 @@ jobs:
         run: bash .github/scripts/compare-sigil-units.sh sigil-units "Debug-Build"
 
   showcase-gif:
-    name: Showcase GIFs (pbr_stage, lights_stage, sigil_curtain)
+    name: Showcase GIFs (pbr_stage, lights_stage, sigil_curtain, hot_swap)
     # Plan 0002 WP2.8 milestone showcase: renders the merged stage (meshes, PBR materials, lights,
     # the key-light shadow map, the tilted camera — the same cast as the `pbr_stage` example, which
     # this job never runs itself, only builds via the `test` job's "Build examples" step) offscreen
@@ -423,6 +423,10 @@ jobs:
     # pattern run by the interpreter in the facade's main loop and drawn by the bullet pass, from the
     # example's `scene.rs` (`crates/grimoire/tests/sigil_curtain_showcase.rs`) into the artifact
     # `sigil_curtain-showcase-gif`.
+    # Plan 0002 WP8.5 adds the M3 showcase `hot_swap` the same way: the same `sigil_curtain` scene,
+    # but with `grimoire-link` connected over the debug link, saving an edited `.sigil` source a
+    # second into the sequence — the before/after GIF of hot reload
+    # (`crates/grimoire_link/tests/hot_swap_showcase.rs`) in the artifact `hot_swap-showcase-gif`.
     #
     # Kept cheap on purpose: one OS (`ubuntu-latest`, the cheapest GitHub-hosted
     # runner) instead of the three-OS matrix `test` uses — a GIF is a showcase artifact, not a
@@ -443,6 +447,7 @@ jobs:
       GRIMOIRE_PBR_STAGE_GIF_OUT_DIR: ${{ github.workspace }}/pbr-stage-gif
       GRIMOIRE_LIGHTS_STAGE_GIF_OUT_DIR: ${{ github.workspace }}/lights-stage-gif
       GRIMOIRE_SIGIL_CURTAIN_GIF_OUT_DIR: ${{ github.workspace }}/sigil-curtain-gif
+      GRIMOIRE_HOT_SWAP_GIF_OUT_DIR: ${{ github.workspace }}/hot-swap-gif
     steps:
       - uses: actions/checkout@v7
       - name: Install pinned toolchain (rust-toolchain.toml)
@@ -526,5 +531,27 @@ jobs:
         with:
           name: sigil_curtain-showcase-gif
           path: sigil_curtain.gif
+          if-no-files-found: error
+          retention-days: 30
+      # Plan 0002 WP8.5: the M3 showcase, the same scene with a hot swap in the middle. The tool
+      # compiles and pushes the edited pattern while the loop renders; the sequence test fails if
+      # the engine did not apply the swap, so an empty or half GIF cannot pass unnoticed.
+      - name: Render the hot_swap PNG sequence
+        env:
+          GRIMOIRE_GPU_ADAPTER: software
+        run: |
+          cargo test -p grimoire_link --test hot_swap_showcase --locked -- --ignored --nocapture render_hot_swap_png_sequence
+          test -f "$GRIMOIRE_HOT_SWAP_GIF_OUT_DIR/frame_0071.png"
+      - name: Assemble the hot_swap PNG sequence into a GIF
+        run: |
+          palette="$(mktemp --suffix=.png)"
+          ffmpeg -y -framerate 24 -i "$GRIMOIRE_HOT_SWAP_GIF_OUT_DIR/frame_%04d.png"             -vf "palettegen" "$palette"
+          ffmpeg -y -framerate 24 -i "$GRIMOIRE_HOT_SWAP_GIF_OUT_DIR/frame_%04d.png" -i "$palette"             -lavfi "paletteuse" hot_swap.gif
+          ls -la hot_swap.gif
+      - name: Upload the hot_swap showcase GIF
+        uses: actions/upload-artifact@v7
+        with:
+          name: hot_swap-showcase-gif
+          path: hot_swap.gif
           if-no-files-found: error
           retention-days: 30
