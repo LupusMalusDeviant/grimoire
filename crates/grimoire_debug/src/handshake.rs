@@ -6,26 +6,19 @@
 //! §13 "Handshake", numbered steps 1-8): the engine accepts a connecting tool's `Hello` and
 //! either rejects it or answers with its own; the tool sends its `Hello` first and waits for the
 //! engine's reply or an `Error`. Both are written purely against [`DebugTransport`], so they run
-//! identically over [`crate::InProcessTransport`] (this crate's own tests) and, once Plan-0002
-//! WP8.4 wires them into the engine's connection-handling thread, over
-//! [`crate::TcpServerTransport`] too. Each returns a [`Session`] on success — the only way to
+//! identically over [`crate::InProcessTransport`] (this crate's own tests) and over any other
+//! transport. Each returns a [`Session`] on success — the only way to
 //! obtain one, and the only way to reach [`Session::dispatch_frame`] — so "cannot be skipped"
 //! falls out of the type system rather than a documented calling convention.
 //!
 //! Both functions block the calling thread (a short sleep-poll loop) for up to their `timeout`
-//! argument, matching the contract's [`crate::HANDSHAKE_TIMEOUT`] which it describes as watched
-//! by "the transport" rather than "the facade" (§13): they are meant to run on a dedicated
-//! connection-handling thread (Plan-0002 WP8.4's "IO-Thread außerhalb der Sim-Crates"), never on
-//! a fixed-timestep simulation thread.
-//!
-//! What this module deliberately does *not* do: enforce [`crate::MAX_HELLO_FRAME_LEN`] and
-//! [`crate::HANDSHAKE_TIMEOUT`] *inside* [`crate::TcpServerTransport`]'s own IO thread before a
-//! frame is even fully buffered (contract §13 "TCP": "kann so höchstens einen kleinen Frame
-//! puffern lassen"). That byte-level, pre-allocation hardening is specific to a socket peer that
-//! has not yet authenticated and is Plan-0002 WP8.4's job, alongside wiring these functions into
-//! the real engine server thread; see this crate's PR notes. [`accept_handshake`] still enforces
-//! [`crate::MAX_HELLO_FRAME_LEN`] and the timeout *semantically* (closing the connection and
-//! returning the right [`HandshakeError`]) for whatever [`Frame`] a transport does hand it.
+//! argument, so they suit a dedicated connection thread or a tool, never a frame loop. The engine's
+//! frame loop uses [`crate::EngineLink`] instead, which applies the same steps
+//! (`check_first_frame`) and the same dispatch without blocking (Plan 0002 WP8.4); the
+//! byte-level defences against a not-yet-authenticated socket peer (one frame of at most
+//! [`crate::MAX_HELLO_FRAME_LEN`] before the handshake, the [`crate::HANDSHAKE_TIMEOUT`]) live in
+//! [`crate::TcpServerTransport`]'s IO thread. [`accept_handshake`] still enforces both
+//! semantically for whatever [`Frame`] a transport hands it.
 
 use std::collections::VecDeque;
 use std::thread;
@@ -341,127 +334,19 @@ pub fn accept_handshake(
         }
     };
 
-    // Step 1: the wire `len` value (payload length plus the 8-byte header) must not exceed
-    // MAX_HELLO_FRAME_LEN. `Frame` no longer carries the raw `len`, but it is exactly
-    // `HEADER_LEN + payload.len()` by construction (`FrameDecoder::next_frame`), so this
-    // reconstructs it rather than needing the transport to hand over a raw length separately.
-    let wire_len = crate::frame::HEADER_LEN as u64 + first.payload.len() as u64;
-    if wire_len > u64::from(crate::MAX_HELLO_FRAME_LEN) {
-        let _ = transport.send(&error_frame(
-            ErrorCode::TooLarge,
-            first.seq,
-            "first frame exceeds MAX_HELLO_FRAME_LEN",
-        ));
-        transport.disconnect();
-        return Err(HandshakeError::TooLarge);
-    }
-
-    // Step 2: the first frame must be a Hello.
-    if first.id != MessageId(catalogue::HELLO) {
-        let _ = transport.send(&error_frame(
-            ErrorCode::HandshakeRequired,
-            first.seq,
-            "the first frame of a connection must be Hello",
-        ));
-        transport.disconnect();
-        return Err(HandshakeError::HandshakeRequired);
-    }
-
-    // Steps 3-4: peek the frozen first field before a full strict decode.
-    match peek_hello_version(&first) {
-        None => {
-            let _ = transport.send(&error_frame(
-                ErrorCode::Malformed,
-                first.seq,
-                "Hello payload is shorter than 2 bytes",
-            ));
+    let accepted = match check_first_frame(&first, identity) {
+        Ok(accepted) => accepted,
+        Err(rejection) => {
+            let _ = transport.send(&rejection.reply);
             transport.disconnect();
-            return Err(HandshakeError::Malformed);
-        }
-        Some(version) if version != crate::PROTOCOL_VERSION => {
-            let _ = transport.send(&error_frame(
-                ErrorCode::VersionMismatch,
-                first.seq,
-                format!(
-                    "protocol version {version} does not match {}",
-                    crate::PROTOCOL_VERSION
-                ),
-            ));
-            transport.disconnect();
-            return Err(HandshakeError::VersionMismatch);
-        }
-        Some(_) => {}
-    }
-
-    // Step 5: strict decode (no trailing bytes) plus role check.
-    let hello = match Hello::decode(&first.payload) {
-        Ok(hello) if hello.role == PeerRole::Tool => hello,
-        _ => {
-            let _ = transport.send(&error_frame(
-                ErrorCode::Malformed,
-                first.seq,
-                "Hello payload failed to decode, or role was not Tool",
-            ));
-            transport.disconnect();
-            return Err(HandshakeError::Malformed);
+            return Err(rejection.error);
         }
     };
 
-    // Step 6: constant-time token comparison.
-    if !tokens_match(&hello.token, &identity.token) {
-        let _ = transport.send(&error_frame(
-            ErrorCode::Unauthorized,
-            first.seq,
-            "Hello token did not match",
-        ));
-        transport.disconnect();
-        return Err(HandshakeError::Unauthorized);
-    }
-
-    // Step 7: engine version and build hash, named in the message text only now that the token
-    // check has passed (contract §13: "Beide Versionen nennt ein Meldungstext erst nach
-    // bestandener Token-Prüfung").
-    if hello.engine_version != identity.engine_version {
-        let _ = transport.send(&error_frame(
-            ErrorCode::VersionMismatch,
-            first.seq,
-            format!(
-                "engine version {:?} does not match {:?}",
-                hello.engine_version, identity.engine_version
-            ),
-        ));
-        transport.disconnect();
-        return Err(HandshakeError::VersionMismatch);
-    }
-    let both_build_hashes_known = hello.build_hash != "unknown" && identity.build_hash != "unknown";
-    let build_hash_unknown_warning = !both_build_hashes_known;
-    if both_build_hashes_known && hello.build_hash != identity.build_hash {
-        let _ = transport.send(&error_frame(
-            ErrorCode::VersionMismatch,
-            first.seq,
-            format!(
-                "build hash {:?} does not match {:?}",
-                hello.build_hash, identity.build_hash
-            ),
-        ));
-        transport.disconnect();
-        return Err(HandshakeError::VersionMismatch);
-    }
-
-    // Step 8: the engine replies with its own Hello. `stats_interval_frames` is meaningless
-    // coming from the engine (it only expresses what a *tool* requests), so it is `0`; `token`
-    // is all zero (contract §13: "Token nur Nullen"). Both the encode and the send below are
+    // Step 8: the engine replies with its own Hello. Both the encode and the send below are
     // disconnected explicitly on failure rather than via a bare `?`, so this step keeps the same
-    // "always disconnect before returning Err" guarantee as every step above it.
-    let reply = Message::Hello(Hello {
-        protocol_version: crate::PROTOCOL_VERSION,
-        role: PeerRole::Engine,
-        engine_version: identity.engine_version.clone(),
-        build_hash: identity.build_hash.clone(),
-        token: [0u8; 32],
-        stats_interval_frames: 0,
-    });
-    let reply_frame = match reply.to_frame(1) {
+    // "always disconnect before returning Err" guarantee as every step before it.
+    let reply_frame = match engine_hello(identity).to_frame(1) {
         Ok(frame) => frame,
         Err(error) => {
             transport.disconnect();
@@ -474,12 +359,167 @@ pub fn accept_handshake(
     }
 
     Ok((
-        AcceptedHandshake::new(hello, build_hash_unknown_warning),
+        accepted,
         Session {
             local_role: PeerRole::Engine,
             pending: pending.into(),
         },
     ))
+}
+
+/// A first frame the engine rejects (contract §13 "Handshake" steps 1-7): the error to report and
+/// the `Error` frame (`seq = 0`) to send before closing the connection.
+pub(crate) struct Rejection {
+    pub(crate) error: HandshakeError,
+    pub(crate) reply: Frame,
+}
+
+impl Rejection {
+    fn new(
+        error: HandshakeError,
+        code: ErrorCode,
+        in_reply_to: u32,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            error,
+            reply: error_frame(code, in_reply_to, message),
+        }
+    }
+}
+
+/// Applies handshake steps 1-7 (contract §13, PO decision V-13) to the first frame of a
+/// connection, without touching a transport: [`accept_handshake`] and the non-blocking
+/// [`crate::EngineLink`] share it, so both reject exactly the same frames with exactly the same
+/// replies. Never panics on any frame.
+pub(crate) fn check_first_frame(
+    first: &Frame,
+    identity: &EngineIdentity,
+) -> Result<AcceptedHandshake, Rejection> {
+    // Step 1: the wire `len` value (payload length plus the 8-byte header) must not exceed
+    // MAX_HELLO_FRAME_LEN. `Frame` no longer carries the raw `len`, but it is exactly
+    // `HEADER_LEN + payload.len()` by construction (`FrameDecoder::next_frame`), so this
+    // reconstructs it rather than needing the transport to hand over a raw length separately.
+    let wire_len = crate::frame::HEADER_LEN as u64 + first.payload.len() as u64;
+    if wire_len > u64::from(crate::MAX_HELLO_FRAME_LEN) {
+        return Err(Rejection::new(
+            HandshakeError::TooLarge,
+            ErrorCode::TooLarge,
+            first.seq,
+            "first frame exceeds MAX_HELLO_FRAME_LEN",
+        ));
+    }
+
+    // Step 2: the first frame must be a Hello.
+    if first.id != MessageId(catalogue::HELLO) {
+        return Err(Rejection::new(
+            HandshakeError::HandshakeRequired,
+            ErrorCode::HandshakeRequired,
+            first.seq,
+            "the first frame of a connection must be Hello",
+        ));
+    }
+
+    // Steps 3-4: peek the frozen first field before a full strict decode.
+    match peek_hello_version(first) {
+        None => {
+            return Err(Rejection::new(
+                HandshakeError::Malformed,
+                ErrorCode::Malformed,
+                first.seq,
+                "Hello payload is shorter than 2 bytes",
+            ));
+        }
+        Some(version) if version != crate::PROTOCOL_VERSION => {
+            return Err(Rejection::new(
+                HandshakeError::VersionMismatch,
+                ErrorCode::VersionMismatch,
+                first.seq,
+                format!(
+                    "protocol version {version} does not match {}",
+                    crate::PROTOCOL_VERSION
+                ),
+            ));
+        }
+        Some(_) => {}
+    }
+
+    // Step 5: strict decode (no trailing bytes) plus role check.
+    let hello = match Hello::decode(&first.payload) {
+        Ok(hello) if hello.role == PeerRole::Tool => hello,
+        _ => {
+            return Err(Rejection::new(
+                HandshakeError::Malformed,
+                ErrorCode::Malformed,
+                first.seq,
+                "Hello payload failed to decode, or role was not Tool",
+            ));
+        }
+    };
+
+    // Step 6: constant-time token comparison.
+    if !tokens_match(&hello.token, &identity.token) {
+        return Err(Rejection::new(
+            HandshakeError::Unauthorized,
+            ErrorCode::Unauthorized,
+            first.seq,
+            "Hello token did not match",
+        ));
+    }
+
+    // Step 7: engine version and build hash, named in the message text only now that the token
+    // check has passed (contract §13: "Beide Versionen nennt ein Meldungstext erst nach
+    // bestandener Token-Prüfung").
+    if hello.engine_version != identity.engine_version {
+        return Err(Rejection::new(
+            HandshakeError::VersionMismatch,
+            ErrorCode::VersionMismatch,
+            first.seq,
+            format!(
+                "engine version {:?} does not match {:?}",
+                hello.engine_version, identity.engine_version
+            ),
+        ));
+    }
+    let both_build_hashes_known = hello.build_hash != "unknown" && identity.build_hash != "unknown";
+    let build_hash_unknown_warning = !both_build_hashes_known;
+    if both_build_hashes_known && hello.build_hash != identity.build_hash {
+        return Err(Rejection::new(
+            HandshakeError::VersionMismatch,
+            ErrorCode::VersionMismatch,
+            first.seq,
+            format!(
+                "build hash {:?} does not match {:?}",
+                hello.build_hash, identity.build_hash
+            ),
+        ));
+    }
+
+    Ok(AcceptedHandshake::new(hello, build_hash_unknown_warning))
+}
+
+/// The engine's reply `Hello` (contract §13 "Handshake" step 8): `role = Engine`, this build's
+/// engine version and build hash, a token of only zeros. `stats_interval_frames` only expresses
+/// what a *tool* requests, so the engine sends `0`.
+pub(crate) fn engine_hello(identity: &EngineIdentity) -> Message {
+    Message::Hello(Hello {
+        protocol_version: crate::PROTOCOL_VERSION,
+        role: PeerRole::Engine,
+        engine_version: identity.engine_version.clone(),
+        build_hash: identity.build_hash.clone(),
+        token: [0u8; 32],
+        stats_interval_frames: 0,
+    })
+}
+
+/// Creates the [`Session`] of an engine whose handshake [`crate::EngineLink`] completed without
+/// blocking; frames pipelined behind the `Hello` reach the link through its own inbox instead of
+/// the session's pending queue.
+pub(crate) fn engine_session() -> Session {
+    Session {
+        local_role: PeerRole::Engine,
+        pending: VecDeque::new(),
+    }
 }
 
 /// Runs the tool side of the handshake: sends this tool's `Hello` first (frame `seq = 1`), then
@@ -550,7 +590,7 @@ pub fn connect_handshake(
 #[derive(Clone, PartialEq, Debug)]
 pub enum PostHandshakeOutcome {
     /// A correctly addressed, successfully decoded catalogue message: hand it to whatever
-    /// applies its behaviour (the facade, from Plan-0002 WP8.4 onward — this crate stops here).
+    /// applies its behaviour (the facade, Plan 0002 WP8.4 — this crate stops here).
     Message(Message),
     /// Send this `Error` back (via `to_frame` with the caller's own next `seq`) and keep the
     /// connection open.

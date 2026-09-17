@@ -195,6 +195,12 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
     `grimoire_link`: `cargo clippy -p grimoire_debug -p grimoire --all-targets --locked -- -D warnings` und
     `cargo test -p grimoire_debug -p grimoire --locked` (Umsetzung WP1.3,
     Laufzeit nach OP-5 bewertet).
+    *Klarstellung (WP8.4):* Umgesetzt sind in `ci.yml` auf allen drei Betriebssystemen der paketgewählte
+    Clippy-Schritt „Clippy (grimoire and grimoire_debug without debug-link)“, der Schritt
+    „Test (grimoire, feature debug-link)“ und der Schritt „Test (grimoire_assets and grimoire_debug, feature
+    conformance)“; `GRIMOIRE_SOCKET_TESTS=1` setzen der Test-Schritt und diese beiden Schritte. Ein Testlauf der
+    Fassade ohne Features läuft nicht zusätzlich paketgewählt, weil ihr Code ohne `debug-link` mit dem von
+    `--workspace` übereinstimmt; der Clippy-Schritt deckt die abweichende Merkmalsauflösung von `grimoire_debug` ab.
 15. **Crate-Kanten:** Neue Kanten zwischen Engine-Crates und neue Engine-Crates nur über ein Engine-ADR zur
     Crate-Map (Engine-ADR-0008 und Nachfolger) mit gleichzeitiger Änderung der Tabelle in §1. Neue
     Drittabhängigkeiten folgen weiterhin Regel 4.
@@ -2137,7 +2143,8 @@ pub trait GamePlugin {                                                  // zusä
     fn on_profile(&mut self, profile: &grimoire_debug::FrameProfile) {}  // nach `on_frame`
 }
 // AppBuilder zusätzlich: profiler(bool) -> Self (Default true), overlay_key(Option<KeyCode>) -> Self (Default Some(KeyCode::F3))
-// AppBuilder zusätzlich, nur mit Feature `debug-link`: debug_link(Box<dyn grimoire_debug::DebugTransport>) -> Self
+// AppBuilder zusätzlich, nur mit Feature `debug-link`: debug_link(Box<dyn grimoire_debug::DebugTransport>) -> Self,
+//     debug_link_token([u8; 32]) -> Self (WP8.4, Stufe A, PO-Freigabe offen; §9.7)
 pub struct PointerState;     // Clone, Copy, Default, PartialEq, Debug; apply(&RawInputEvent),
                              // position() -> Option<[f32; 2]> (physische Pixel, Ursprung oben links, Y nach unten)
 pub const AIM_MIN_DISTANCE: f32 = 0.01;                                 // Welteinheiten, Chebyshev-Abstand
@@ -2446,6 +2453,66 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
   `Error`), protokolliert die Fassade den `ProtocolError`, überspringt nur diese Nachricht und behält den Link.
 - **Determinismus:** Ohne angewendeten Swap sind die Hashes mit und ohne Link identisch (Test mit
   `InProcessTransport`). Der Swap wirkt ab dem angegebenen Tick (Headless-E2E, WP8.4/WP8.5).
+
+**Debug-Link-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP8.4)**
+
+*Stufe A, PO-Freigabe offen:* die API unten. Die mit „Klarstellung“ markierten Punkte präzisieren den freigegebenen
+Text oben und sind Stufe K.
+
+```rust
+// grimoire::adapters::debug::link (nur Feature debug-link)
+pub const SWAP_APPLIED: u8 = 0; pub const SWAP_REJECTED: u8 = 1; pub const SWAP_SUPERSEDED: u8 = 2;   // SwapAck.status
+pub fn engine_identity(token: [u8; 32]) -> grimoire_debug::EngineIdentity;
+                                           // ENGINE_VERSION, ENGINE_BUILD.to_hex() oder "unknown", token
+pub fn current_epoch(sim: &Simulation) -> Option<ContentEpoch>;
+pub struct DebugLink;                      // Debug; new(Box<dyn DebugTransport>, token: [u8; 32]),
+                                           // from_env() -> Result<Option<Self>, TransportError>,
+                                           // is_connected() -> bool, pending_swaps() -> usize, poll(),
+                                           // apply_swaps(&mut Simulation) -> Vec<SwapReport>,
+                                           // frame_finished(&FrameStats, Option<&FrameProfile>, Option<ContentEpoch>)
+// AppBuilder zusätzlich (debug-link): debug_link_token([u8; 32]) -> Self   (Vorgabe: 32 Null-Bytes)
+```
+
+- **Aufbau:** `DebugLink` hält einen `grimoire_debug::EngineLink` (§13) mit `engine_identity(token)`. `debug_link`
+  übergibt den Transport; sein Token setzt `debug_link_token`. Ohne Aufruf ist es das Null-Token, das zu einem
+  In-Process-Transport passt, dessen beide Enden der Aufrufer hält. Ohne `debug_link` bindet `init` über
+  `DebugLink::from_env` einen `TcpServerTransport` mit dem Token aus `GRIMOIRE_DEBUG_TOKEN`. Das geschieht nach
+  `build`, `register_assets` und `window_created`, nicht nach einem Registrierungsfehler (§9.10). `run_headless` richtet
+  den Link nach `build` ein.
+- **Klarstellung — Reihenfolge in `run_headless`:** vor jedem Tick `poll`, dann `apply_swaps`, dann
+  `input(sim.tick())`, dann `step`. Ein Swap, den ein Werkzeug während `input(t)` sendet, wirkt also ab Tick `t + 1`.
+- **Klarstellung — Warteschlange (§13 „Wirkung an Grenzen“):** `apply_swaps` bestätigt jeden wartenden Swap in
+  Empfangsreihenfolge mit genau einem `SwapAck`, sendet diesen unmittelbar nach seiner Anwendung und liefert die
+  `SwapReport`s der angewendeten Swaps.
+  - Gleich ist eine Unit, wenn `unit_path` byteweise gleich ist. Ein früherer Swap derselben Unit erhält Status 2.
+  - Status 1 folgt, wenn `unit_path` kein gültiger `AssetPath` ist, die Bytes keine gültige `SigilUnit` sind, die
+    `UnitId` nicht gleich `AssetId::from_path(unit_path)` ist oder `replace_unit` einen Fehler liefert. `reason`
+    nennt dann den Grund.
+  - Bei Status 1 und 2 tragen `content_swaps` und `content_manifest` die geladene Epoche, ohne Content 0.
+    `unit_hash` ist 0, wenn die Bytes nicht dekodierten; `applied_tick` ist 0.
+  - Swaps einer inzwischen getrennten Verbindung werden trotzdem angewendet. Sie kamen vollständig an; nur ihr
+    `SwapAck` entfällt.
+- **Protokollierung und Replay (§8.1, §11.8):** Jeder angewendete Swap wird mit Pfad, Tick, Epoche und den Zahlen
+  des `SwapReport` geloggt (`info`), jeder abgewiesene mit Grund (`warn`). Die Frame-Schleifen und `run_headless`
+  zeichnen in P1 kein Replay auf (§8.1 „Geltungsbereich P1“). Ein aufzeichnender Headless-Harness treibt
+  `DebugLink` selbst und markiert jeden angewendeten Swap mit `header.record_swap(report.into())`.
+- **Klarstellung — `Stats`-Takt:** `frame_finished` zählt die fertigen Frames seit dem Handshake. Nach je
+  `stats_interval_frames` Frames sendet es ein `Stats` dieses Frames: `FrameProfile::to_stats` mit
+  `stats_frame(stats, current_epoch)` (§9.7 oben), ohne Profiler mit einem leeren Profil. Die Schleife ruft es nach
+  allen `on_profile` auf.
+- **Tests:** `crates/grimoire/tests/debug_link.rs` (`required-features = ["debug-link"]`), lokal nur über
+  `InProcessTransport`:
+  - Handshake mit `Stats` im verlangten Takt samt Content-Epoche.
+  - Versionskonflikt (fremde Engine-Version, verschiedene bekannte Build-Hashes, in CI-Builds also abgewiesen und
+    lokal mit `unknown` angenommen; falsches Token) bei unveränderten Hashes.
+  - Abriss mitten in einer Nachricht.
+  - Müll und Überlänge vor und nach dem Handshake, ohne Absturz auf beiden Seiten.
+  - Swap an der erwarteten Tick-Grenze.
+  - Content-Epoche im Hash: ein byte-gleicher Swap ohne Emitter ändert den Hash.
+  - Ersetzen, Abweisen und Anwenden in Empfangsreihenfolge.
+  - Gleiche Hashes mit und ohne Link.
+  - Harness mit Replay-Header.
+  - Hinter `GRIMOIRE_SOCKET_TESTS=1` ein Swap über einen echten Socket.
 
 **Profiler-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP6.3)**
 
@@ -3524,7 +3591,9 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
   Sigil-Swaps laufen über `SwapSigilUnit` und §11.8.
 - **Konformanz (WP1.3):** `tests/source_conformance.rs` führt die Suite `grimoire_assets::conformance` gegen
   `EmptyAssetSource`, `MemorySource` und `PackReader` (aus `PackWriter`) aus: Sortierung, `NotFound`, Hash-Prüfung,
-  `content_hash`-Gleichheit.
+  `content_hash`-Gleichheit. *Klarstellung (WP8.4):* Die CI führt sie seit WP8.4 im Schritt „Test (grimoire_assets
+  and grimoire_debug, feature conformance)“ aus. Zuvor aktivierte kein Workspace-Mitglied das Feature, und die
+  Testdatei lief leer.
 - **Verhaltenstests:**
   - Golden-Fixture `tests/fixtures/pack_v1_minimal.grimpack` (handgeprüft, Rundreise mit `PackWriter` byte-gleich)
   - Golden-Fixture `tests/fixtures/pack_v1_sigil.grimpack` (WP8.3): eine echte `SigilUnit` und ein Anwendungs-Eintrag,
@@ -3857,6 +3926,86 @@ pub enum ExportError;         // #[non_exhaustive], thiserror: Io { kind: io::Er
 - **Tests:** Einheitstests in `profile.rs` und `export.rs`, darunter die Stats-Kürzung mit 65 Scopes, 65 Zählern und
   einem 65-Byte-Namen samt Rundreise über `Message::from_frame` (Pflichtfall oben) sowie das Parsen der JSON-Ausgabe
   mit `serde_json` (nur Dev-Abhängigkeit, schon im Workspace gepinnt).
+
+**Engine-Server (Ergänzung P1, Plan 0002 WP8.4)**
+
+*Stufe A, PO-Freigabe offen:* `EngineLink`, `LinkEvent`, `LinkError`, `InProcessTransport::send_bytes` und die
+Verbindungsgrenzen des TCP-Transports (unten). Die mit „Klarstellung“ markierten Punkte setzen den freigegebenen Text
+oben um und sind Stufe K.
+
+```rust
+pub struct EngineLink;                // Debug; new(Box<dyn DebugTransport>, EngineIdentity), is_connected() -> bool,
+                                      // stats_interval_frames() -> u16, poll(&mut self, events: &mut Vec<LinkEvent>),
+                                      // send(&mut self, &Message) -> Result<u32, LinkError>, disconnect()
+#[non_exhaustive]
+pub enum LinkEvent { Connected(AcceptedHandshake), Rejected(HandshakeError),
+                     Message { seq: u32, message: Message }, PeerError(ErrorMsg),
+                     Disconnected { error: Option<TransportError> } }                 // Clone, PartialEq, Debug
+#[non_exhaustive]
+pub enum LinkError { NotConnected, Protocol(ProtocolError), Transport(TransportError) } // thiserror; Clone, Eq, Debug
+// InProcessTransport zusätzlich: send_bytes(&mut self, &[u8]) -> Result<(), TransportError>
+```
+
+- **`EngineLink`:** die Engine-Seite einer Verbindung ohne Blockieren. `poll` holt alle Frames eines
+  `DebugTransport::poll` und bearbeitet sie in Empfangsreihenfolge:
+  - Der erste Frame einer Verbindung durchläuft die Handshake-Schritte 1 bis 8 mit derselben Prüffunktion wie
+    `accept_handshake`. Das Ergebnis ist `Connected` (Engine-`Hello` gesendet) oder `Rejected`: `Error` gesendet,
+    Verbindung geschlossen, weitere Frames dieser Verbindung verworfen.
+  - Danach gilt „Nach dem Handshake“. Die Antworten ohne Engine-Zustand sendet der Link selbst, einschließlich
+    `Error(NotSupported)` auf `SigilPreview`. Jede übrige Katalognachricht an die Engine wird `LinkEvent::Message`
+    (in v1 `SwapSigilUnit`), ein eingehendes `Error` wird `PeerError`.
+  - Die Handshake-Frist überwacht der Transport, nicht der Link (oben).
+  - `seq` zählt je Verbindung ab 1; das Engine-`Hello` trägt 1.
+  - `send` liefert `NotConnected` ohne Handshake. Bei `Protocol` bleibt die Verbindung bestehen (§9.7: Nachricht
+    überspringen), bei `Transport` trennt der Link. Kein Pfad panict.
+- **`send_bytes`:** schreibt Bytes ungerahmt in Stücken von höchstens `max_chunk` an die Gegenseite. Das ist der
+  Fehlerinjektionsweg für Tests mit Müll, Überlänge und einem Abriss mitten im Frame; Protokollverkehr braucht ihn
+  nie.
+- **Verbindungsgrenzen des TCP-Transports:**
+  - `poll` liefert die Frames einer beendeten Verbindung und danach genau einmal `Err(TransportError::Disconnected)`,
+    vor jedem Frame einer späteren Verbindung. `EngineLink` wartet darauf, bevor es den nächsten ersten Frame
+    erwartet.
+  - `send` ohne verbundenen Client liefert `NotConnected`.
+  - `disconnect` schließt nur die Verbindung, deren Frames der Besitzer zuletzt gesehen hat, und schreibt vorher die
+    schon gesendeten Frames (etwa das abweisende `Error`). `is_connected()` ist danach sofort `false`.
+  - Ein Frame, den der Besitzer für eine frühere Verbindung sendet, erreicht nie eine spätere.
+- **Klarstellung — TCP-IO-Thread** (setzt „TCP“ oben um):
+  - Vom ersten Frame liest der Thread zuerst nur das Längenfeld. Bei `len > MAX_HELLO_FRAME_LEN` sendet er
+    `Error(TooLarge)` und schließt, ohne ein Nutzlast-Byte zu lesen. Bei `len < 8` schließt er ohne Antwort.
+  - Ist der erste Frame vollständig, liest er nichts mehr, bis ein Frame mit der ID `Hello` an den Client
+    geschrieben ist.
+  - `TooLarge`, `Busy` und der Ablauf der Handshake-Frist antworten mit `in_reply_to = 0` und `seq = 0`.
+  - Bei voller Eingangswarteschlange (256 Frames oder `MAX_INBOUND_QUEUED_BYTES`) hält der Thread den nächsten Frame
+    zurück und liest nicht weiter. Bis WP8.4 verwarf er Frames bei vollem Kanal stillschweigend, entgegen „Reihenfolge
+    bleibt erhalten, kein Frame wird verdoppelt“. Ein einzelner Frame passt immer in eine leere Warteschlange.
+  - Je Durchlauf liest er höchstens 64-mal, damit ein schneller Peer Stopp-Flag und Schreiben nicht verdrängt.
+- **Klarstellung — Anzahlprüfung der generierten Decoder (§2 Regel 9):** `grimoire_schemagen` prüft eine
+  `Vec`-Anzahl seit WP8.4 zusätzlich gegen die verbleibende Eingabe (Anzahl × kleinste Kodierungsgröße eines
+  Elements ≤ Rest, sonst `UnexpectedEnd`), bevor der Vektor reserviert wird; ebenso `vec_using` im Pack-Manifest
+  (§12). Zuvor prüfte der Generator nur die Obergrenze. Byte-Layout, gültige Eingaben und Goldens ändern sich
+  nicht.
+- **Klarstellung — Asset-Hot-Swap:** Plan 0002 WP8.4 nennt einen Asset-Hot-Swap-Kanal. Nach §12 und dem
+  Nachrichtenkatalog bleibt der Hot-Swap von Nicht-Sigil-Assets in v1 reserviert (`0x0300`–`0x03FF`, Antwort
+  `Error(NotSupported)`). Über den Link laufen in v1 nur Sigil-Units: `SwapSigilUnit`, übergeben an der Tick-Grenze.
+- **Klarstellung — Konformanz:** Die CI führt `tests/transport_conformance.rs` seit WP8.4 im Schritt
+  „Test (grimoire_assets and grimoire_debug, feature conformance)“ aus; zuvor lief die Datei leer (Feature nie
+  aktiviert). Der TCP-Abschnitt öffnet vor der Suite das Tor aus „TCP“ (erster Frame, Engine-`Hello`). Er prüft
+  zusätzlich Abriss und Überlänge. Die Suite selbst ist unverändert.
+- **Tests:** Einheitstests in `link.rs` (Handshake, Abweisung, Dispatch, `seq`, Überlänge, Abriss mitten im Frame, Müll
+  vor und nach dem Handshake, Proptests) und `transport/in_process.rs`. Hinter `GRIMOIRE_SOCKET_TESTS=1` prüfen die
+  Verhaltenstests in `transport/tcp.rs` alle Punkte aus „Weitere Prüfungen“ oben:
+  - Tor vor dem Handshake;
+  - `TooLarge` ohne Nutzlast;
+  - Müll und erneute Verbindung;
+  - `Busy`;
+  - Frist;
+  - `Error` vor dem Schließen;
+  - Reihenfolge und Vollständigkeit über 40 MiB und 640 Frames bei eingehaltener Byte-Obergrenze;
+  - keine Frames an eine spätere Verbindung;
+  - `EngineLink` über TCP.
+
+  `tests/decode_allocations.rs` in `grimoire_debug` und `grimoire_assets` zeigt mit einem aufzeichnenden
+  Allokator, dass eine kurze Nachricht mit großer Anzahl keinen Elementvektor reserviert.
 
 ## 14. `grimoire_collide` — Kollision v0
 

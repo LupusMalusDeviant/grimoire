@@ -269,19 +269,46 @@ impl<'a> Reader<'a> {{
         Ok(self.take(raw_len)?.to_vec())
     }}
 
-    /// Decodes a `Vec≤max<T>` element count (contract §13): the raw `u32` count is checked
-    /// against `max` before the caller allocates a `Vec` with that capacity, so an oversized
-    /// declared count (e.g. `u32::MAX`) never reaches an allocation — it fails here instead.
-    fn count_u32(&mut self, field: &'static str, max: usize) -> Result<usize, {error_ident}> {{
+    /// Decodes a `Vec≤max<T>` element count (contract §13) and checks it with
+    /// [`Reader::check_count`] before the caller allocates a `Vec` with that capacity.
+    fn count_u32(
+        &mut self,
+        field: &'static str,
+        max: usize,
+        min_elem_len: usize,
+    ) -> Result<usize, {error_ident}> {{
         let raw_count = self.u32()? as usize;
-        if raw_count > max {{
+        self.check_count(field, raw_count, max, min_elem_len)
+    }}
+
+    /// Checks an element count before the caller allocates for it (contract §2 rule 9): against
+    /// the field's documented `max` (`FieldTooLong`), then against the bytes remaining, since
+    /// `count` elements of at least `min_elem_len` encoded bytes each must still fit
+    /// (`UnexpectedEnd`). A short message that claims a large count therefore fails here instead
+    /// of reserving capacity for elements it cannot contain.
+    fn check_count(
+        &self,
+        field: &'static str,
+        count: usize,
+        max: usize,
+        min_elem_len: usize,
+    ) -> Result<usize, {error_ident}> {{
+        if count > max {{
             return Err({error_ident}::FieldTooLong {{
                 field,
-                len: raw_count,
+                len: count,
                 max,
             }});
         }}
-        Ok(raw_count)
+        let needed = count.saturating_mul(min_elem_len);
+        if needed > self.remaining() {{
+            return Err({error_ident}::UnexpectedEnd {{
+                offset: self.pos,
+                needed,
+                available: self.remaining(),
+            }});
+        }}
+        Ok(count)
     }}
 
     /// Fails with `TrailingBytes` unless every byte has been consumed (contract §13: "keine
@@ -917,8 +944,9 @@ fn decode_expr(
         }
         TypeRef::Vec { max, elem } => {
             let elem_expr = decode_expr(elem, field, schema, error_ident)?;
+            let min_elem_len = min_wire_len(elem, schema)?;
             format!(
-                "{{ let count = reader.count_u32({field:?}, {max})?; let mut items = Vec::with_capacity(count); for _ in 0..count {{ items.push({elem_expr}); }} items }}"
+                "{{ let count = reader.count_u32({field:?}, {max}, {min_elem_len})?; let mut items = Vec::with_capacity(count); for _ in 0..count {{ items.push({elem_expr}); }} items }}"
             )
         }
         TypeRef::VecUsing {
@@ -930,10 +958,12 @@ fn decode_expr(
             // `crate::parser::validate`), whose decoded value is already bound to a local
             // variable of that name at this point in `decode_from` — no count is read from the
             // wire here (contract §12's manifest reuses `entry_count`), but the value is still
-            // checked against `max` before allocating, exactly like `Vec` (contract §2 rule 9).
+            // checked against `max` and the bytes remaining before allocating, exactly like `Vec`
+            // (contract §2 rule 9).
             let elem_expr = decode_expr(elem, field, schema, error_ident)?;
+            let min_elem_len = min_wire_len(elem, schema)?;
             format!(
-                "{{ let count = {count_field} as usize; if count > {max} {{ return Err({error_ident}::FieldTooLong {{ field: {field:?}, len: count, max: {max} }}); }} let mut items = Vec::with_capacity(count); for _ in 0..count {{ items.push({elem_expr}); }} items }}"
+                "{{ let count = reader.check_count({field:?}, {count_field} as usize, {max}, {min_elem_len})?; let mut items = Vec::with_capacity(count); for _ in 0..count {{ items.push({elem_expr}); }} items }}"
             )
         }
         TypeRef::Named(name) => match resolve_named(schema, name)? {
@@ -954,6 +984,35 @@ fn decode_expr(
                     ),
                 };
                 format!("{{ match {read} {{ {arms}{default_arm} }} }}")
+            }
+        },
+    })
+}
+
+/// The fewest bytes one value of `ty` occupies on the wire: fixed widths as they are, every length
+/// or count prefix with an empty body, an `Option` as its absent tag, a struct as the sum of its
+/// fields. Generated decoders compare an element count times this against the bytes remaining
+/// before they allocate ([`decode_expr`], contract §2 rule 9).
+fn min_wire_len(ty: &TypeRef, schema: &Schema) -> Result<usize, String> {
+    Ok(match ty {
+        TypeRef::U8 | TypeRef::Bool | TypeRef::Option(_) => 1,
+        TypeRef::U16 | TypeRef::Str16 { .. } => 2,
+        TypeRef::U32 | TypeRef::F32 | TypeRef::Str { .. } | TypeRef::Bytes { .. } => 4,
+        TypeRef::Vec { .. } => 4,
+        TypeRef::VecUsing { .. } => 0,
+        TypeRef::U64 | TypeRef::Hash64 | TypeRef::Id64 => 8,
+        TypeRef::Array { elem, len } => min_wire_len(elem, schema)?.saturating_mul(*len as usize),
+        TypeRef::Named(name) => match resolve_named(schema, name)? {
+            Resolved::Enum(e) => match e.width {
+                EnumWidth::U8 => 1,
+                EnumWidth::U16 => 2,
+            },
+            Resolved::Struct(s) => {
+                let mut total = 0usize;
+                for field in &s.fields {
+                    total = total.saturating_add(min_wire_len(&field.ty, schema)?);
+                }
+                total
             }
         },
     })
