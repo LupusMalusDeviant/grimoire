@@ -35,6 +35,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use grimoire_gpu::{GpuContext, GpuError, wgpu};
 
 use crate::cluster_layout::{self, CLUSTER_COUNT, GpuClusterLightRange, GpuPointLight};
+use crate::gpu_timer::PassTimestamps;
 
 const WORKGROUP_SIZE: u32 = 64;
 
@@ -424,6 +425,7 @@ impl ClusterPass {
         context: &GpuContext,
         lights: &[GpuPointLight],
         camera: &ClusterCameraParams,
+        timestamps: Option<PassTimestamps>,
     ) -> Result<ClusterFrameStats, GpuError> {
         debug_assert!(
             lights.len() <= self.light_budget as usize,
@@ -463,7 +465,7 @@ impl ClusterPass {
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("grimoire cluster compute pass"),
-                    timestamp_writes: None,
+                    timestamp_writes: timestamps.as_ref().map(PassTimestamps::compute),
                 });
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, compute_bind_group, &[]);
@@ -675,7 +677,7 @@ mod tests {
         // tiny 0.5-unit range) that it cannot be within `range` of any cluster's near slab
         // (`w_near` for slice 0 equals `near = 1.0`), which is what this test actually checks.
         let lights = [light([0.05, 1.5, 0.05], 0.5), light([0.0, -50.0, 0.0], 0.5)];
-        pass.dispatch(&context, &lights, &camera)
+        pass.dispatch(&context, &lights, &camera, None)
             .expect("dispatch succeeds");
         // `read_back_for_test` submits its own copy (necessarily ordered after the compute
         // dispatch above, same queue) and waits on *that* submission specifically — correct and
@@ -713,7 +715,7 @@ mod tests {
                 light([(t % 16.0) - 8.0, 2.0 + t * 0.3, (t % 9.0) - 4.0], 3.0)
             })
             .collect();
-        pass.dispatch(&context, &lights, &camera)
+        pass.dispatch(&context, &lights, &camera, None)
             .expect("dispatch of 256 lights succeeds");
         let (table, index_list) = pass.read_back_for_test(&context);
 
