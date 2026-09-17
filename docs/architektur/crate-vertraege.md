@@ -387,6 +387,13 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-16 | §6 (echte Tangenten: `MeshVertex::tangent`, 72 statt 56 Byte; `decode_mesh` liest `FNP_MESH` Fassung 1 und 2) | #28 | I (PO-Freigabe 2026-09-17, gebündelt; Einstufung berichtigt: geändertes `repr(C)`-Layout) | Render-A/B (Paket „Texturqualität") | nein |
 | 2026-09-17 | §6 (Bullet-Pass: `bullet_silhouette`, `bullet_palette`, `WgpuRenderer::last_stage_pass_order`, abgeleitete Geschoss-Lichter), §9.1, §9.9 (Adapter `grimoire::adapters::sigil_render`) | #29 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.6, WP3.7), Sigil-Laufzeit (WP5.4 ff.) | nein |
 | 2026-09-17 | §6 (Tabellengrenzen in `bullets_rejected_invalid`; fester Pass-Graph; Marker- und Debug-Sprites werden gezeichnet) | #29 | K | — | nein |
+| 2026-09-17 | Formatdoku `sigil.md` §5 (Wertpfade), §12 (`SIG0025`, `SIG0026`), §13 neu (`sigilc`-Kommandos, Exit-Codes, Wurzelregel, Behavior-Manifest, JSON-Dokumente, kanonisches Layout) | #32 | A (gebündelte PO-Freigabe offen) | Sigil-Sprache (WP4.4, WP4.5), Sigil-Laufzeit (WP5.6), C#-Pipeline (WP9.2), Editor (WP10) | nein |
+| 2026-09-17 | §6 (`StageStats::gpu_time` über Timestamp-Queries), §9.7 (Profiler der Fassade: `AppBuilder::profiler`, `GamePlugin::on_profile`), §13 (Budgets, Scope-API, CSV/JSON-Export; Formatdoku `profiler-export.md`) | #33 | A (gebündelte PO-Freigabe offen) | Messung (WP6.4), Pipeline-Rust (WP8.4) | nein |
+| 2026-09-17 | §9.7, §13 (feste Scope-IDs 0–4 der Schleife, Präfixregel, Summierung gleichnamiger Zähler, Aufteilung gemischter paralleler Stufen als Schätzung; `FrameStats` bleibt eingefroren) | #33 | K | — | nein |
+| 2026-09-17 | §11.9 neu (Transformationen, Trigger, Ereignisse, Behavior-Aufruf), Formatdoku `sigil.md` §10.9 (Layout `Transforms`) | #34 | A (gebündelte PO-Freigabe offen) | Sigil-Sprache (WP4.5), Sigil-Laufzeit (WP5.4 ff.) | nein (neue Goldens `GOLDEN_CASCADE_HASH`, `GOLDEN_POOL_FINAL_HASH`, Fixture `transforms_unit_v1.bin`) |
+| 2026-09-17 | §11.1, §11.5, §11.6, §11.7 (Verweise; leere optionale Abschnitte nicht kanonisch; Lebensdauerprüfung nach der Bewegung) | #34 | K | — | nein |
+| 2026-09-17 | §6 (`bullet_silhouette::NAMES`, `bullet_palette::NAMES`) | #36 | A (PO-Entscheid 2026-09-17) | Render-B, Sigil-Sprache | nein |
+| 2026-09-17 | §9.9, §11.2, Formatdoku `sigil.md` §10.3, §10.10 neu, §11.3, §11.4, §12, §13.4 (gemeinsamer Visual-Katalog: Silhouetten- und Paletten-Index bedeuten die Katalogzeile statt der alphabetischen Stelle in der Unit; `SIG0027`; `FORMAT_VERSION` bleibt 1) | #36 | I (PO-Entscheid 2026-09-17: angenommen) | Sigil-Sprache, Sigil-Laufzeit, Render-B, Spiel (Units neu übersetzen) | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -1183,7 +1190,7 @@ impl WgpuRenderer {
   voraus. Umgesetzt ist nur die Tabelle des einzigen Raums, den der Pass zeichnet (`HOSTILE`); eigene Projektile laufen
   weiter über Sprite- und Mesh-Kanäle. Farbwerte und Formen sind vorläufig bis zum Look-Review (P-11). Die Tabellen
   werden vor der Content-Produktion erweitert (PO-Entscheid 2026-09-17; Umsetzung offen).
-- **Katalog-Namen** (*Stufe A, PO-Freigabe offen*; Umsetzung des PO-Entscheids 2026-09-17 zum gemeinsamen Katalog):
+- **Katalog-Namen** (*Stufe A, PO-Entscheid 2026-09-17: mergen wie gebaut*; Umsetzung des PO-Entscheids 2026-09-17 zum gemeinsamen Katalog):
   `bullet_silhouette::NAMES` und `bullet_palette::NAMES` nennen jede Tabellenzeile mit ihrem festen Namen aus dem
   Visual-Katalog von `docs/formats/sigil.md` §10.10. Die Tabellen sind genau die gezeichneten Zeilen dieses Katalogs,
   Zeile für Zeile und in derselben Reihenfolge; eine neue Silhouette oder Palette kommt als nächste Katalogzeile
@@ -2424,7 +2431,7 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
   (Fixture `tests/fixtures/bullet_showcase_unit_v1.bin`, Aktualität geprüft in
   `grimoire_sigilc/tests/unit_fixtures.rs`, §1): Interpolation, Abbildung, nicht abbildbare Kennungen, Hash-Neutralität,
   Zähler von `NullRenderer` und ein Offscreen-Bild über einer beleuchteten Bühne.
-- **Visual-Katalog** (*Stufe I, PO-Freigabe offen*; ersetzt die bisherige „Bekannte Lücke", sigil.md §11.4 Punkt 5):
+- **Visual-Katalog** (*Stufe I, PO-Entscheid 2026-09-17: angenommen, Formatversion bleibt 1*; ersetzt die bisherige „Bekannte Lücke", sigil.md §11.4 Punkt 5):
   Entschieden (PO, 2026-09-17): ein gemeinsamer Katalog für Silhouetten und Paletten mit festen Namen ersetzt die
   Nummerierung je Unit. `sigilc` schreibt für einen Namen seine Zeile im Visual-Katalog (`docs/formats/sigil.md`
   §10.10), in jeder Unit dieselbe Zahl; ein Name außerhalb des Katalogs übersetzt nicht (`SIG0027`). Die gezeichneten
@@ -2432,6 +2439,79 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
   gleichnamigen Tabellenzeile. Reservierte Katalogzeilen übersetzen, liegen aber außerhalb der Tabellen und zählen
   in `unmapped_visual`. `map_visual` bleibt unverändert. Vorher vergab `sigilc` die Indizes je Unit in alphabetischer
   Reihenfolge der benutzten Namen.
+
+### 9.10 Asset-Haken für Plugins und Offscreen-Lauf (Ergänzung P1)
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung des PO-Entscheids vom 2026-09-17
+(Plan 0002, „Fassaden-Haken für Assets“): Plugins melden Meshes und Texturen über die Fassade beim Renderer
+der Hauptschleife an, damit ein Spiel ohne eigene Schleife Figuren aus einem Pack laden kann und Profiler und
+Overlay (§9.7) mitbekommt. Der Entscheid legt fest, *dass* der Haken kommt; Typen, Name und Zeitpunkt unten
+sind der Vorschlag dieses Pakets. Die Registrierung bleibt renderer-spezifisch (§6, Klarstellung
+2026-09-16): `grimoire_render::Renderer` ändert sich nicht, der Haken liegt in der Fassade.
+
+```rust
+pub trait GamePlugin {                                   // zusätzlich, bereitgestellte Methode (bricht keine Plugins)
+    fn register_assets(&mut self, assets: &mut dyn RenderAssets) -> Result<(), PluginError> { Ok(()) }
+}
+pub type PluginError = Box<dyn std::error::Error + Send + Sync + 'static>;
+pub trait RenderAssets {                                 // objektsicher
+    fn register_mesh(&mut self, mesh: MeshData) -> Result<MeshHandle, MeshError>;
+    fn register_texture(&mut self, texture: TextureData) -> Result<TextureHandle, TextureError>;
+}
+impl RenderAssets for WgpuRenderer;                      // leitet an register_mesh/register_texture weiter
+pub struct HeadlessRenderAssets;                         // Default, Clone, Eq, Debug; new(), meshes_registered() -> u32,
+                                                         // textures_registered() -> u32; impl RenderAssets ohne GPU
+// GrimoireError zusätzlich (bereits #[non_exhaustive]):
+//     Assets { plugin: String, #[source] source: PluginError }
+// AppBuilder zusätzlich:
+//     stage_renderer_config(StageRendererConfig) -> Self   (Default StageRendererConfig::default(); renderer_config setzt nur `base`)
+//     run_offscreen(self, run: OffscreenRun, events: &mut dyn FnMut(u64, &mut Vec<PlatformEvent>),
+//                   capture: &mut dyn FnMut(u64, &[u8])) -> Result<LoopReport, GrimoireError>
+#[non_exhaustive]
+pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub frame_delta: Duration,
+                          pub capture_every: u64 }       // Copy, Eq, Debug; new(width, height, frames, frame_delta), capture_every = 0
+// grimoire::adapters::figure_assets zusätzlich:
+//     load_figure_into(&mut AssetStore, &mut dyn RenderAssets, figure_name: &str) -> Result<LoadedFigure, FigureLoadError>
+//     (load_figure bleibt unverändert und ruft load_figure_into mit dem Renderer auf)
+```
+
+- **Zeitpunkt (ergänzt `init` in §9 und §9.3):** Renderer erzeugen → `Simulation::new` und Executor → `build` je
+  Plugin → **`register_assets` je Plugin in Registrierungsreihenfolge, genau einmal je Lauf** → `window_created`
+  je Plugin (nur mit Fenster) → gegebenenfalls Debug-Link (§9.7) → erster Frame. Nach `build`, weil ein Plugin
+  dort seine Konfiguration festlegt; vor `window_created` und dem ersten Frame, damit `extract_stage` die Handles
+  schon im ersten Frame hat.
+- **Ziel je Lauf:** `run` und `run_offscreen` übergeben den `WgpuRenderer` der Schleife, `run_headless_frames*`
+  ein `HeadlessRenderAssets`. `run_headless` hat keinen Renderer und ruft den Haken nie auf; ein Plugin muss ohne
+  ihn auskommen (etwa mit Platzhalter-Handles), wie es heute ohne `extract` auskommt.
+- **Handles:** jede Implementierung vergibt sie je Art in Aufrufreihenfolge ab 0, über alle Plugins eines Laufs
+  fortlaufend. `HeadlessRenderAssets` prüft wie `WgpuRenderer` (`MeshData::validate`, `TextureData::validate`)
+  und vergibt dieselben Handles, lädt aber nichts hoch; eine abgelehnte Eingabe verbraucht kein Handle. Handles
+  sind Präsentationszustand: Das Plugin hält sie selbst, sie erreichen die Simulation nie, kein Hash hängt von
+  ihnen ab (Test). `NullRenderer` bleibt ohne Registry (§6); seine Zähler ändern sich nicht.
+- **Fehler:** Liefert ein Plugin `Err`, protokolliert die Fassade den Fehler und ruft weder weitere
+  `register_assets` noch `window_created` auf. `init` gilt als gelungen, damit jedes gebaute Plugin `shutdown`
+  erhält. Es läuft kein Frame, und der Lauf endet mit `GrimoireError::Assets { plugin, source }`, wobei `plugin`
+  der `name()` des Plugins ist. Das unterscheidet sich bewusst vom fehlgeschlagenen Renderer-Aufbau, bei dem
+  weder `build` noch `shutdown` laufen (§9): Hier sind die Plugins schon gebaut.
+- **`stage_renderer_config`:** `run` erzeugt den Fensterrenderer über `WgpuRenderer::new_for_window_staged`,
+  `run_offscreen` über `new_offscreen_staged`, beide mit dieser Konfiguration. Mit der Vorgabe ist das
+  gleichwertig zu `new_for_window(window, renderer_config)`; ein Spiel wählt so Lichtbudget und Multisampling
+  (§6), ohne eine eigene Schleife zu bauen.
+- **`run_offscreen`:** dieselbe Hauptschleife wie `run`, über einen Offscreen-`WgpuRenderer` der Größe
+  `width` × `height` und die manuelle Uhr (`frame_delta` vor jedem Frame), ohne Fenster. Skriptierte Events wie
+  `run_headless_frames_with_events`; die Zielabtastung (§9.3) sieht die Offscreen-Größe als Viewport. Nach jedem
+  abgeschlossenen Frame `n` mit `n % capture_every == 0` (nie bei 0) erhält `capture(n, rgba)` das Bild als
+  sRGB-RGBA8, oberste Zeile zuerst (`WgpuRenderer::read_offscreen_rgba`). Ein Rücklesefehler beendet den Lauf mit
+  `GrimoireError::Render`. `LoopReport::hashes` folgt der Headless-Semantik (§9). Zweck: Tests und Aufnahmen
+  eines Spiels über genau den Weg, den der Desktop-Lauf zeichnet, statt über eine nachgebaute Schleife.
+- **Tests:** `crates/grimoire/tests/asset_hook.rs` – Reihenfolge der Haken und fortlaufende Handles über zwei
+  Plugins, kein Aufruf in `run_headless`, Fehlerpfad (keine weiteren Haken, kein Frame, `shutdown` für alle),
+  ungültiges Mesh als Plugin-Fehler, identische Hashes mit und ohne registrierende Plugins, `HeadlessRenderAssets`
+  direkt, und ein Offscreen-Test: Ein Plugin registriert ein Mesh über den Haken, `run_offscreen` rendert es
+  (drei Frames, jeder aufgenommen); dieselbe Instanz ohne Registrierung zeichnet nichts (Aufnahme jedes zweiten
+  Frames). Der Offscreen-Test nimmt wie `grimoire_render/tests/offscreen.rs` eine prozessweite GPU-Sperre.
+  `tests/figure_pack.rs` lädt die Test-Figur über `load_figure_into` aus einem Plugin in
+  `run_headless_frames`.
 
 ## 10. `grimoire_exec`
 
@@ -2568,7 +2648,7 @@ pub struct BulletType {                          // Copy, Debug, PartialEq, Stab
 }
 pub struct BulletVisual { pub silhouette: u16, pub palette: u16, pub palette_space: u8, pub glow: u8 }
                                                  // Copy, Eq, Hash, Debug, StableHash; neutrale Kennungen, Abbildung in der Fassade (§6)
-                                                 // silhouette/palette: Zeilen des Visual-Katalogs, sigil.md §10.10 (Stufe I, PO-Freigabe offen)
+                                                 // silhouette/palette: Zeilen des Visual-Katalogs, sigil.md §10.10 (Stufe I, PO-Entscheid 2026-09-17)
 pub struct BulletFlags(pub u8);                  // Copy, Eq, Hash, Debug, StableHash; SMASHABLE = 1, REFLECTABLE = 2,
                                                  // ENV_ACTIVE = 4, GRAZEABLE = 8; übrige Bits 0; contains(BulletFlags) -> bool
 pub struct SigilLibrary;                         // Debug, Send + Sync; unveränderlich
