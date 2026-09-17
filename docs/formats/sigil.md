@@ -773,8 +773,9 @@ reasonable answer:
    ([§10.7](#107-behaviorrefs-kind-6)); since Plan 0002 WP5.2 the per-bullet association is the
    script record of [§10.9](#109-transforms-kind-4) (without parameters: the source syntax has none
    yet). **WP4.3:** the command line takes the name→id table as a behaviour manifest
-   (`--behaviors <file>`, [§13.3](#133-behaviour-manifest---behaviors-file)); which code writes the
-   game's manifest is still the Product Owner's decision.
+   (`--behaviors <file>`, [§13.3](#133-behaviour-manifest---behaviors-file)). Decided (PO,
+   2026-09-17): the game generates its manifest `content/behaviors.json` from its behaviour
+   registration, and a test keeps it current (implementation open).
 5. **`silhouette`/`palette` indices were per-unit, not a shared cross-unit catalog.** Decided (PO,
    2026-09-17): a shared catalogue with stable names replaces the per-unit numbering. Implemented
    as the visual catalogue ([§10.10](#1010-visual-catalogue)).
@@ -810,7 +811,7 @@ binary `sigilc` only forwards its arguments and standard streams to `cli::run`. 
 (project ADR-0010, Plan 0002 WP9.2), the Sigil editor (WP10) and agents drive Sigil through this
 interface instead of parsing Sigil themselves.
 
-*Stufe A, PO-Freigabe offen:* the commands and exit codes ([§13.1](#131-commands-and-exit-codes)),
+*Stufe A, PO-Freigabe 2026-09-17 (bundled approval):* the commands and exit codes ([§13.1](#131-commands-and-exit-codes)),
 the content-root rule ([§13.2](#132-content-root-and-canonical-content-path)), the behaviour
 manifest ([§13.3](#133-behaviour-manifest---behaviors-file)), the three JSON documents
 ([§13.4](#134-check---json-and-build---json)–[§13.6](#136-set)), the value paths
@@ -818,6 +819,12 @@ manifest ([§13.3](#133-behaviour-manifest---behaviors-file)), the three JSON do
 diagnostic codes `SIG0025`/`SIG0026` ([§12](#12-schema-diagnostic-code-table-sig0012)) are new,
 additive surface. Nothing that existed before changes: the §6.2 diagnostics document and every
 existing sidecar stay byte-for-byte as they were.
+
+Decided with the approval (PO, 2026-09-17): in P1, `set` replaces only existing single-line values and
+inserts no fields (insertion follows with Plan 0002 WP10.3); `set` checks the syntax only, not the
+schema, and the editor runs `check --json` afterwards; the §6.2 diagnostics document stays without a
+`schema` key, because the corpus sidecars are goldens; the canonical layout rules of
+[§13.7](#137-fmt-and-the-canonical-layout) stand as written.
 
 ### 13.1 Commands and exit codes
 
@@ -1049,10 +1056,15 @@ the canonical layout.
 
 ### 13.8 `simulate --json`
 
-Plan 0002 WP5.6, implemented in `grimoire_sigilc::simulate`. *Stufe A, PO-Freigabe offen:* the
-command, the `grimoire.sigilc.simulate` and `grimoire.sigilc.target_path` documents and their
-limits are new, additive surface. It is the preview source of the Sigil editor (WP10.4) and of
-agents (project ADR-0010, building block 5): the positions come from the runtime interpreter
+Plan 0002 WP5.6, implemented in `grimoire_sigilc::simulate`. *Stufe A, PO-Freigabe 2026-09-17
+(bundled approval):* the command, the `grimoire.sigilc.simulate` and `grimoire.sigilc.target_path`
+documents and their limits are new, additive surface. Decided with the approval: behaviours run as
+stand-ins; the output stays compact rather than indented; primary emitters always start at the
+origin, and an option to place them follows only when the editor needs it; the platform identity
+gate ([§15](#15-platform-identity-of-compiled-units)) is not extended, because the golden documents
+already run on three platforms; `simulate --json` moves into the schema codegen (project ADR-0011)
+before its first C# consumer (implementation open). It is the preview source of the Sigil editor
+(WP10.4) and of agents (project ADR-0010, building block 5): the positions come from the runtime interpreter
 itself, `grimoire_sigil::install` on a `grimoire_sim::Simulation`, not from a second implementation.
 
 **Run.** The file is compiled exactly like `check` (content root, behaviour manifest,
