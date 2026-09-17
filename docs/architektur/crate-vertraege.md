@@ -387,17 +387,24 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-16 | §6 (echte Tangenten: `MeshVertex::tangent`, 72 statt 56 Byte; `decode_mesh` liest `FNP_MESH` Fassung 1 und 2) | #28 | I (PO-Freigabe 2026-09-17, gebündelt; Einstufung berichtigt: geändertes `repr(C)`-Layout) | Render-A/B (Paket „Texturqualität") | nein |
 | 2026-09-17 | §6 (Bullet-Pass: `bullet_silhouette`, `bullet_palette`, `WgpuRenderer::last_stage_pass_order`, abgeleitete Geschoss-Lichter), §9.1, §9.9 (Adapter `grimoire::adapters::sigil_render`) | #29 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.6, WP3.7), Sigil-Laufzeit (WP5.4 ff.) | nein |
 | 2026-09-17 | §6 (Tabellengrenzen in `bullets_rejected_invalid`; fester Pass-Graph; Marker- und Debug-Sprites werden gezeichnet) | #29 | K | — | nein |
-| 2026-09-17 | Formatdoku `sigil.md` §5 (Wertpfade), §12 (`SIG0025`, `SIG0026`), §13 neu (`sigilc`-Kommandos, Exit-Codes, Wurzelregel, Behavior-Manifest, JSON-Dokumente, kanonisches Layout) | #32 | A (gebündelte PO-Freigabe offen) | Sigil-Sprache (WP4.4, WP4.5), Sigil-Laufzeit (WP5.6), C#-Pipeline (WP9.2), Editor (WP10) | nein |
-| 2026-09-17 | §6 (`StageStats::gpu_time` über Timestamp-Queries), §9.7 (Profiler der Fassade: `AppBuilder::profiler`, `GamePlugin::on_profile`), §13 (Budgets, Scope-API, CSV/JSON-Export; Formatdoku `profiler-export.md`) | #33 | A (gebündelte PO-Freigabe offen) | Messung (WP6.4), Pipeline-Rust (WP8.4) | nein |
+| 2026-09-17 | Formatdoku `sigil.md` §5 (Wertpfade), §12 (`SIG0025`, `SIG0026`), §13 neu (`sigilc`-Kommandos, Exit-Codes, Wurzelregel, Behavior-Manifest, JSON-Dokumente, kanonisches Layout) | #32 | A (PO-Freigabe 2026-09-17, gebündelt) | Sigil-Sprache (WP4.4, WP4.5), Sigil-Laufzeit (WP5.6), C#-Pipeline (WP9.2), Editor (WP10) | nein |
+| 2026-09-17 | §6 (`StageStats::gpu_time` über Timestamp-Queries), §9.7 (Profiler der Fassade: `AppBuilder::profiler`, `GamePlugin::on_profile`), §13 (Budgets, Scope-API, CSV/JSON-Export; Formatdoku `profiler-export.md`) | #33 | A (PO-Freigabe 2026-09-17, gebündelt) | Messung (WP6.4), Pipeline-Rust (WP8.4) | nein |
 | 2026-09-17 | §9.7, §13 (feste Scope-IDs 0–4 der Schleife, Präfixregel, Summierung gleichnamiger Zähler, Aufteilung gemischter paralleler Stufen als Schätzung; `FrameStats` bleibt eingefroren) | #33 | K | — | nein |
-| 2026-09-17 | §11.9 neu (Transformationen, Trigger, Ereignisse, Behavior-Aufruf), Formatdoku `sigil.md` §10.9 (Layout `Transforms`) | #34 | A (gebündelte PO-Freigabe offen) | Sigil-Sprache (WP4.5), Sigil-Laufzeit (WP5.4 ff.) | nein (neue Goldens `GOLDEN_CASCADE_HASH`, `GOLDEN_POOL_FINAL_HASH`, Fixture `transforms_unit_v1.bin`) |
+| 2026-09-17 | §11.9 neu (Transformationen, Trigger, Ereignisse, Behavior-Aufruf), Formatdoku `sigil.md` §10.9 (Layout `Transforms`) | #34 | A (PO-Freigabe 2026-09-17, gebündelt) | Sigil-Sprache (WP4.5), Sigil-Laufzeit (WP5.4 ff.) | nein (neue Goldens `GOLDEN_CASCADE_HASH`, `GOLDEN_POOL_FINAL_HASH`, Fixture `transforms_unit_v1.bin`) |
 | 2026-09-17 | §11.1, §11.5, §11.6, §11.7 (Verweise; leere optionale Abschnitte nicht kanonisch; Lebensdauerprüfung nach der Bewegung) | #34 | K | — | nein |
 | 2026-09-17 | §6 (`bullet_silhouette::NAMES`, `bullet_palette::NAMES`) | #36 | A (PO-Entscheid 2026-09-17) | Render-B, Sigil-Sprache | nein |
 | 2026-09-17 | §9.9, §11.2, Formatdoku `sigil.md` §10.3, §10.10 neu, §11.3, §11.4, §12, §13.4 (gemeinsamer Visual-Katalog: Silhouetten- und Paletten-Index bedeuten die Katalogzeile statt der alphabetischen Stelle in der Unit; `SIG0027`; `FORMAT_VERSION` bleibt 1) | #36 | I (PO-Entscheid 2026-09-17: angenommen) | Sigil-Sprache, Sigil-Laufzeit, Render-B, Spiel (Units neu übersetzen) | nein |
-| 2026-09-17 | §9.10 neu (Asset-Haken `GamePlugin::register_assets` mit `RenderAssets`, `HeadlessRenderAssets`, `GrimoireError::Assets`, `figure_assets::load_figure_into`, `AppBuilder::stage_renderer_config`, `AppBuilder::run_offscreen` mit `OffscreenRun`) | #37 | A (gebündelte PO-Freigabe offen) | Spiel (Prototyp zurück auf `App::run`), Messung (WP6.4) | nein |
+| 2026-09-17 | §9.10 neu (Asset-Haken `GamePlugin::register_assets` mit `RenderAssets`, `HeadlessRenderAssets`, `GrimoireError::Assets`, `figure_assets::load_figure_into`, `AppBuilder::stage_renderer_config`, `AppBuilder::run_offscreen` mit `OffscreenRun`) | #37 | A (PO-Freigabe 2026-09-17, gebündelt) | Spiel (Prototyp zurück auf `App::run`), Messung (WP6.4) | nein |
 | 2026-09-17 | §11.6 (Bedeutung von „ohne Allokation“ für Spawn und Despawn, Nachweis per zählendem Allokator, Messort des Budgets) | #39 | K | — | nein |
 | 2026-09-17 | Formatdoku `sigil.md` §14 neu (Abdeckungstabelle der zwölf Referenzmuster; nur Testdaten) | #40 | K | — | nein |
-| 2026-09-17 | §9.7 (Stats-Overlay: `overlay_key` mit Vorgabe F3, Zeilen je Profil-Scope mit 30-Bild-Mittel und Budgetbalken, prozeduraler 5×7-Glyphenatlas über den Sprite-Pass, Testszene `overlay`) | #41 | A (gebündelte PO-Freigabe offen) | Spiel (Prototyp), Messung (WP3.6) | nein (neue Windows-Referenz `overlay.png`, keine Erneuerung) |
+| 2026-09-17 | §9.7 (Stats-Overlay: `overlay_key` mit Vorgabe F3, Zeilen je Profil-Scope mit 30-Bild-Mittel und Budgetbalken, prozeduraler 5×7-Glyphenatlas über den Sprite-Pass, Testszene `overlay`) | #41 | A (PO-Freigabe 2026-09-17, gebündelt) | Spiel (Prototyp), Messung (WP3.6) | nein (neue Windows-Referenz `overlay.png`, keine Erneuerung) |
+| 2026-09-17 | Formatdoku `sigil.md` §15 neu (Plattform-Identitäts-Gate der Units: was je Runner übersetzt, was byteweise verglichen wird und wo es läuft), Verweise aus der Einleitung und §14 | #42 | K | — | nein |
+| 2026-09-17 | §11.8 (Umsetzung WP5.5: Prüfreihenfolge, „ohne Ereignisse“ für `events()` und Pool-Hash, Neustart in Query-Reihenfolge, Ressourcen-Slot von `SigilContent`, Neuaufbau des Laufzeit-Caches, Epochenvergleich vor dem Restore) | #43 | K | — | nein |
+| 2026-09-17 | §6 (Spieler-Marker unter `Camera25D` als kamerazugewandtes Billboard auf der Bodenebene; Verhaltensänderung ohne Signatur- oder Layoutänderung) | #45 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.7), Fassade (Spieler-Proxy hinter `fixtures`) | nein (alle bestehenden Referenzbilder bitgleich) |
+| 2026-09-17 | §6 (Marker-Hinweis im Bullet-Pass auf die Umsetzung verwiesen; Render-Testszenen `lights_256` und `bullets_on_top`; Messhaken `CpuFramePreparation` kein Vertragsbestandteil), §9.7 (Overlay-Referenz auch für Linux) | #45 | K | — | nein (neue Windows-Referenzen `lights_256` und `bullets_on_top`, Linux-Referenzen aller Szenen aus dem CI-Artefakt übernommen, keine Erneuerung) |
+| 2026-09-17 | Formatdoku `sigil.md` §13.8 neu (`sigilc simulate --json`, Dokumente `grimoire.sigilc.simulate` und `grimoire.sigilc.target_path` mit Grenzen), §13.1 (Kommandozeile `simulate`, Exit-Code 2 auch für einen ungültigen Zielpfad) | #46 | A (PO-Freigabe 2026-09-17, gebündelt) | Editor (WP10.4), C#-Pipeline (WP9.1) | nein (neue goldene `simulate`-Dokumente) |
+| 2026-09-17 | §11.7 (Referenz-Pattern-Goldens vor der Festlegung von `QUERY_BLOCK_SIZE` eingefroren, weil unabhängig von der Blockgröße) | #48 | A (PO-Freigabe 2026-09-17, gebündelt) | Sigil-Laufzeit, Messung (P1-Bench zu `QUERY_BLOCK_SIZE`) | nein (neue Goldens der zwölf Referenz-Patterns in `reference_goldens.rs`, neues Unit-Fixture `sigil_curtain_unit_v1.bin`) |
+| 2026-09-17 | Formatdoku `sigil.md` §14.1 neu (goldene Hashes der Referenz-Patterns: Szenario, Blockgrößen-Unabhängigkeit, Erneuerungsregel, Schaufenster `sigil_curtain`) | #48 | K | — | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -1247,7 +1254,7 @@ impl WgpuRenderer {
 
 **GPU-Zeit über Timestamp-Queries (Ergänzung P1, Plan 0002 WP6.3)**
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Additiv: ein neues Feld in `StageStats` (bereits
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe).* Additiv: ein neues Feld in `StageStats` (bereits
 `#[non_exhaustive]`), keine neue Pflichtmethode, kein geändertes `repr(C)`-Layout, kein Referenzbild ändert sich.
 
 ```rust
@@ -1277,7 +1284,8 @@ pub gpu_time: Option<Duration>,   // Summe der Pass-Dauern eines kürzlich gezei
 
 **Spieler-Marker auf der Bodenebene (Ergänzung P1, Plan 0002 WP3.6)**
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung des PO-Entscheids vom 2026-09-17 („ein
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+Einstufung als Stufe A.* Umsetzung des PO-Entscheids vom 2026-09-17 („ein
 Folge-Vertrags-PR projiziert ihn wie die Geschosse auf die Bodenebene“). Keine Signatur und kein `repr(C)`-Layout
 ändert sich; geändert ist, wo ein Frame mit `camera_25d` seine Marker zeichnet. Eingestuft als A und nicht als I,
 weil die SemVer-Politik geänderte Bilder nicht als inkompatibel nennt und kein Referenzbild betroffen ist; die
@@ -2355,9 +2363,11 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 
 **Profiler-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP6.3)**
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe). Die mit „Klarstellung“ markierten Punkte präzisieren den
-freigegebenen Text oben und sind Stufe K.* `AppBuilder::profiler(bool)` und `GamePlugin::on_profile` (§9.2) sind
-wie festgelegt umgesetzt; `overlay_key` und das Zeichnen des Overlays folgen mit WP6.4.
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich des
+gekennzeichneten GPU-Schätzwerts ohne Timestamp-Queries, der Aufteilung gemischter paralleler Stufen nach Systemzahl
+als Schätzwert und der Standardbudgets in `DEFAULT_BUDGETS` (Abgleich mit den Trenddaten in Plan 0002 WP6.7). Die
+mit „Klarstellung“ markierten Punkte präzisieren den freigegebenen Text oben und sind Stufe K.*
+`AppBuilder::profiler(bool)` und `GamePlugin::on_profile` (§9.2) sind wie festgelegt umgesetzt; `overlay_key` und das Zeichnen des Overlays folgen mit WP6.4.
 
 ```rust
 // grimoire::adapters::debug (§9.1, Zeile „debug“)
@@ -2420,7 +2430,9 @@ pub fn stats_frame(stats: &FrameStats, content: Option<ContentEpoch>) -> StatsFr
 
 **Stats-Overlay (Ergänzung P1, Plan 0002 WP6.4)**
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Setzt „Details liefert WP6.4“ oben um;
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+Glyphen als Quads über den Sprite-Pass statt einer Textur, der Rotfärbung nach dem Mittel über 30 Frames und des
+Maßstabs 1 je 270 Pixel Höhe.* Setzt „Details liefert WP6.4“ oben um;
 `AppBuilder::overlay_key` ist wie in §9.2 festgelegt umgesetzt (Vorgabe `Some(KeyCode::F3)`).
 
 ```rust
@@ -2534,12 +2546,15 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
 
 ### 9.10 Asset-Haken für Plugins und Offscreen-Lauf (Ergänzung P1)
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung des PO-Entscheids vom 2026-09-17
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich des
+Aufrufs nach `build`, der Anmeldung genau einmal je Lauf (so bis zu Stagewechseln), des Fehlerwegs (ein
+Registrierungsfehler beendet den Lauf, jedes gebaute Plugin erhält `shutdown`) und `run_offscreen` im selben
+Paket.* Umsetzung des PO-Entscheids vom 2026-09-17
 (Plan 0002, „Fassaden-Haken für Assets“): Plugins melden Meshes und Texturen über die Fassade beim Renderer
 der Hauptschleife an, damit ein Spiel ohne eigene Schleife Figuren aus einem Pack laden kann und Profiler und
 Overlay (§9.7) mitbekommt. Der Entscheid legt fest, *dass* der Haken kommt; Typen, Name und Zeitpunkt unten
-sind der Vorschlag dieses Pakets. Die Registrierung bleibt renderer-spezifisch (§6, Klarstellung
-2026-09-16): `grimoire_render::Renderer` ändert sich nicht, der Haken liegt in der Fassade.
+kamen als Vorschlag dieses Pakets und sind mit der gebündelten Freigabe vom 2026-09-17 angenommen. Die Registrierung
+bleibt renderer-spezifisch (§6, Klarstellung 2026-09-16): `grimoire_render::Renderer` ändert sich nicht, der Haken liegt in der Fassade.
 
 ```rust
 pub trait GamePlugin {                                   // zusätzlich, bereitgestellte Methode (bricht keine Plugins)
@@ -2919,7 +2934,7 @@ pub struct BehaviorRegistry;                     // Debug, Send + Sync; version(
   (`u32`) und den Namen (`str`), nie über Funktionsadressen. Er geht in den Manifest-Hash (§11.8) und damit in
   `state_hash` und den Replay-v2-Header ein. Zwei Registries mit denselben Einträgen in anderer
   `register`-Reihenfolge ergeben denselben Fingerprint und dieselben Hashes (Test WP5.2).
-- **Aufruf** (WP5.2, Stufe A, PO-Freigabe offen): Welcher Bullet-Typ welches Behavior mit welchen `params` aufruft,
+- **Aufruf** (WP5.2, Stufe A, PO-Freigabe 2026-09-17, gebündelt): Welcher Bullet-Typ welches Behavior mit welchen `params` aufruft,
   steht im Abschnitt `Transforms` der Unit; `sigil.update` ruft es je lebendem Bullet dieses Typs einmal je Tick
   auf (Reihenfolge und Zustand §11.9).
 - **Behavior-Versionierung** (additiv, PO-Entscheid V-20, 2026-09-15; schließt die offene Frage aus PR #2): Der
@@ -3015,7 +3030,9 @@ pub mod stream {                                 // Einträge der Strom-Tabelle 
   Streuung anderer Emitter. Ein gemeinsam fortgeschalteter Generator ist verboten (§3). Ändert sich
   `QUERY_BLOCK_SIZE`, werden die Pattern-Goldens erneuert (§7); Referenz-Pattern-Goldens (WP5.7) werden erst nach der
   Festlegung durch den P1-Bench eingefroren.
-  *Umsetzung (WP5.7), Stufe A, PO-Freigabe offen:* Die Goldens der zwölf Referenz-Patterns
+  *Umsetzung (WP5.7), Stufe A, PO-Freigabe 2026-09-17 (gebündelt), einschließlich des frühen Einfrierens; die
+  Referenz-Goldens laufen nicht zusätzlich im Hash-Gate mit 1, 2 und N Threads, weil das Pool-Szenario unten die
+  Thread-Unabhängigkeit des Interpreters abdeckt:* Die Goldens der zwölf Referenz-Patterns
   (`grimoire_sigilc/tests/reference_goldens.rs`, Formatdoku `sigil.md` §14.1) sind vor dieser Festlegung eingefroren,
   weil sie nicht von `QUERY_BLOCK_SIZE` abhängen: Kein Referenz-Pattern zieht Blockzufall (die einzige Streuung sitzt
   in einem primären Emitter und zieht aus `stream::EMIT`), und Despawns und Sub-Spawns werden bei jeder Blockgröße in
@@ -3130,7 +3147,13 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
 
 ### 11.9 Transformationen, Trigger, Ereignisse und Behavior-Aufruf (Ergänzung WP5.2)
 
-*Entwurf WP5.2 — Stufe A, PO-Freigabe offen.*
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich: In P1
+feuert `become_emitter` genau eine Salve; `change_type` setzt Alter und Weglänge zurück; Behaviors, `sine_offset` und
+Weglänge teilen sich die vier Zustandsplätze (reicht der Platz nicht, wird in P2 verbreitert); Ereignis-IDs bleiben
+32-Bit-Namens-Hashes, eine Kollisionsprüfung im Compiler folgt später; ein benannter `seed` wirkt nicht in
+`burst`-Salven. Die Quelltext-Syntax für Behavior-Parameter wird mit dem ersten Spiel-Behavior festgelegt, und mit ihm
+folgt die CI-Prüfung mit goldenen Hashes je registriertem Behavior (§11.5). Kollisionsprüfung, Parameter-Syntax und
+CI-Prüfung: Umsetzung offen.*
 
 ```rust
 pub struct EventId(pub u32);                     // Copy, Eq, Ord, Hash, Debug, StableHash; from_name(&str) -> EventId
@@ -3654,7 +3677,8 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
 
 **Profiler: Budgets, Scope-API und Export (Ergänzung P1, Plan 0002 WP6.3)**
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe); die mit „Klarstellung“ markierten Punkte sind Stufe K.*
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe); die mit „Klarstellung“
+markierten Punkte sind Stufe K.*
 Additiv zum Profiler-Datenmodell oben; das Byte-Layout von `Stats` ändert sich nicht (`budget_ns` und `estimate`
 stehen schon im Katalog), `PROTOCOL_VERSION` bleibt 1.
 
