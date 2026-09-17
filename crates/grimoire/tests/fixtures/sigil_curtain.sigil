@@ -1,0 +1,66 @@
+sigil 1
+// sigil_curtain: the Sigil unit of the M2 showcase (plan 0002 WP5.7), played by the example
+// crates/grimoire/examples/sigil_curtain and rendered into the showcase GIF by
+// crates/grimoire/tests/sigil_curtain_showcase.rs. Compiled by sigilc into
+// sigil_curtain_unit_v1.bin next to this file; grimoire_sigilc's tests/unit_fixtures.rs checks the
+// compiled bytes stay current.
+// The emitter curtain and its bullet grain are the reference pattern 02-spiral-curtain
+// (crates/grimoire_sigilc/tests/reference/) unchanged. Beneath it runs a slower orb spiral in the
+// second drawn palette that turns the other way, so the drifting safe lanes are easy to see.
+
+meta {
+  name = "Sigil Curtain"
+  difficulty = [normal, curtain]
+  density = 520
+}
+
+// Rice grain: long along its flight, so each arm reads as a stream.
+bullet grain {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 1.0
+  radius = 0.14u
+  damage = 1
+  flags = [grazeable]
+}
+
+// Orb of the counter spiral: larger and slower than the grain.
+bullet orb {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.8
+  radius = 0.22u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter curtain {
+  bullet = grain
+  repeat = forever
+  interval = 3t
+  speed = 0.08u/t
+  block spiral {
+    arms = 5
+    step = 7deg // added every volley
+    start = 90deg
+  }
+  modifier rotate {
+    rate = 0.2deg/t // the whole figure drifts
+  }
+}
+
+emitter counter {
+  bullet = orb
+  delay = 12t
+  repeat = forever
+  interval = 8t
+  speed = 0.05u/t
+  block spiral {
+    arms = 3
+    step = -11deg // turns against the curtain
+    start = 270deg
+  }
+  modifier rotate {
+    rate = -0.3deg/t
+  }
+}
