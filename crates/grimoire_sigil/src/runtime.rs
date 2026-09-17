@@ -210,11 +210,14 @@ pub(crate) struct UpdateContext<'a> {
     pub(crate) events: &'a [u32],
 }
 
-/// What one `sigil.update` block decided: despawns and sub-spawns, each in slot order.
+/// What one `sigil.update` block decided: despawns and sub-spawns, each in slot order, plus the
+/// block's scratch buffer for transform volleys. Owned by `sigil.update` and reused across ticks
+/// (WP5.4), so a steady tick allocates nothing here.
 #[derive(Debug, Default)]
 pub(crate) struct BlockOutcome {
     pub(crate) despawns: Vec<PendingDespawn>,
     pub(crate) spawns: Vec<PendingSpawn>,
+    shots: Vec<Shot>,
 }
 
 fn compile_program(program: &ProgramRecord) -> CompiledProgram {
@@ -251,14 +254,16 @@ fn compile_modifier(modifier: &ModifierDef) -> CompiledModifier {
 /// `previous_position = position`, `age += 1`, the resolved program's block motion continues at
 /// its spawn-computed `velocity` while the modifier stack runs on top, then the bullet type's
 /// behavior and transforms (module docs), then lifetime and bounds are checked. Dead slots are
-/// skipped. Returns every despawn and sub-spawn this block decided, in slot order, for
-/// `sigil.resolve` to apply.
+/// skipped. Writes every despawn and sub-spawn this block decided, in slot order, into `outcome`
+/// (cleared first) for `sigil.resolve` to apply.
 pub(crate) fn update_block(
     block: &mut PoolUpdateBlock<'_>,
     ctx: &UpdateContext<'_>,
-) -> BlockOutcome {
+    outcome: &mut BlockOutcome,
+) {
     let start = block.slots().start;
-    let mut outcome = BlockOutcome::default();
+    outcome.despawns.clear();
+    outcome.spawns.clear();
     // Contract §11.7: the block's only generator, advanced in slot order by behaviors and by the
     // `scatter` blocks of sub-spawn volleys. Deriving it draws nothing.
     let mut rng = derive_block_rng(ctx.seed, ctx.tick, stream::UPDATE, block.index() as u64);
@@ -297,14 +302,7 @@ pub(crate) fn update_block(
 
         let script_cause = match ctx.cache.script(unit_index, block.bullet_type[i]) {
             Some(script) => run_script(
-                block,
-                i,
-                sigil_unit,
-                unit_index,
-                script,
-                ctx,
-                &mut rng,
-                &mut outcome.spawns,
+                block, i, sigil_unit, unit_index, script, ctx, &mut rng, outcome,
             ),
             None => None,
         };
@@ -346,12 +344,12 @@ pub(crate) fn update_block(
             });
         }
     }
-    outcome
 }
 
 /// Runs slot `i`'s bullet-type script: the behavior first, then the transforms (module docs).
 /// Returns the despawn cause if the bullet ends this tick (`Behavior` or `Transform`); sub-spawns
-/// of a `burst`/`become_emitter` are appended to `spawns` in the order their shots are generated.
+/// of a `burst`/`become_emitter` are appended to `outcome.spawns` in the order their shots are
+/// generated.
 #[allow(clippy::too_many_arguments)]
 fn run_script(
     block: &mut PoolUpdateBlock<'_>,
@@ -361,8 +359,9 @@ fn run_script(
     script: &CompiledScript,
     ctx: &UpdateContext<'_>,
     rng: &mut SimRng,
-    spawns: &mut Vec<PendingSpawn>,
+    outcome: &mut BlockOutcome,
 ) -> Option<DespawnCause> {
+    let BlockOutcome { spawns, shots, .. } = outcome;
     if let Some((behavior, params)) = &script.behavior {
         let input = BehaviorInput {
             tick: ctx.tick,
@@ -428,7 +427,7 @@ fn run_script(
             }
             TransformKind::BURST => {
                 if let Some(program) = unit.programs().get(usize::from(transform.program)) {
-                    let shots = blocks::program_shots(
+                    blocks::program_shots_into(
                         program,
                         transform.speed,
                         block.angle[i],
@@ -436,10 +435,11 @@ fn run_script(
                         block.position[i],
                         0,
                         rng,
+                        shots,
                     );
                     push_spawns(
                         spawns,
-                        &shots,
+                        shots,
                         unit_index,
                         transform.target,
                         transform.program + 1,
@@ -457,8 +457,8 @@ fn run_script(
                     } else {
                         record.program + 1
                     };
-                    let shots = match resolve_program(unit, pool_program) {
-                        Some((program, _)) => blocks::program_shots(
+                    match resolve_program(unit, pool_program) {
+                        Some((program, _)) => blocks::program_shots_into(
                             program,
                             record.speed,
                             block.angle[i],
@@ -466,16 +466,20 @@ fn run_script(
                             origin,
                             0,
                             rng,
+                            shots,
                         ),
-                        None => vec![Shot {
-                            angle: block.angle[i],
-                            speed: record.speed,
-                            offset: Vec2::ZERO,
-                        }],
-                    };
+                        None => {
+                            shots.clear();
+                            shots.push(Shot {
+                                angle: block.angle[i],
+                                speed: record.speed,
+                                offset: Vec2::ZERO,
+                            });
+                        }
+                    }
                     push_spawns(
                         spawns,
-                        &shots,
+                        shots,
                         unit_index,
                         record.bullet_type,
                         pool_program,
@@ -905,7 +909,7 @@ mod tests {
         let block = &mut blocks[0];
         block.velocity[0] = Vec2::new(f32::NAN, 0.0);
         let cache = RuntimeCache::default();
-        let _ = update_block(
+        update_block(
             block,
             &test_context(
                 content.library(),
@@ -913,6 +917,7 @@ mod tests {
                 Vec2::new(-1.0e6, -1.0e6),
                 Vec2::new(1.0e6, 1.0e6),
             ),
+            &mut BlockOutcome::default(),
         );
     }
 
@@ -928,7 +933,8 @@ mod tests {
         .expect("spawn must succeed");
         let mut blocks = pool.update_blocks_mut();
         let cache = RuntimeCache::default();
-        let despawns = update_block(
+        let mut outcome = BlockOutcome::default();
+        update_block(
             &mut blocks[0],
             &test_context(
                 content.library(),
@@ -936,8 +942,9 @@ mod tests {
                 Vec2::new(-1.0e6, -1.0e6),
                 Vec2::new(1.0e6, 1.0e6),
             ),
-        )
-        .despawns;
+            &mut outcome,
+        );
+        let despawns = outcome.despawns;
         // `build_content_with_program`'s bullet type has `lifetime_ticks == 1`.
         assert_eq!(despawns.len(), 1);
         assert_eq!(despawns[0].cause, DespawnCause::Lifetime);
@@ -956,7 +963,8 @@ mod tests {
         .expect("spawn must succeed");
         let mut blocks = pool.update_blocks_mut();
         let cache = RuntimeCache::default();
-        let despawns = update_block(
+        let mut outcome = BlockOutcome::default();
+        update_block(
             &mut blocks[0],
             &test_context(
                 content.library(),
@@ -964,8 +972,9 @@ mod tests {
                 Vec2::new(-1.0, -1.0),
                 Vec2::new(1.0, 1.0),
             ),
-        )
-        .despawns;
+            &mut outcome,
+        );
+        let despawns = outcome.despawns;
         assert!(
             despawns
                 .iter()

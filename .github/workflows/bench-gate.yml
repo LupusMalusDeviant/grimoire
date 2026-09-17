@@ -1,6 +1,8 @@
 # Benchmark gate (Plan-0002 WP6.2, engine ADR-0010): builds and runs the two P0 baseline benches
-# (`ecs_query_10k`, `sim_step_600`) and, since Plan-0002 WP5.3, the Sigil -> Render extraction
-# bench (`sigil_extract_10k`) under Callgrind on every push to main and every pull request,
+# (`ecs_query_10k`, `sim_step_600`), since Plan-0002 WP5.3 the Sigil -> Render extraction bench
+# (`sigil_extract_10k`) and since WP5.4 the Sigil tick benches (`sigil_update_6k`,
+# `sigil_update_10k`, `sigil_churn_2k`; their wall-clock medians per tick are printed against the
+# 1.0 ms budget as a trend line) under Callgrind on every push to main and every pull request,
 # compares the Callgrind `Ir` result against the accepted basis on the `bench-trends` branch
 # (P-12), and — on push to main only — appends the measurement to that same branch. Wall-clock
 # samples are measured too, but only as a trend (engine ADR-0010: measured 95-129% job-to-job

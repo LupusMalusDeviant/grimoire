@@ -2887,6 +2887,14 @@ pub mod system_names {                           // &'static str, erscheinen in 
   einem Tick ohne Allokation (Kapazität bei `install` allokiert, Arbeitspuffer wiederverwendet). Im heißen Pfad
   keine `dmath`-Trigonometrie je Bullet und Tick: Richtungs- und Rotationskonstanten kommen aus der Unit (vom
   Compiler über `dmath` vorberechnet) oder werden einmalig beim Spawn berechnet (WP5.1, Mikro-Bench).
+  *Klarstellung (WP5.4):* „Ohne Allokation“ heißt: Spawns und Despawns allozieren nicht. Ein Tick mit 2.000 Spawns
+  und 2.000 Despawns alloziert genau so oft wie ein Tick mit gleich vielen Pool-Blöcken ohne Umsatz
+  (`grimoire_sigil/tests/allocations.rs`); die verbleibenden, von der Bullet-Anzahl unabhängigen Allokationen je
+  Tick gehören der Simulation (`Tick`, `SimSeed`, `TickInput`) und dem Blockläufer (`run_blocks`, §7.1). Die
+  Arbeitspuffer der Systeme sind kein Zustand (§11.8). Nachgewiesen wird das Budget mit den Benches
+  `sigil_update_10k` und `sigil_churn_2k` in `grimoire_bench` (Callgrind-`Ir` im Regressions-Gate, Wanduhr je Tick
+  mit sequentiellem Executor als Trend mit Budgetlinie; Millisekunden-Budgets sind nach Engine-ADR-0010 kein
+  hartes CI-Gate); `sigil_update_6k` ist der Mikro-Bench aus WP5.1.
 
 ### 11.7 Datenparallele Pool-Aktualisierung und Zufallsströme
 
