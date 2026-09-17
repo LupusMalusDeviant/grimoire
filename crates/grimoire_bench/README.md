@@ -43,18 +43,28 @@ clock or Valgrind.
 ## The gate in CI
 
 See `.github/workflows/bench-gate.yml` for the full pipeline (build, measure, compare, publish)
-and its header comment for the WARN MODE → HARD MODE switch. In short:
+and its header comment for the mode switch `BENCH_GATE_MODE`. The workflow runs on every pull
+request, every push to `main`, nightly and on demand. In short:
 
 1. **`gate`**: builds the release binaries, measures wall-clock samples (trend) and `Ir` (gate)
-   for both benches, fetches the accepted basis from the `bench-trends` branch (P-12), and prints
-   a verdict. Currently **WARN MODE**: a red verdict is annotated but never fails the job.
+   for every bench, fetches the accepted basis from the `bench-trends` branch (P-12), and
+   evaluates the verdict with `.github/scripts/evaluate-bench-gate.sh`. **HARD MODE since plan
+   0002 M2**: more than +10% `Ir` on any scenario with an accepted basis fails the job. A scenario
+   without an accepted basis gets no verdict until `bench-accept-baseline` accepts one.
 2. **`calibration-proof`**: calibrates the regression injector fresh on this runner (engine
    ADR-0010: the per-unit slope is bench- and host-dependent, never copied from a prior
-   measurement) and proves +5% never gates red while +15%/+20% always do — this task's own
-   negative proof, backed by a real Callgrind measurement, not just a unit test on synthetic
-   numbers.
-3. **`publish-trend`** (push to `main` only): appends this run's `BenchResult` lines to
-   `bench-trends:trend/results.jsonl`.
+   measurement) and proves +5% never gates red while +15%/+20% always do, backed by a real
+   Callgrind measurement, not just a unit test on synthetic numbers.
+3. **`regression-proof`**: the self-test job of plan 0002 WP6.2. It measures every bench without
+   injection (basis and repeat) and with `GRIMOIRE_BENCH_INJECT_REGRESSION=1` (a calibrated +5% and
+   +15% on `ecs_query_10k` and `sim_step_600`, see `scripts/measure_ir.sh`), then runs the `gate`
+   job's evaluation script in HARD MODE (`.github/scripts/prove-bench-gate.sh`). It is green only if
+   +15% fails that evaluation with exactly the two injected scenarios red, while +5% and the repeat
+   pass.
+4. **`publish-trend`** (push to `main` only): appends this run's `BenchResult` lines to
+   `bench-trends:trend/results.jsonl` whenever the measurement is valid, including a red verdict.
 
 The accepted basis (`bench-trends:accepted-basis.jsonl`) changes only through the
-`bench-accept-baseline` workflow (`workflow_dispatch`), never automatically from a push.
+`bench-accept-baseline` workflow (`workflow_dispatch`), never automatically from a push. A
+regression that is merged on purpose turns the `gate` job on `main` red once; its trend lines are
+still published, so accepting that commit as the new basis clears the gate.

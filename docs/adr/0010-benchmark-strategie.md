@@ -460,3 +460,49 @@ oben entschieden), aber hier festgehalten gehören, weil sie dieses ADR direkt u
   `scripts/*.sh`, `README.md`)
 - `.github/workflows/bench-gate.yml`, `.github/workflows/bench-accept-baseline.yml`,
   `.github/scripts/append-bench-trend.sh`, `.github/scripts/accept-bench-baseline.sh`
+
+## Nachtrag (M2: scharfes Gate, 2026-09-17)
+
+Plan 0002 WP6.2 verlangt das scharfe Gate, „sobald die Referenzläufe laut ADR stabil sind,
+spätestens M2“. M2 verlangt Interpreter-, Extraktions- und Licht-Benches im scharfen Gate und
+einen Selbsttest-Job, der den Bruch belegt. Umgesetzt ist das so:
+
+- **Schalter.** `env.BENCH_GATE_MODE` in `.github/workflows/bench-gate.yml` steht auf `hard`:
+  Rot (`compare` Exitcode 3, mehr als +10 % `Ir` auf einem Szenario mit akzeptierter Basis) lässt
+  den Job `gate` scheitern. Die Auswertung liegt jetzt in `.github/scripts/evaluate-bench-gate.sh`.
+  Neu scheitert auch jeder unerwartete Exitcode von `compare`; bisher wäre etwa ein Absturz still
+  als grün durchgegangen. Ein Szenario ohne akzeptierte Basis bekommt weiter kein Urteil und bricht
+  nichts, denn eine Basis kann nur ein Commit auf `main` liefern.
+- **Beobachtungszeitraum.** Der Review oben nennt mindestens 20 Gate-Läufe über mindestens 14
+  Tage ohne Fehlalarm. Bis zur Umstellung liefen 89 Gate-Läufe vom 15. bis 17. September 2026
+  (38 Pushes auf `main`, 50 Pull Requests, ein manueller Lauf), alle mit `compare`-Exitcode 0.
+  Ein Urteil gegen eine akzeptierte Basis hatten davon 14; keines war rot oder eine Warnung, die
+  größte Abweichung betrug 0,01 %. Die Anzahl der Läufe ist erreicht, die Anzahl der Läufe mit
+  Urteil (14) und der Zeitraum (drei statt 14 Tage) sind es nicht. Die Frist des Plans
+  („spätestens M2“) geht hier vor; die Abweichung vom Beobachtungszeitraum ist ausdrücklich
+  festgehalten. **PO-Bestätigung offen.**
+- **Selbsttest-Job `regression-proof`.** Läuft bei jedem Pull Request, jedem Push auf `main`,
+  nachts und manuell. Er kalibriert die Einspeisung frisch, misst alle Benches zweimal ohne
+  Einspeisung (Basis und Wiederholung) und zweimal mit `GRIMOIRE_BENCH_INJECT_REGRESSION=1`
+  (kalibriert +5 % und +15 % auf `ecs_query_10k` und `sim_step_600`, `scripts/measure_ir.sh`) und
+  wertet jede Messung mit dem Skript des `gate`-Jobs im Modus `hard` gegen die Basis aus
+  (`.github/scripts/prove-bench-gate.sh`). Grün ist er nur, wenn +15 % die Auswertung bricht und
+  genau die beiden eingespeisten Szenarien rot sind, während +5 % (zwei Warnungen) und die
+  Wiederholung (alles grün) sie nicht brechen. Anders als `calibration-proof`, der nur
+  `gate_decision` auf kalibrierten Messwerten prüft, belegt dieser Job den Bruch des tatsächlichen
+  CI-Schritts.
+- **Trend auch bei rotem Urteil.** `publish-trend` hängt die Messung an `bench-trends` an, wenn
+  `gate` erfolgreich war oder nur am roten Urteil scheiterte. Sonst könnte eine bewusst gemergte
+  Regression nie als neue Basis angenommen werden, denn `bench-accept-baseline` braucht den Commit
+  in `trend/results.jsonl`. Eine kaputte Messung gelangt weiter nicht in den Trend.
+- **Basis.** Die vor der Umstellung akzeptierte Basis (Commit `0c6e5e9`) deckt sechs der acht
+  Szenarien ab. `render_bullet_upload_10k` und `render_light_cluster_256` bekommen ein Urteil,
+  sobald `bench-accept-baseline` einen Commit mit allen acht Szenarien annimmt; ihre Werte liegen
+  seit `a919d91` unverändert auf `bench-trends`.
+
+### Referenzen (M2)
+
+- Plan 0002 WP6.2 und Meilenstein M2
+- `.github/workflows/bench-gate.yml` (Jobs `gate`, `regression-proof`, `publish-trend`),
+  `.github/scripts/evaluate-bench-gate.sh`, `.github/scripts/prove-bench-gate.sh`,
+  `crates/grimoire_bench/scripts/measure_ir.sh`, `crates/grimoire_bench/src/bin/compare.rs`

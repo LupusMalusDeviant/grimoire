@@ -6,9 +6,11 @@
 //! Exit codes follow ADR-0010 §4.3's table exactly: `0` for green or warn (a warning is an
 //! annotation, not a failure), `2` for a measurement error (a zero value, or a candidate with no
 //! comparable basis entry is reported but does not by itself raise this above 0 — see below), `3`
-//! if any gated bench is red. The CI workflow (`.github/workflows/bench-gate.yml`) decides
-//! whether exit `3` fails the job (WARN_MODE vs. HARD_MODE, documented there); exit `2` always
-//! means something is broken about the measurement itself and is never downgraded.
+//! if any gated bench is red. The CI workflow (`.github/workflows/bench-gate.yml`, through
+//! `.github/scripts/evaluate-bench-gate.sh`) decides whether exit `3` fails the job (WARN MODE vs.
+//! HARD MODE, documented there; HARD MODE since plan 0002 M2); exit `2` always means something is
+//! broken about the measurement itself and is never downgraded. `BENCH_GATE_MODE=hard` only
+//! changes the wording of a red annotation.
 //!
 //! Usage:
 //!   `compare --candidate <file.jsonl> --basis <file.jsonl>` — the real gate run.
@@ -99,6 +101,9 @@ fn main() -> ExitCode {
     println!("| Scenario | Metric | Basis | Candidate | Delta | Verdict |");
     println!("|---|---|---|---|---|---|");
 
+    // Only the wording of a red annotation depends on the mode; whether exit 3 fails the job is
+    // decided by `.github/scripts/evaluate-bench-gate.sh`, which sets this variable.
+    let hard_mode = std::env::var("BENCH_GATE_MODE").is_ok_and(|mode| mode == "hard");
     let mut any_error = false;
     let mut any_red = false;
     for candidate in &candidates {
@@ -149,10 +154,17 @@ fn main() -> ExitCode {
             }
             Ok(GateOutcome::Red) => {
                 any_red = true;
-                println!(
-                    "::warning title=Benchmark regression (WARN MODE)::{} {} is +{delta_percent:.2}% over the accepted basis, over the 10% ADR-0010 gate (WARN MODE: not failing the build yet)",
-                    candidate.scenario, candidate.metric
-                );
+                if hard_mode {
+                    println!(
+                        "::error title=Benchmark regression (HARD MODE)::{} {} is +{delta_percent:.2}% over the accepted basis, over the 10% ADR-0010 gate (HARD MODE: fails the build)",
+                        candidate.scenario, candidate.metric
+                    );
+                } else {
+                    println!(
+                        "::warning title=Benchmark regression (WARN MODE)::{} {} is +{delta_percent:.2}% over the accepted basis, over the 10% ADR-0010 gate (WARN MODE: not failing the build)",
+                        candidate.scenario, candidate.metric
+                    );
+                }
                 "RED"
             }
             Err(_) => {

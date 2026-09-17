@@ -16,6 +16,14 @@
 # Usage: measure_ir.sh <ir_probe-bin> <bench_result-bin> <output-jsonl> <cg-out-dir>
 # Env (all defaulted): GITHUB_SHA, GIT_DIRTY (1 for a dirty working tree), RUNNER_OS_LOWER,
 #   RUNNER_ARCH_LOWER, RUNNER_IMAGE, CPU_MODEL, LOGICAL_CPUS, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT.
+#
+# Injected regression (plan 0002 WP6.2 negative proof; only the `regression-proof` job in
+# .github/workflows/bench-gate.yml sets it, never the gate itself): with
+# GRIMOIRE_BENCH_INJECT_REGRESSION=1, `ecs_query_10k` and `sim_step_600` run the calibrated
+# injection instead of their plain body (`ir_probe <bench> calibrated <units>`), with the unit count
+# `scripts/calibrate_injection.sh` measured on this runner for GRIMOIRE_BENCH_INJECT_PERCENT (5, 15
+# or 20; default 15), read from GRIMOIRE_BENCH_INJECT_CALIBRATION/calibration-<bench>.jsonl. Their
+# result lines carry `injected_regression_percent`; every other bench is measured plainly.
 set -euo pipefail
 
 IR_PROBE="${1:?path to the ir_probe binary}"
@@ -36,14 +44,42 @@ RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-}"
 DIRTY_FLAG=()
 if [[ "${GIT_DIRTY:-0}" == "1" ]]; then DIRTY_FLAG=(--dirty); fi
 
+INJECT="${GRIMOIRE_BENCH_INJECT_REGRESSION:-0}"
+INJECT_PERCENT="${GRIMOIRE_BENCH_INJECT_PERCENT:-15}"
+INJECT_CALIBRATION="${GRIMOIRE_BENCH_INJECT_CALIBRATION:-}"
+if [[ "$INJECT" == "1" && -z "$INJECT_CALIBRATION" ]]; then
+  echo "GRIMOIRE_BENCH_INJECT_REGRESSION=1 needs GRIMOIRE_BENCH_INJECT_CALIBRATION" >&2
+  exit 1
+fi
+
+# Calibrated unit count for `bench` (ecs|sim) at INJECT_PERCENT, from calibrate_injection.sh's own
+# output (one JSON object per target percentage, written by printf with a fixed key order).
+inject_units() {
+  local bench="$1" file units
+  file="$INJECT_CALIBRATION/calibration-${bench}.jsonl"
+  units=$(sed -n "s/.*\"target_percent\":${INJECT_PERCENT},.*\"needed_units\":\([0-9]*\),.*/\1/p" "$file" | tail -n1)
+  if [[ -z "$units" ]]; then
+    echo "no +${INJECT_PERCENT}% calibration for $bench in $file" >&2
+    exit 1
+  fi
+  echo "$units"
+}
+
 mkdir -p "$CG_DIR"
 : > "$OUT"
 
 measure_one() {
   local bin_arg="$1" scenario="$2"
-  local cg_out="$CG_DIR/cg.${bin_arg}.baseline.out"
-  echo "== callgrind: bench=$bin_arg (baseline) ==" >&2
-  valgrind --tool=callgrind --callgrind-out-file="$cg_out" --quiet -- "$IR_PROBE" "$bin_arg" baseline
+  local mode_args=(baseline) injected=0
+  if [[ "$INJECT" == "1" && ( "$bin_arg" == "ecs" || "$bin_arg" == "sim" ) ]]; then
+    local units
+    units="$(inject_units "$bin_arg")"
+    mode_args=(calibrated "$units")
+    injected="$INJECT_PERCENT"
+  fi
+  local cg_out="$CG_DIR/cg.${bin_arg}.${mode_args[0]}.out"
+  echo "== callgrind: bench=$bin_arg (${mode_args[*]}) ==" >&2
+  valgrind --tool=callgrind --callgrind-out-file="$cg_out" --quiet -- "$IR_PROBE" "$bin_arg" "${mode_args[@]}"
   local ir_line
   ir_line=$(grep '^summary:' "$cg_out" | tail -n1)
   if [[ -z "$ir_line" ]]; then
@@ -77,7 +113,7 @@ measure_one() {
     --logical-cpus "$LOGICAL_CPUS" "${fingerprint_args[@]}" \
     --executor-kind sequential --executor-threads 1 \
     --params "$params" \
-    --value-origin runner \
+    --value-origin runner --injected-regression-percent "$injected" \
     "${run_args[@]}" \
     >>"$OUT"
 }
