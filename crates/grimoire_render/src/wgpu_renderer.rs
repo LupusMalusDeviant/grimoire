@@ -13,7 +13,7 @@ use crate::bullet_pass::{BulletPass, BulletView, bullet_view};
 use crate::gpu_timer::GpuTimer;
 use crate::mesh_pass::MeshPass;
 use crate::pass_graph::{self, PassLog};
-use crate::sprite_pass::SpritePass;
+use crate::sprite_pass::{SpriteCamera, SpritePass};
 use crate::stage;
 use crate::texture::{TextureData, TextureError};
 use crate::{
@@ -415,15 +415,30 @@ impl WgpuRenderer {
         let view_projection = camera.view_projection(aspect);
         // Clip space spans 2 units over the target height.
         let pixels_per_unit = view_projection[1][1] * self.height as f32 * 0.5;
+        let sprite_camera = SpriteCamera::Flat {
+            view_projection,
+            pixels_per_unit,
+        };
+        self.draw_sprites_with(view, &sprite_camera, sprites, load)
+    }
 
+    /// Draws `sprites` like [`WgpuRenderer::draw_sprites`], but through any [`SpriteCamera`]: the
+    /// flat 2D path or camera-facing billboards on the ground plane (the player marker under the
+    /// 2.5D camera, plan 0002 WP3.6).
+    fn draw_sprites_with(
+        &mut self,
+        view: &wgpu::TextureView,
+        sprite_camera: &SpriteCamera,
+        sprites: &[SpriteInstance],
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) -> Result<(u32, u32), GpuError> {
         let context = &self.context;
         let sprite_pass = &mut self.sprites;
         // `None` outside a measured `render_stage` frame, including the P0 `render` path.
         let timestamps = self.gpu_timer.next_pass();
         context
             .capture_errors(|device| {
-                let count =
-                    sprite_pass.prepare(context, &view_projection, pixels_per_unit, sprites)?;
+                let count = sprite_pass.prepare(context, sprite_camera, sprites)?;
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("grimoire frame encoder"),
                 });
@@ -735,12 +750,38 @@ impl WgpuRenderer {
                 }
                 RenderLayer::PlayerMarker => {
                     if !frame.marker_sprites.is_empty() {
-                        let (_, calls) = self.draw_sprites(
-                            &view,
-                            &frame.base.camera,
-                            &frame.marker_sprites,
-                            wgpu::LoadOp::Load,
-                        )?;
+                        // Contract §6 (plan 0002 WP3.6): under the 2.5D camera the marker stands on
+                        // its ground position as a camera-facing billboard, projected exactly like
+                        // the bullets; without it, the flat 2D camera as before. A camera the
+                        // bullet pass cannot use draws no marker either.
+                        let calls = if frame.camera_25d.is_some() {
+                            match bullet_view(frame, aspect) {
+                                Some(ground) => {
+                                    let sprite_camera = SpriteCamera::Billboard {
+                                        view_projection: ground.view_proj,
+                                        axis_x: ground.axis_x,
+                                        axis_y: ground.axis_y,
+                                        viewport: (self.width, self.height),
+                                    };
+                                    self.draw_sprites_with(
+                                        &view,
+                                        &sprite_camera,
+                                        &frame.marker_sprites,
+                                        wgpu::LoadOp::Load,
+                                    )?
+                                    .1
+                                }
+                                None => 0,
+                            }
+                        } else {
+                            self.draw_sprites(
+                                &view,
+                                &frame.base.camera,
+                                &frame.marker_sprites,
+                                wgpu::LoadOp::Load,
+                            )?
+                            .1
+                        };
                         draw_calls += calls;
                     }
                 }

@@ -124,12 +124,36 @@ mod gpu_types {
 
 use gpu_types::{BulletCameraGpu, BulletStyleGpu};
 
-/// How the bullet pass projects the ground plane this frame.
+/// The bullets the pass draws: `bullets` itself while every instance is accepted, otherwise the
+/// accepted ones compacted into the reused `staging` buffer. Shared by [`BulletPass::prepare`] and
+/// `crate::measurement` (plan 0002 WP3.6).
+pub(crate) fn accepted_bullets<'a>(
+    bullets: &'a [BulletInstance],
+    staging: &'a mut Vec<BulletInstance>,
+) -> &'a [BulletInstance] {
+    let Some(first) = bullets
+        .iter()
+        .position(|bullet| !is_accepted_bullet(bullet))
+    else {
+        return bullets;
+    };
+    staging.clear();
+    staging.extend_from_slice(&bullets[..first]);
+    staging.extend(
+        bullets[first + 1..]
+            .iter()
+            .filter(|bullet| is_accepted_bullet(bullet)),
+    );
+    staging
+}
+
+/// How the bullet pass projects the ground plane this frame. The sprite pass draws the player
+/// marker through the same projection under the 2.5D camera (plan 0002 WP3.6).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BulletView {
-    view_proj: [[f32; 4]; 4],
-    axis_x: [f32; 3],
-    axis_y: [f32; 3],
+    pub(crate) view_proj: [[f32; 4]; 4],
+    pub(crate) axis_x: [f32; 3],
+    pub(crate) axis_y: [f32; 3],
 }
 
 /// The projection of `frame`'s bullets for a target of the given `aspect` ratio: the frame's
@@ -437,23 +461,8 @@ impl BulletPass {
         viewport: (u32, u32),
         bullets: &[BulletInstance],
     ) -> Result<u32, GpuError> {
-        let first_rejected = bullets
-            .iter()
-            .position(|bullet| !is_accepted_bullet(bullet));
-        if let Some(first) = first_rejected {
-            self.staging.clear();
-            self.staging.extend_from_slice(&bullets[..first]);
-            self.staging.extend(
-                bullets[first + 1..]
-                    .iter()
-                    .filter(|bullet| is_accepted_bullet(bullet)),
-            );
-        }
-        let accepted_len = if first_rejected.is_some() {
-            self.staging.len()
-        } else {
-            bullets.len()
-        };
+        let upload = accepted_bullets(bullets, &mut self.staging);
+        let accepted_len = upload.len();
         let count = u32::try_from(accepted_len)
             .map_err(|_| GpuError::Validation(format!("{accepted_len} bullets exceed u32::MAX")))?;
         if count == 0 {
@@ -485,11 +494,6 @@ impl BulletPass {
             axis_x: [view.axis_x[0], view.axis_x[1], view.axis_x[2], 0.0],
             axis_y: [view.axis_y[0], view.axis_y[1], view.axis_y[2], 0.0],
             viewport: [viewport.0 as f32, viewport.1 as f32, 0.0, 0.0],
-        };
-        let upload: &[BulletInstance] = if first_rejected.is_some() {
-            &self.staging
-        } else {
-            bullets
         };
         let queue = context.queue();
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera));

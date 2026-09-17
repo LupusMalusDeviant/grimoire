@@ -241,11 +241,20 @@ jobs:
           mkdir -p ci-logs
           cargo test -p grimoire_render --test snapshot_scenes --locked -- --ignored --nocapture 2>&1 | tee ci-logs/test-snapshot-scenes.log
           cargo test --workspace --test overlay_scene --locked -- --ignored --nocapture 2>&1 | tee -a ci-logs/test-snapshot-scenes.log
+      # Plan 0002 WP3.6, OF-18.2: macOS has no software adapter, so the scene step above skips every
+      # scene there. This step measures the variance of every scene on the runner's own Metal
+      # device instead (GRIMOIRE_GPU_ADAPTER unset), compared with the Windows references; it only
+      # reports, like the warning mode.
+      - name: Measure OF-18.2 scene variance on Metal
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          mkdir -p ci-logs
+          cargo test --workspace --test snapshot_scenes --locked -- --ignored --nocapture scene_variance 2>&1 | tee ci-logs/test-scene-variance-metal.log
       - name: Report WP2.8 snapshot scene results
         if: ${{ !cancelled() }}
         env:
           RUNNER_LABEL: ${{ matrix.os }}
-        run: bash .github/scripts/report-snapshot-diff.sh "$RUNNER_LABEL" ci-logs/test-snapshot-scenes.log
+        run: bash .github/scripts/report-snapshot-diff.sh "$RUNNER_LABEL" ci-logs/test-snapshot-scenes.log ci-logs/test-scene-variance-metal.log
       # Populated only when a scene had no reference yet or mismatched one: lets a
       # human pull down what the software adapter actually produced on this runner to review and,
       # if it looks right, commit as that platform's new reference.

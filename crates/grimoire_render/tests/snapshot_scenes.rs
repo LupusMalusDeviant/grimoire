@@ -1,7 +1,15 @@
 //! Plan 0002 WP2.8: deterministic render test scenes, rendered offscreen on the software adapter
 //! and compared against a checked-in reference image per platform.
 //!
-//! # The three scenes
+//! # The scenes
+//!
+//! Plan 0002 WP3.6 adds `lights_256` (256 coloured point lights over a floor through clustered
+//! forward+ at the High budget; asserts that no light is dropped and that the lit patches show
+//! distinct hues) and `bullets_on_top` (hostile bullets with glow and the player marker right on a
+//! floor spot a point light burns white; asserts that body colour and rim stay readable there,
+//! PRD-0003 rule 1). Both assert their structural property before the reference comparison, so
+//! they fail on a real regression even in warning mode. [`scene_variance`] measures the run-to-run
+//! and cross-adapter variance of every scene for OF-18.2.
 //!
 //! - `pbr_materials`: a row of spheres sweeping roughness (columns) and metalness (rows) under the
 //!   key light plus one point light — proves the GGX/Metallic-Roughness pipeline (WP2.5) actually
@@ -44,11 +52,11 @@
 //! One reference PNG per scene/variant lives under `tests/snapshots/<platform>/`, `<platform>`
 //! being [`support::platform_dir`]'s `"windows"`, `"linux"` or `"macos"` (matching the CI matrix's
 //! three driver families — WARP, lavapipe, the paravirtual Metal device — per PRD-0018's adapter
-//! table, OF-18.2). Only `tests/snapshots/windows/*.png` is checked in by this change: it is the
-//! only platform this harness could actually run the software adapter on to produce one (no
-//! hand-tuned pixels — each file is exactly what `WgpuRenderer` produced here). Linux and macOS
-//! references are left for a follow-up once CI has produced a candidate to review (see the "no
-//! reference yet" branch below and `.github/scripts/report-snapshot-diff.sh`).
+//! table, OF-18.2). No reference is hand-tuned: each file is exactly what `WgpuRenderer` produced
+//! on that platform's software adapter. The Windows references were rendered on WARP directly; the
+//! Linux references (plan 0002 WP3.6) are the lavapipe candidates of a CI run, taken unchanged from
+//! its `snapshot-candidates-ubuntu-latest` artifact (see the "no reference yet" branch below and
+//! `.github/scripts/report-snapshot-diff.sh`). macOS has none, see below.
 //!
 //! **macOS is a documented special case, not an oversight:** PRD-0018's adapter table shows
 //! `macos-latest` handing out "Apple Paravirtual device" as a Metal adapter of device type
@@ -81,11 +89,14 @@
 
 use std::path::{Path, PathBuf};
 
-use grimoire_render::procedural::{altar_block, capsule_actor, floor_tile_grid, icosphere};
+use grimoire_render::procedural::{
+    altar_block, capsule_actor, floor_tile_grid, icosphere, octagonal_pillar,
+};
 use grimoire_render::{
-    AmbientLight, BlobShadowInstance, Camera25D, DirectionalLight, MaterialHandle, MeshHandle,
-    MeshInstance, PbrMaterial, PointLight, RenderError, Renderer, RendererConfig, ShadowConfig,
-    ShadowMode, StageFrame, WgpuRenderer,
+    AmbientLight, BULLET_PASS_PALETTE_SPACE, BlobShadowInstance, BulletInstance, Camera25D,
+    DirectionalLight, LightBudget, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial,
+    PointLight, RenderError, Renderer, RendererConfig, ShadowConfig, ShadowMode, SpriteInstance,
+    StageFrame, StageRendererConfig, WgpuRenderer, bullet_palette, bullet_silhouette, shape,
 };
 
 #[path = "support/mod.rs"]
@@ -690,4 +701,449 @@ fn edge_adjacency_of_snapshot_mismatches() {
             "grimoire-edge-adjacency: name={name} high_diff_pixels={high_diff_total} near_edge={high_diff_near_edge} percent_near_edge={percent_near_edge:.1}"
         );
     }
+}
+
+// --- Scene 4: lights_256 (WP3.6, clustered forward+ at the High budget) ---------------------------
+
+/// Point lights of the `lights_256` scene: the High light budget exactly (PRD-0003 FR-11).
+const LIGHTS_256_COUNT: u32 = 256;
+
+/// Creates an offscreen renderer with the High light budget (256 lights), or `None` without an
+/// adapter, like [`try_offscreen_renderer`].
+fn try_offscreen_renderer_high_budget() -> Option<WgpuRenderer> {
+    let mut config = StageRendererConfig::default();
+    config.base = RendererConfig {
+        vsync: false,
+        initial_sprite_capacity: 16,
+        allow_software_fallback: true,
+    };
+    config.light_budget = LightBudget::High;
+    match WgpuRenderer::new_offscreen_staged(WIDTH, HEIGHT, config) {
+        Ok(renderer) => Some(renderer),
+        Err(RenderError::NoAdapter) => {
+            eprintln!("no GPU adapter available; skipping this WP3.6 snapshot scene");
+            None
+        }
+        Err(error) => panic!("offscreen renderer creation failed: {error}"),
+    }
+}
+
+/// A dark floor under a 16x16 grid of 256 small coloured point lights, one per floor patch, plus a
+/// few spheres they light from all sides: every light must reach its own patch through the
+/// clustered forward+ path at the High budget, none may be dropped.
+fn lights_256_frame(renderer: &mut WgpuRenderer) -> StageFrame {
+    let floor = renderer
+        .register_mesh(floor_tile_grid(12, 2.0))
+        .expect("valid mesh");
+    let sphere = renderer
+        .register_mesh(icosphere(2, 0.9))
+        .expect("valid mesh");
+
+    let mut camera = Camera25D::default();
+    camera.target = [0.0, 1.5];
+    camera.tilt_degrees = 58.0;
+    camera.fov_y_degrees = 50.0;
+    camera.distance = 17.0;
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.01, 0.01, 0.015, 1.0];
+    frame.camera_25d = Some(camera);
+    frame.ambient = AmbientLight::Flat {
+        color: [1.0, 1.0, 1.0],
+        intensity: 0.04,
+    };
+    frame
+        .materials
+        .push(material([0.6, 0.6, 0.6, 1.0], 0.0, 0.7)); // 0: floor
+    frame
+        .materials
+        .push(material([0.8, 0.8, 0.8, 1.0], 0.0, 0.4)); // 1: spheres
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 1.5, 0.0]),
+    ));
+    for (x, y) in [
+        (-5.0, 4.0),
+        (0.0, 1.5),
+        (5.0, 4.0),
+        (-3.0, -2.0),
+        (3.0, -2.0),
+    ] {
+        frame.meshes.push(mesh_instance(
+            sphere,
+            MaterialHandle(1),
+            translation([x, y, 0.9]),
+        ));
+    }
+    // Hues cycle through the grid so neighbouring patches differ visibly.
+    let palette: [[f32; 3]; 6] = [
+        [1.0, 0.2, 0.1],
+        [1.0, 0.7, 0.1],
+        [0.3, 1.0, 0.2],
+        [0.1, 0.8, 1.0],
+        [0.3, 0.3, 1.0],
+        [1.0, 0.2, 0.9],
+    ];
+    for index in 0..LIGHTS_256_COUNT {
+        let (column, row) = (index % 16, index / 16);
+        let x = (column as f32 - 7.5) * 1.5;
+        let y = (row as f32 - 7.5) * 1.5 + 1.5;
+        let color = palette[((column + row) % 6) as usize];
+        frame
+            .point_lights
+            .push(point_light([x, y, 0.8], color, 1.9, 2.5));
+    }
+    frame
+}
+
+#[test]
+#[ignore = "WP3.6 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
+fn lights_256_scene() {
+    let Some(mut renderer) = try_offscreen_renderer_high_budget() else {
+        return;
+    };
+    let frame = lights_256_frame(&mut renderer);
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.point_lights_drawn, LIGHTS_256_COUNT);
+    assert_eq!(
+        stats.point_lights_over_budget, 0,
+        "the High budget holds all 256 lights"
+    );
+    let image = Image::from_offscreen(
+        WIDTH,
+        HEIGHT,
+        renderer.read_offscreen_rgba().expect("read-back"),
+    );
+    // Structural check, independent of any reference: the lights produce distinctly coloured lit
+    // patches, not one flat tone.
+    let lit_hues = distinct_lit_hues(&image);
+    assert!(
+        lit_hues >= 5,
+        "only {lit_hues} of the six light hues show up on the floor"
+    );
+    check_scene("lights_256", &image);
+}
+
+/// Number of the six hue sextants in which at least 20 pixels are clearly lit and saturated.
+fn distinct_lit_hues(image: &Image) -> usize {
+    let mut counts = [0u32; 6];
+    for pixel in image.rgba.as_chunks::<4>().0 {
+        let [r, g, b, _] = pixel.map(i32::from);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        if max < 90 || max - min < 40 {
+            continue;
+        }
+        let hue = if max == r {
+            (60 * (g - b) / (max - min)).rem_euclid(360)
+        } else if max == g {
+            60 * (b - r) / (max - min) + 120
+        } else {
+            60 * (r - g) / (max - min) + 240
+        };
+        counts[(hue.rem_euclid(360) / 60) as usize] += 1;
+    }
+    counts.iter().filter(|&&count| count >= 20).count()
+}
+
+// --- Scene 5: bullets_on_top (WP3.6, PRD-0003 rule 1) ---------------------------------------------
+
+/// Ground position of the centre bullet, right on the brightest spot of the floor.
+const BULLETS_ON_TOP_CENTRE: [f32; 2] = [0.0, 0.0];
+/// Radius of the scene's bullets in world units.
+const BULLETS_ON_TOP_RADIUS: f32 = 1.0;
+
+fn bullets_on_top_camera() -> Camera25D {
+    let mut camera = Camera25D::default();
+    camera.target = [0.0, 0.5];
+    camera.tilt_degrees = 62.0;
+    camera.fov_y_degrees = 48.0;
+    camera.distance = 12.0;
+    camera
+}
+
+/// A floor lit almost to white by a very bright point light just above it, a pillar, and on top of
+/// the brightest pixels a ring of hostile bullets with glow plus the player marker: the bullets must
+/// stay readable over the light (PRD-0003 rule 1), never washed out or covered by it.
+fn bullets_on_top_frame(renderer: &mut WgpuRenderer, with_bullets: bool) -> StageFrame {
+    let floor = renderer
+        .register_mesh(floor_tile_grid(10, 2.0))
+        .expect("valid mesh");
+    let pillar = renderer
+        .register_mesh(octagonal_pillar(0.5, 3.0))
+        .expect("valid mesh");
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.02, 0.02, 0.03, 1.0];
+    frame.camera_25d = Some(bullets_on_top_camera());
+    frame.key_light = Some(key_light([0.3, 0.4, -0.85], [0.7, 0.75, 0.9], 0.8));
+    frame.ambient = AmbientLight::Flat {
+        color: [1.0, 1.0, 1.0],
+        intensity: 0.15,
+    };
+    frame
+        .materials
+        .push(material([0.7, 0.68, 0.62, 1.0], 0.0, 0.6)); // 0: floor, pillar
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.5, 0.0]),
+    ));
+    frame.meshes.push(mesh_instance(
+        pillar,
+        MaterialHandle(0),
+        translation([-4.0, 3.0, 1.5]),
+    ));
+    // The bright light: close above the centre bullet, saturating the floor around it.
+    frame.point_lights.push(point_light(
+        [BULLETS_ON_TOP_CENTRE[0], BULLETS_ON_TOP_CENTRE[1], 1.2],
+        [1.0, 0.95, 0.85],
+        7.0,
+        60.0,
+    ));
+
+    if with_bullets {
+        frame.bullets.push(scene_bullet(
+            BULLETS_ON_TOP_CENTRE,
+            0.0,
+            bullet_silhouette::ORB,
+            bullet_palette::HEX_MAGENTA,
+            220,
+        ));
+        for index in 0..8u8 {
+            let angle = f32::from(index) / 8.0 * std::f32::consts::TAU;
+            let silhouette = if index % 2 == 0 {
+                bullet_silhouette::RICE
+            } else {
+                bullet_silhouette::DIAMOND
+            };
+            frame.bullets.push(scene_bullet(
+                [angle.cos() * 2.6, angle.sin() * 2.6],
+                angle + std::f32::consts::FRAC_PI_2,
+                silhouette,
+                bullet_palette::POISON_LIME,
+                140,
+            ));
+        }
+        frame.marker_sprites.push(SpriteInstance {
+            position: [0.0, -3.6],
+            half_size: [0.6, 0.6],
+            rotation: 0.0,
+            shape: shape::CIRCLE,
+            color: [0.55, 0.85, 1.0, 1.0],
+        });
+    }
+    frame
+}
+
+fn scene_bullet(
+    position: [f32; 2],
+    rotation: f32,
+    silhouette: u16,
+    palette: u16,
+    glow: u8,
+) -> BulletInstance {
+    BulletInstance {
+        position,
+        radius: BULLETS_ON_TOP_RADIUS,
+        rotation,
+        silhouette,
+        palette,
+        palette_space: BULLET_PASS_PALETTE_SPACE,
+        glow,
+        flags: 0,
+    }
+}
+
+/// Luminance range `(min, max)` and the count of magenta-dominant pixels inside the disc of
+/// `radius_px` around `centre` (pixel coordinates).
+fn disc_statistics(image: &Image, centre: [f32; 2], radius_px: f32) -> (i32, i32, u32) {
+    let (mut min, mut max, mut magenta) = (i32::MAX, i32::MIN, 0u32);
+    for y in 0..image.height {
+        for x in 0..image.width {
+            let dx = x as f32 + 0.5 - centre[0];
+            let dy = y as f32 + 0.5 - centre[1];
+            if dx * dx + dy * dy > radius_px * radius_px {
+                continue;
+            }
+            let lum = luminance(image, x, y);
+            min = min.min(lum);
+            max = max.max(lum);
+            let index = ((y * image.width + x) * 4) as usize;
+            let [r, g, b] = [
+                i32::from(image.rgba[index]),
+                i32::from(image.rgba[index + 1]),
+                i32::from(image.rgba[index + 2]),
+            ];
+            if r > g + 60 && b > g + 30 {
+                magenta += 1;
+            }
+        }
+    }
+    (min, max, magenta)
+}
+
+#[test]
+#[ignore = "WP3.6 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
+fn bullets_on_top_scene() {
+    let Some(mut renderer) = try_offscreen_renderer() else {
+        return;
+    };
+    let without = bullets_on_top_frame(&mut renderer, false);
+    let floor_only = render_frame(&mut renderer, &without);
+    let frame = bullets_on_top_frame(&mut renderer, true);
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.bullets_drawn, 9);
+    let image = Image::from_offscreen(
+        WIDTH,
+        HEIGHT,
+        renderer.read_offscreen_rgba().expect("read-back"),
+    );
+
+    // Structural check, independent of any reference (PRD-0003 rule 1): around the centre bullet
+    // the floor alone is white, and with the bullet its magenta body and darker rim show right on
+    // those bright pixels.
+    let centre = bullets_on_top_camera()
+        .ground_to_screen(BULLETS_ON_TOP_CENTRE, [WIDTH as f32, HEIGHT as f32])
+        .expect("the centre bullet is in view");
+    let (floor_min, _, floor_magenta) = disc_statistics(&floor_only, centre, 3.0);
+    let (bullet_min, bullet_max, bullet_magenta) = disc_statistics(&image, centre, 6.0);
+    check_scene("bullets_on_top", &image);
+    println!(
+        "grimoire-bullets-on-top: floor_min_luminance={floor_min} bullet_luminance={bullet_min}..{bullet_max} magenta_pixels={bullet_magenta}"
+    );
+    assert!(
+        floor_min > 170,
+        "the light makes the floor under the bullet bright (darkest pixel {floor_min})"
+    );
+    assert_eq!(floor_magenta, 0);
+    assert!(
+        bullet_magenta >= 4,
+        "the magenta body stays visible over the light ({bullet_magenta} pixels)"
+    );
+    assert!(
+        bullet_min + 60 < floor_min && bullet_max > 200,
+        "the dark rim stands out from the white floor and the core stays bright (floor          {floor_min}, bullet luminance {bullet_min}..{bullet_max})"
+    );
+}
+
+// --- OF-18.2: variance per adapter (WP3.6) --------------------------------------------------------
+
+/// Every reference scene of this file, by reference name.
+const VARIANCE_SCENES: [&str; 9] = [
+    "pbr_materials",
+    "shadows_keylight",
+    "shadows_blob",
+    "camera_tilt_35",
+    "camera_tilt_60",
+    "camera_tilt_75",
+    "camera_tilt_90",
+    "lights_256",
+    "bullets_on_top",
+];
+
+/// A new renderer of the right configuration with the frame of the scene `name` built on it, or
+/// `None` without an adapter.
+fn scene_by_name(name: &str) -> Option<(WgpuRenderer, StageFrame)> {
+    let mut renderer = if name == "lights_256" {
+        try_offscreen_renderer_high_budget()?
+    } else {
+        try_offscreen_renderer()?
+    };
+    let frame = match name {
+        "pbr_materials" => pbr_materials_frame(&mut renderer),
+        "shadows_keylight" | "shadows_blob" => {
+            let mut frame = shadows_frame(&mut renderer);
+            let mut config = ShadowConfig::default();
+            if name == "shadows_keylight" {
+                config.mode = ShadowMode::KeyLight;
+            } else {
+                config.mode = ShadowMode::Blob;
+                frame.blob_shadows.push(BlobShadowInstance {
+                    position: [1.5, 0.5],
+                    radius: 1.0,
+                    softness: 0.45,
+                    strength: 0.85,
+                });
+            }
+            frame.shadow_config = config;
+            frame
+        }
+        "lights_256" => lights_256_frame(&mut renderer),
+        "bullets_on_top" => bullets_on_top_frame(&mut renderer, true),
+        tilt => {
+            let degrees: f32 = tilt
+                .trim_start_matches("camera_tilt_")
+                .parse()
+                .expect("a camera_tilt_<degrees> scene");
+            camera_tilt_frame(&mut renderer, degrees)
+        }
+    };
+    Some((renderer, frame))
+}
+
+/// OF-18.2 measurement (plan 0002 WP3.6): renders every scene three times on this runner's
+/// adapter — twice with one renderer (frame to frame) and once with a second renderer (device to
+/// device) — and reports the largest difference between those runs, plus the difference to the
+/// Windows (WARP) reference when this runner is not Windows. Prints one greppable
+/// `grimoire-snapshot-variance:` line per scene and never fails on a difference. Runs on whatever
+/// adapter `GRIMOIRE_GPU_ADAPTER` selects, so the macOS CI job measures its Metal device with the
+/// variable unset.
+#[test]
+#[ignore = "OF-18.2 variance measurement: run explicitly (see this test's doc comment)"]
+fn scene_variance() {
+    let platform = support::platform_dir();
+    for name in VARIANCE_SCENES {
+        let Some((mut renderer, frame)) = scene_by_name(name) else {
+            println!(
+                "grimoire-snapshot-variance: name={name} platform={platform} skipped=no-adapter"
+            );
+            continue;
+        };
+        let adapter = renderer.adapter_report_line();
+        let first = render_frame(&mut renderer, &frame);
+        let frame_to_frame = render_frame(&mut renderer, &frame);
+        drop(renderer);
+        let (mut second_renderer, second_frame) =
+            scene_by_name(name).expect("the adapter was there a moment ago");
+        let device_to_device = render_frame(&mut second_renderer, &second_frame);
+
+        let mut run_mean = 0.0f64;
+        let mut run_max = 0u8;
+        for other in [&frame_to_frame, &device_to_device] {
+            let metric = support::compare(&first, other).expect("same size");
+            run_mean = run_mean.max(metric.mean_abs_diff);
+            run_max = run_max.max(metric.max_abs_diff);
+        }
+        let versus_windows = if platform == "windows" {
+            String::from("vs_windows=self")
+        } else {
+            match Image::read_png(&reference_path_for(name, "windows")) {
+                Ok(reference) => {
+                    let metric = support::compare(&reference, &first).expect("same size");
+                    format!(
+                        "vs_windows_mean_abs_diff={:.3} vs_windows_max_abs_diff={} vs_windows_within_tolerance={}",
+                        metric.mean_abs_diff,
+                        metric.max_abs_diff,
+                        metric.within_tolerance()
+                    )
+                }
+                Err(_) => String::from("vs_windows=no-reference"),
+            }
+        };
+        let adapter = adapter.trim_start_matches("grimoire-gpu-adapter: ");
+        println!(
+            "grimoire-snapshot-variance: name={name} platform={platform} runs=3 run_mean_abs_diff={run_mean:.3} run_max_abs_diff={run_max} {versus_windows} adapter=[{adapter}]"
+        );
+    }
+}
+
+/// Path of `name`'s reference image for `platform`.
+fn reference_path_for(name: &str, platform: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join(platform)
+        .join(format!("{name}.png"))
 }
