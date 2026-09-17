@@ -26,6 +26,11 @@ use grimoire_render::WgpuRenderer;
 /// Length of the window over which [`FrameStats::fps`] is averaged.
 const FPS_WINDOW: Duration = Duration::from_secs(1);
 
+/// Raw input events the loop keeps for the next presentation-input round (contract §9.12). The
+/// queue is drained by every frame, so it only fills while no frame runs; beyond this many events
+/// the loop drops the newest and logs how many.
+const MAX_QUEUED_PRESENTATION_INPUT: usize = 4_096;
+
 /// Creates the renderer during `init`, when the window (if any) exists.
 pub(crate) type RendererFactory<R> =
     Box<dyn FnOnce(&mut dyn PlatformContext) -> Result<R, GrimoireError>>;
@@ -148,6 +153,12 @@ pub(crate) struct GameLoop<R: LoopRenderer> {
     pointer: PointerState,
     /// Viewport size in physical pixels, updated by [`PlatformEvent::Resized`] (contract §9.3).
     viewport: (f32, f32),
+    /// Raw input events waiting for the next frame's [`GamePlugin::presentation_input`] round
+    /// (contract §9.12). Presentation only: nothing here ever reaches a [`TickInput`].
+    presentation_input: Vec<RawInputEvent>,
+    /// Events dropped because [`MAX_QUEUED_PRESENTATION_INPUT`] was reached, reported once per
+    /// frame.
+    dropped_presentation_input: u32,
     stage: StageFrame,
     /// Render-side camera follow spring (plan 0002 WP2.4), created lazily once a plugin first
     /// produces a focus point; `None` forever when [`LoopSettings::camera_25d`] is `None`.
@@ -194,6 +205,8 @@ impl<R: LoopRenderer> GameLoop<R> {
             input: InputState::new(),
             pointer: PointerState::new(),
             viewport,
+            presentation_input: Vec::new(),
+            dropped_presentation_input: 0,
             stage: StageFrame::new(),
             camera_follow: None,
             held_focus: None,
@@ -330,6 +343,15 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
                         self.overlay.toggle();
                     }
                 }
+                // Contract §9.12: every raw event is also queued for the next frame's
+                // presentation-input round. The queue only grows while no frame runs, so the cap
+                // keeps a stalled loop from growing it without bound.
+                if self.presentation_input.len() < MAX_QUEUED_PRESENTATION_INPUT {
+                    self.presentation_input.push(*raw);
+                } else {
+                    self.dropped_presentation_input =
+                        self.dropped_presentation_input.saturating_add(1);
+                }
                 self.input.apply(raw);
                 self.pointer.apply(raw);
             }
@@ -344,6 +366,30 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
         let Some(running) = self.running.as_mut() else {
             return;
         };
+
+        // Contract §9.3 step 0 / §9.12: the presentation-input round runs first, before the
+        // timestep advances and before any tick, and it runs in every frame — also in one without
+        // ticks, so a paused or stepped game keeps reacting to these keys. Nothing here touches
+        // the simulation: a plugin receives the event and nothing else.
+        if !self.presentation_input.is_empty() {
+            // Taken out and put back so the plugins borrow `self.plugins` while the queue is not
+            // borrowed; the allocation survives the round.
+            let queued = std::mem::take(&mut self.presentation_input);
+            for event in &queued {
+                for plugin in &mut self.plugins {
+                    plugin.presentation_input(event);
+                }
+            }
+            self.presentation_input = queued;
+            self.presentation_input.clear();
+        }
+        if self.dropped_presentation_input > 0 {
+            log::warn!(
+                "dropped {} presentation input events: more than {MAX_QUEUED_PRESENTATION_INPUT} arrived before this frame",
+                self.dropped_presentation_input
+            );
+            self.dropped_presentation_input = 0;
+        }
 
         // The only wall-clock read of the run; the simulation only sees whole ticks.
         let now = ctx.clock().elapsed();

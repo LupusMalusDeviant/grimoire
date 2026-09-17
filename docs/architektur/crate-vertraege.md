@@ -2159,6 +2159,7 @@ Engine-ADR „Crate-Map-Erweiterung P1“.
 pub trait GamePlugin {                                                  // zusätzlich zu P0, nur Default-Methoden (bricht keine Plugins)
     fn extract_stage(&mut self, world: &World, alpha: f32, stage: &mut StageFrame) {}   // nach allen `extract`; nur lesend
     fn focus(&self, world: &World, alpha: f32) -> Option<Vec2> { None }  // Fokuspunkt: interpoliert, nur Präsentation
+    fn presentation_input(&mut self, event: &RawInputEvent) {}           // reine Darstellungstasten (§9.12), nie im TickInput
     fn on_profile(&mut self, profile: &grimoire_debug::FrameProfile) {}  // nach `on_frame`
 }
 // AppBuilder zusätzlich: profiler(bool) -> Self (Default true), overlay_key(Option<KeyCode>) -> Self (Default Some(KeyCode::F3))
@@ -2203,12 +2204,15 @@ pub use grimoire_{collide, sigil, assets, debug} as {collide, sigil, assets, deb
 
 - **`init`:** Nach `build` und `window_created` je Plugin richtet die Fassade mit Feature `debug-link` den
   Debug-Link ein (§9.7).
-- **`event`:** `Input(CursorMoved { x, y })` → zusätzlich `PointerState::apply`. Die letzte Position gilt, bis ein
+- **`event`:** `Input(..)` wird zusätzlich für die Präsentations-Eingaben des nächsten Frames gesammelt
+  (§9.12). `Input(CursorMoved { x, y })` → zusätzlich `PointerState::apply`. Die letzte Position gilt, bis ein
   neues Event kommt; ein Fokusverlust ändert sie nicht, und `RawInputEvent` kennt kein Verlassen des Fensters.
   `Resized` merkt sich außerdem die Viewport-Größe in physischen Pixeln; vor dem ersten `Resized` gilt
   `WindowConfig::width`/`height`, auch in `run_headless_frames*`. Ein Druck auf `overlay_key` schaltet das
   Stats-Overlay um (§9.7).
 - **`frame`** in dieser Reihenfolge:
+  0. **Präsentations-Eingaben (ab M3, §9.12):** `presentation_input` je gesammeltem Ereignis, je Plugin in
+     Registrierungsreihenfolge, vor allem Übrigen dieses Frames. Läuft auch in einem Frame ohne Tick.
   1. Delta aus `ctx.clock()`. Mit `debug-link` vor `FixedTimestep::advance`: `poll`, Nachrichten dekodieren,
      Handshake und Fehler nach §13 behandeln, `SwapSigilUnit` in die Warteschlange stellen (§9.7).
   2. `FixedTimestep::advance` und `InputMap::sample` wie in P0.
@@ -2823,6 +2827,51 @@ pub fn sigil_library(source: &dyn AssetSource, registry: Arc<BehaviorRegistry>) 
 - **Tests:** `crates/grimoire/tests/sigil_assets.rs`: Pack mit der Unit-Fixture aus `PackWriter` → `PackReader` →
   Bibliothek mit derselben Epoche → installiertes Pattern feuert; je ein Test für leere Quelle, fremde Artversion,
   ungültige Unit-Bytes, abweichende Unit-Kennung und beschädigte Nutzdaten.
+
+### 9.12 Präsentations-Eingaben (Ergänzung M3)
+
+*Stufe A (additiv, neue Default-Methode auf `GamePlugin`; bricht kein Plugin). PO-Entscheid
+2026-09-17: „Haken für Tasten, die nur die Darstellung ändern.“ Freigabe der konkreten API offen.*
+
+Tasten und Mausereignisse, die allein die Darstellung ändern (Kamera-Voreinstellungen, Debug-Ansichten,
+eine Screenshot-Taste), brauchten bisher eine `InputMap`-Bindung. Damit lagen sie im `TickInput` und
+standen in jeder Aufzeichnung: Zwei Läufe desselben Spiels unterschieden sich in den aufgezeichneten
+Bytes, sobald jemand die Taste drückte, obwohl das Spielverhalten und alle Hashes gleich blieben.
+Dieser Haken trennt die beiden Wege.
+
+```rust
+pub trait GamePlugin {
+    fn presentation_input(&mut self, event: &RawInputEvent) {}   // zusätzlich, Default leer
+}
+```
+
+**Semantik:**
+
+- **Kein Weg in die Simulation.** Der Haken übergibt das Ereignis und sonst nichts: keine `World`, kein
+  `Simulation`, kein `TickInput`. Was ein Plugin daraus macht, liegt in seinem eigenen Zustand. Eine
+  Aufzeichnung, die währenddessen entsteht, ist byte-gleich zu einer ohne diese Tastendrücke, und alle
+  Zustands-Hashes bleiben gleich (`grimoire/tests/presentation_input.rs`, mit der Gegenprobe, dass
+  dieselbe Taste als `InputMap`-Bindung die Aufzeichnung sehr wohl ändert).
+- **Spieleingaben bleiben, wie sie sind.** Der `InputMap`-Weg ist unverändert: Wer eine Taste bindet,
+  bekommt sie weiterhin im `TickInput`, im Hash und in der Aufzeichnung. Beide Wege schließen sich
+  nicht aus; eine gebundene Taste erreicht zusätzlich diesen Haken.
+- **Reihenfolge (§9.3 Schritt 0):** Die Schleife sammelt jedes `RawInputEvent` in `event` und liefert
+  die gesammelten Ereignisse zu Beginn des nächsten Frames aus — vor `FixedTimestep::advance`, vor
+  jedem Tick dieses Frames und vor `extract`. Je Ereignis läuft jedes Plugin in
+  Registrierungsreihenfolge; die Ereignisse kommen einzeln, in Ankunftsreihenfolge und werden nie
+  zusammengefasst.
+- **Frames ohne Tick liefern trotzdem.** Ein pausiertes oder einzeln getaktetes Spiel bleibt auf diesen
+  Tasten ansprechbar, ebenso ein Frame, in dem der Zeitschritt keinen Tick fällig hat. Die Engine
+  selbst kennt keine Pause; wer pausiert, tut das im Spiel, und dieser Haken läuft weiter.
+- **Grenze:** Höchstens 4.096 Ereignisse warten auf den nächsten Frame. Kommen mehr, verwirft die
+  Schleife die neuesten und schreibt einmal je Frame eine Warnung ins Log mit der Anzahl. Das
+  geschieht nur, wenn über lange Zeit kein Frame läuft.
+- **Wo er läuft:** in allen Frame-Schleifen (`run`, `run_offscreen`, `run_headless_frames` und die
+  Variante mit Ereignis-Skript). `run_headless` hat keine Plattform-Ereignisse und ruft ihn nie.
+  Fokusverlust ist kein Eingabeereignis: Die Schleife löst gehaltene Tasten selbst
+  (`InputState::release_all`, §9.3), der Haken sieht nichts davon.
+- **Overlay und Beenden:** `overlay_key` und `exit_key` bleiben, wo sie sind (§9.7, §9.3). Sie sind
+  Engine-Funktionen, keine Plugin-Präsentation, und ändern ebenfalls kein `TickInput`.
 
 ## 10. `grimoire_exec`
 
