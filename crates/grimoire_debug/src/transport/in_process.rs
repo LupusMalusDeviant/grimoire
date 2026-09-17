@@ -58,6 +58,38 @@ impl InProcessTransport {
     }
 }
 
+impl InProcessTransport {
+    /// Writes `bytes` to the peer as they are, without framing them, in chunks of at most
+    /// [`InProcessOptions::max_chunk`] bytes (Plan 0002 WP8.4).
+    ///
+    /// Protocol traffic never needs this: it is the fault-injection path for tests of how a peer
+    /// handles garbage, over-length frames and a connection that ends in the middle of a frame
+    /// (contract §13 "Transporte"). The peer's [`DebugTransport::poll`] decodes the bytes like any
+    /// others.
+    ///
+    /// # Errors
+    /// [`TransportError::Disconnected`] after a disconnect, [`TransportError::QueueFull`] if the
+    /// peer's channel is full.
+    pub fn send_bytes(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if !self.is_connected() {
+            return Err(TransportError::Disconnected);
+        }
+        self.write_chunks(bytes)
+    }
+
+    fn write_chunks(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        for chunk in bytes.chunks(self.max_chunk) {
+            self.outbound
+                .try_send(chunk.to_vec())
+                .map_err(|error| match error {
+                    mpsc::TrySendError::Full(_) => TransportError::QueueFull,
+                    mpsc::TrySendError::Disconnected(_) => TransportError::Disconnected,
+                })?;
+        }
+        Ok(())
+    }
+}
+
 impl DebugTransport for InProcessTransport {
     fn poll(&mut self, inbox: &mut Vec<Frame>) -> Result<(), TransportError> {
         while let Ok(chunk) = self.inbound.try_recv() {
@@ -83,15 +115,7 @@ impl DebugTransport for InProcessTransport {
         }
         let mut bytes = Vec::new();
         encode_frame(frame, &mut bytes)?;
-        for chunk in bytes.chunks(self.max_chunk) {
-            self.outbound
-                .try_send(chunk.to_vec())
-                .map_err(|error| match error {
-                    mpsc::TrySendError::Full(_) => TransportError::QueueFull,
-                    mpsc::TrySendError::Disconnected(_) => TransportError::Disconnected,
-                })?;
-        }
-        Ok(())
+        self.write_chunks(&bytes)
     }
 
     fn is_connected(&self) -> bool {

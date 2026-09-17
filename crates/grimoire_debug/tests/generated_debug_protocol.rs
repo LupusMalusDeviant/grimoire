@@ -296,6 +296,78 @@ fn oversized_scopes_count_fails_before_allocating() {
     );
 }
 
+/// `Stats` bytes up to (not including) `scopes`: 56 bytes of zeroed frame values.
+fn stats_prefix() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // frame
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // sim_tick
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // ticks_this_frame
+    bytes.extend_from_slice(&0f32.to_le_bytes()); // alpha
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // frame_time_ns
+    bytes.extend_from_slice(&0f32.to_le_bytes()); // fps
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // dropped_time_ns
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // content_swaps
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // content_manifest
+    bytes
+}
+
+#[test]
+fn a_short_message_claiming_the_maximum_scope_count_fails_against_the_remaining_bytes() {
+    // 64 scopes are within the limit, but a `StatsScope` is at least 27 bytes on the wire (u16,
+    // empty Str, u64, u32, u64, bool): 64 of them need 1728 bytes and none follow. The count is
+    // checked against the remaining input before the decoder reserves the vector (Plan 0002
+    // WP8.4); `tests/decode_allocations.rs` proves nothing that size is allocated.
+    let mut bytes = stats_prefix();
+    bytes.extend_from_slice(&64u32.to_le_bytes()); // scopes: count 64, no elements follow
+
+    assert_eq!(
+        Stats::decode(&bytes).unwrap_err(),
+        ProtocolError::UnexpectedEnd {
+            offset: 60,
+            needed: 64 * 27,
+            available: 0,
+        }
+    );
+
+    // Counters: at least 12 bytes each (empty Str, u64); one byte short of 64 of them.
+    let mut bytes = stats_prefix();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // scopes: none
+    bytes.extend_from_slice(&64u32.to_le_bytes()); // counters: count 64
+    bytes.extend_from_slice(&[0u8; 64 * 12 - 1]);
+    assert_eq!(
+        Stats::decode(&bytes).unwrap_err(),
+        ProtocolError::UnexpectedEnd {
+            offset: 64,
+            needed: 64 * 12,
+            available: 64 * 12 - 1,
+        }
+    );
+}
+
+#[test]
+fn a_count_whose_elements_exactly_fit_still_decodes() {
+    // The remaining-bytes check uses the smallest element size, so the tightest valid message
+    // (every scope and counter at its minimum encoding) still decodes.
+    let mut value = sample_stats();
+    value.scopes = (0..64)
+        .map(|index| {
+            let mut scope = StatsScope::default();
+            scope.scope = index;
+            scope
+        })
+        .collect();
+    value.counters = (0..64)
+        .map(|_| StatsCounter {
+            name: String::new(),
+            value: 0,
+        })
+        .collect();
+    let mut bytes = Vec::new();
+    value.encode(&mut bytes).unwrap();
+    assert_eq!(bytes.len(), 56 + 4 + 64 * 27 + 4 + 64 * 12);
+    assert_eq!(Stats::decode(&bytes).unwrap(), value);
+}
+
 #[test]
 fn oversized_str_length_fails_before_allocating() {
     // `Hello.engine_version` (`Str≤64`): a declared length far larger than both the field's

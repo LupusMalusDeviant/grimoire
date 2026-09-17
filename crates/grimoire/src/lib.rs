@@ -39,6 +39,11 @@
 //!    `gpu`) and per subsystem, measured with the platform clock, with budgets and the bullet
 //!    counters ([`adapters::debug`], plan 0002 WP6.3). [`AppBuilder::profiler`] turns it off.
 //!
+//! With the feature `debug-link`, a tool can connect over the debug link
+//! (`AppBuilder::debug_link`, `adapters::debug::link`, plan 0002 WP8.4): the loop reads it at the
+//! start of every frame, applies swapped Sigil units right before the next tick and sends `Stats`
+//! after step 4. Without an applied swap every state hash is the same with and without a link.
+//!
 //! When the loop ends, every plugin receives [`GamePlugin::shutdown`] once, in registration order.
 //!
 //! The clock is read only by the loop, never by the simulation, so the same seed and the same

@@ -40,6 +40,8 @@
 //! ```
 
 pub mod glyphs;
+#[cfg(feature = "debug-link")]
+pub mod link;
 pub mod overlay;
 
 use std::time::Duration;

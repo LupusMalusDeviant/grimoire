@@ -155,19 +155,46 @@ impl<'a> Reader<'a> {
         Ok(self.take(raw_len)?.to_vec())
     }
 
-    /// Decodes a `Vec≤max<T>` element count (contract §13): the raw `u32` count is checked
-    /// against `max` before the caller allocates a `Vec` with that capacity, so an oversized
-    /// declared count (e.g. `u32::MAX`) never reaches an allocation — it fails here instead.
-    fn count_u32(&mut self, field: &'static str, max: usize) -> Result<usize, PackManifestV1Error> {
+    /// Decodes a `Vec≤max<T>` element count (contract §13) and checks it with
+    /// [`Reader::check_count`] before the caller allocates a `Vec` with that capacity.
+    fn count_u32(
+        &mut self,
+        field: &'static str,
+        max: usize,
+        min_elem_len: usize,
+    ) -> Result<usize, PackManifestV1Error> {
         let raw_count = self.u32()? as usize;
-        if raw_count > max {
+        self.check_count(field, raw_count, max, min_elem_len)
+    }
+
+    /// Checks an element count before the caller allocates for it (contract §2 rule 9): against
+    /// the field's documented `max` (`FieldTooLong`), then against the bytes remaining, since
+    /// `count` elements of at least `min_elem_len` encoded bytes each must still fit
+    /// (`UnexpectedEnd`). A short message that claims a large count therefore fails here instead
+    /// of reserving capacity for elements it cannot contain.
+    fn check_count(
+        &self,
+        field: &'static str,
+        count: usize,
+        max: usize,
+        min_elem_len: usize,
+    ) -> Result<usize, PackManifestV1Error> {
+        if count > max {
             return Err(PackManifestV1Error::FieldTooLong {
                 field,
-                len: raw_count,
+                len: count,
                 max,
             });
         }
-        Ok(raw_count)
+        let needed = count.saturating_mul(min_elem_len);
+        if needed > self.remaining() {
+            return Err(PackManifestV1Error::UnexpectedEnd {
+                offset: self.pos,
+                needed,
+                available: self.remaining(),
+            });
+        }
+        Ok(count)
     }
 
     /// Fails with `TrailingBytes` unless every byte has been consumed (contract §13: "keine
@@ -449,14 +476,7 @@ impl PackManifestBody {
         let compiler_version = reader.str_u16("compiler_version", 64)?;
         let entry_count = reader.u32()?;
         let paths = {
-            let count = entry_count as usize;
-            if count > 65536 {
-                return Err(PackManifestV1Error::FieldTooLong {
-                    field: "paths",
-                    len: count,
-                    max: 65536,
-                });
-            }
+            let count = reader.check_count("paths", entry_count as usize, 65536, 2)?;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
                 items.push(reader.str_u16("paths", 255)?);
