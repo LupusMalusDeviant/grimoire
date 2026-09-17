@@ -638,7 +638,7 @@ Sub-bullets are one cascade level deeper than their parent.
 ### 10.10 Visual catalogue
 
 PO decision 2026-09-17 (plan 0002 WP3.5/WP5.3), implemented in `grimoire_sigilc::catalog`.
-*Stufe I, PO-Freigabe offen:* the meaning of `BulletType`'s `silhouette` and `palette` changes from
+*Stufe I, PO decision 2026-09-17 (accepted, format version stays 1):* the meaning of `BulletType`'s `silhouette` and `palette` changes from
 a per-unit alphabetical number to the catalogue index below, and a name outside the catalogue no
 longer compiles (`SIG0027`). The byte layout and `format_version` stay unchanged, so every existing
 unit still decodes; see the migration note in `CHANGELOG.md`.
