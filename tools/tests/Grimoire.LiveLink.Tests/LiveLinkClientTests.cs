@@ -126,6 +126,22 @@ public sealed class LiveLinkClientTests
     }
 
     [Fact]
+    public async Task StartingAgainAfterARejectionAttemptsANewConnection()
+    {
+        var connector = new InMemoryLinkConnector();
+        await using var client = new LiveLinkClient(connector, FakeEngine.Options());
+        client.Start();
+        Assert.Null(await new FakeEngine { EngineVersion = "9.9.9" }.AcceptAsync(await connector.AcceptAsync(Timeout()), Timeout()));
+        await client.WaitForStateAsync(LinkState.Rejected, Timeout());
+
+        client.Start();
+        Assert.NotNull(await new FakeEngine().AcceptAsync(await connector.AcceptAsync(Timeout()), Timeout()));
+        await client.WaitForStateAsync(LinkState.Connected, Timeout());
+        Assert.Null(client.Rejection);
+        Assert.Equal(2, connector.ConnectionAttempts);
+    }
+
+    [Fact]
     public async Task ABusyEngineIsRetriedUntilItAccepts()
     {
         var connector = new InMemoryLinkConnector();

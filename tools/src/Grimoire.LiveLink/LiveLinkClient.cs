@@ -278,8 +278,9 @@ public sealed class LiveLinkClient : IAsyncDisposable
     public ChannelReader<Message> Messages => _messages.Reader;
 
     /// <summary>
-    /// Starts connecting in the background; restarts after <see cref="LinkState.Rejected"/>. Does nothing
-    /// while already running.
+    /// Starts connecting in the background; call it again after <see cref="LinkState.Rejected"/> to retry (for
+    /// example once the tool has been rebuilt for the engine's version). Does nothing while the client is
+    /// still connecting, connected or waiting to reconnect.
     /// </summary>
     /// <exception cref="ObjectDisposedException">The client was stopped.</exception>
     public void Start()
@@ -291,15 +292,34 @@ public sealed class LiveLinkClient : IAsyncDisposable
                 throw new ObjectDisposedException(nameof(LiveLinkClient));
             }
 
-            if (_runTask is { IsCompleted: false })
+            if (_runTask is { IsCompleted: false } && State != LinkState.Rejected)
             {
                 return;
             }
 
-            _runCancellation?.Dispose();
-            _runCancellation = new CancellationTokenSource();
+            // A rejected loop may still be winding down: chain onto it instead of running two loops, so a
+            // Start right after the Rejected state always leads to a new attempt.
+            var previousTask = _runTask;
+            var previousCancellation = _runCancellation;
+            var cancellation = new CancellationTokenSource();
+            _runCancellation = cancellation;
             Rejection = null;
-            _runTask = Task.Run(() => RunAsync(_runCancellation.Token));
+            _runTask = Task.Run(async () =>
+            {
+                if (previousTask is not null)
+                {
+                    try
+                    {
+                        await previousTask.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }
+
+                previousCancellation?.Dispose();
+                await RunAsync(cancellation.Token).ConfigureAwait(false);
+            });
         }
     }
 
