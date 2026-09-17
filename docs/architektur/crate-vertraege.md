@@ -128,9 +128,11 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
   Quelltext in den besitzenden Crates, nicht über eine Cargo-Kante.
 - **`tools/`** (C#-Suite, P-1): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
   Formatdokumente (`docs/formats/`), Golden-Fixtures und die JSON-Ausgaben von `sigilc` an der Engine.
-  *Umsetzung (WP9.1), Klarstellung:* Solution `tools/Grimoire.Tools.slnx` mit `Grimoire.Formats` (Codecs aus
-  `grimoire_schemagen`, Debug-Protokoll-Frames, Pack-v1-Leser und -Schreiber) und `Grimoire.LiveLink`
-  (Werkzeugseite von §13). Dort gelten sinngemäß die Regeln aus §2: Code und Kommentare auf Englisch (Regel 1),
+  *Umsetzung (WP9.1, WP9.2), Klarstellung:* Solution `tools/Grimoire.Tools.slnx` mit `Grimoire.Formats` (Codecs aus
+  `grimoire_schemagen`, Debug-Protokoll-Frames, Pack-v1-Leser und -Schreiber), `Grimoire.LiveLink`
+  (Werkzeugseite von §13) und `Grimoire.AssetCompiler` (Asset-Compiler `grimoire-ac`: Content-Discovery,
+  Normalisierung der Pfade zu `AssetPath`, Aufruf von `sigilc build --json`, Pack und Manifest; keine
+  Sigil-Grammatik und kein Interpreter in C#, Projekt-ADR-0010). Dort gelten sinngemäß die Regeln aus §2: Code und Kommentare auf Englisch (Regel 1),
   jede öffentliche Einheit dokumentiert und Warnungen als Fehler (Regel 2), Drittpakete nur zentral und exakt
   gepinnt in `tools/Directory.Packages.props` mit Lock-Dateien (Regel 4), Fehleingaben werfen nur die
   Format-Ausnahme der Bibliothek (`WireFormatException`, `PackFormatException`) und prüfen Längen vor der
@@ -139,7 +141,20 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
   Handshake liest der Build aus der Workspace-Version in `Cargo.toml`, den Build-Hash aus `GRIMOIRE_BUILD_HASH`.
   CI: Workflow `tools.yml` (`dotnet build/test` auf Windows, Linux und macOS mit Pfadfiltern und NuGet-Cache,
   Socket-Tests mit `GRIMOIRE_SOCKET_TESTS=1`); der Drift-Check von `grimoire_schemagen` umfasst die C#-Codecs,
-  das Standalone-Gate `tools/**` (siehe oben).
+  das Standalone-Gate `tools/**` (siehe oben). Seit WP9.2 baut derselbe Workflow zusätzlich `sigilc` aus
+  dem Arbeitsstand und fährt den Konformitätskorpus von §11.1 durch `grimoire-ac`
+  (`GRIMOIRE_REQUIRE_SIGILC=1`, damit ein fehlendes Binary das Gate nicht still bestehen lässt); die Zeit
+  eines vollständigen Pack-Rebuilds (PRD-0016 NFR, Ziel < 60 s) messen ausschließlich CI-Runner.
+  Die Pack-Einträge tragen den Asset-Pfad der Quelle, sodass `AssetId` und `UnitId` übereinstimmen (§11.1,
+  §12); Compiler-Name im Manifest ist `grimoire-ac`, Compiler-Version die des aufgerufenen `sigilc`.
+  Eigene Diagnosen des Werkzeugs führen den Präfix `AC` und stehen in `tools/README.md`; Diagnosen von
+  `sigilc` reicht es unverändert durch (Projekt-ADR-0010).
+  *Abgrenzung zu `grimoire_link` (oben, WP8.5):* Beide rufen denselben Compiler und sprechen dasselbe
+  Protokoll (§13), haben aber verschiedene Aufgaben. `grimoire-link` ist das Rust-Werkzeug am Engine-Tag
+  für die Engine-Entwicklung — eine Datei beobachten, tauschen, `Stats` lesen. `grimoire-ac` ist die
+  Content-Seite der Werkzeug-Suite: ein ganzes Content-Verzeichnis entdecken, übersetzen und als Pack mit
+  Manifest schreiben; sein `watch --push` tauscht einzelne Units über `Grimoire.LiveLink`, damit der
+  Editor (WP10) denselben Weg nutzt wie die CLI. Keines von beiden ist Laufzeit.
 - Abbildungen zwischen `grimoire_sigil`, `grimoire_collide`, `grimoire_render`, `grimoire_assets` und
   `grimoire_debug` liegen ausschließlich in der Fassade (Adapter-Tabelle in §9.1).
 - Neue Kanten nur per Crate-Map-ADR und gleichzeitiger Änderung dieser Tabelle (§2 Regel 15). Ein Kanten-Check
@@ -430,6 +445,16 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-17 | Formatdoku `sigil.md` §13.8 neu (`sigilc simulate --json`, Dokumente `grimoire.sigilc.simulate` und `grimoire.sigilc.target_path` mit Grenzen), §13.1 (Kommandozeile `simulate`, Exit-Code 2 auch für einen ungültigen Zielpfad) | #46 | A (PO-Freigabe 2026-09-17, gebündelt) | Editor (WP10.4), C#-Pipeline (WP9.1) | nein (neue goldene `simulate`-Dokumente) |
 | 2026-09-17 | §11.7 (Referenz-Pattern-Goldens vor der Festlegung von `QUERY_BLOCK_SIZE` eingefroren, weil unabhängig von der Blockgröße) | #48 | A (PO-Freigabe 2026-09-17, gebündelt) | Sigil-Laufzeit, Messung (P1-Bench zu `QUERY_BLOCK_SIZE`) | nein (neue Goldens der zwölf Referenz-Patterns in `reference_goldens.rs`, neues Unit-Fixture `sigil_curtain_unit_v1.bin`) |
 | 2026-09-17 | Formatdoku `sigil.md` §14.1 neu (goldene Hashes der Referenz-Patterns: Szenario, Blockgrößen-Unabhängigkeit, Erneuerungsregel, Schaufenster `sigil_curtain`) | #48 | K | — | nein |
+| 2026-09-17 | §8.1 (`ReplayHeader::record_swap`: Anhängen in Tick-Reihenfolge, Zusammenfassen mehrerer Tausche an einer Grenze, `SwapOrder` und `TooManyEntries` ohne Änderung), §11.8 (`impl From<SwapReport> for SwapRecord`) | #52 | A (gebündelte PO-Freigabe offen) | Pipeline-Rust (WP8.4), Absicherung (WP7.4, WP7.5) | nein |
+| 2026-09-17 | §8.1 (Umsetzungsvermerke: `ci.yml`, `nightly.yml` und `release.yml` setzen `GRIMOIRE_BUILD_HASH`; die drei Replay-Fixtures tragen nach dem PO-Sammelentscheid 2026-09-17 „Replay-Fixtures der Engine“ eine feste Engine-Version und einen festen Build-Hash und werden ohne Encoder nachgeschrieben), Formatdoku `replay.md` neu (Version 1 und 2 mit Offsets, Fehlertabelle, Aufzeichnungsablauf, die drei kommentierten Fixtures) | #52 | K | — | nein (die drei Fixtures blieben beim Entkoppeln bytegleich) |
+| 2026-09-17 | §12 (Verdrahtung des generierten Manifest-Codecs in `PackReader`/`PackWriter` mit Präfixprüfung vor der Allokation; Aufteilung der Formatdoku in `pack.md` (von Hand) und `pack-manifest.md` (generiert); `Handle` trägt die Kennung des ausgebenden Stores, sodass `get` für ein fremdes Handle `None` liefert; zweite Golden-Fixture unter „Verhaltenstests“) | #54 | K | — | nein (neue Golden-Fixture `pack_v1_sigil.grimpack` samt kommentierter Herleitung `pack_v1_sigil.hex`) |
+| 2026-09-17 | §9.11 neu (öffentliche API von `grimoire::adapters::assets`: `sigil_units`, `sigil_library`, `SigilAssetsError`), §9.1 (Verweis auf §9.11 in der Adapter-Tabelle) | #54 | A (gebündelte PO-Freigabe offen) | Spiel (Sigil-Content aus dem Pack), C#-Pipeline (WP9.2) | nein |
+| 2026-09-17 | §14 (Allokationsnachweis `tests/alloc.rs` mit zählendem Allokator; Konformanz-Suite hinter dem Feature `conformance` läuft im eigenen CI-Schritt; Proptest `overlapping_batch` gegen Einzelabfragen; feste Blockszene `GOLDEN_BLOCK_QUERY_HASH` neben `GOLDEN_QUERY_HASH` im Hash-Gate; Szenenparameter der Benches `collide_uniform` und `collide_cluster`) | #55 | K | — | nein (neue goldene Konstante `GOLDEN_BLOCK_QUERY_HASH`, keine bestehende erneuert) |
+| 2026-09-17 | §8.5 neu (`grimoire_sim::trace`: `trace`, `SystemHasher`, `system_hash`, `HashTrace`, `TraceCheckpoint`, `TraceGranularity`, `first_divergence`, `Divergence`, `DivergentSystem`; Dichte für Harness und Golden Master schlägt Engine-ADR-0018 vor, Status Vorgeschlagen) | #56 | A (gebündelte PO-Freigabe offen) | Absicherung (WP7.4, WP7.5) | nein |
+| 2026-09-17 | §13 (`EngineLink`, `LinkEvent`, `LinkError`, `InProcessTransport::send_bytes`, Verbindungsgrenzen des TCP-Transports: `poll` meldet `Disconnected` genau einmal je Verbindung, `send` ohne Client `NotConnected`, `disconnect` nur für die zuletzt gesehene Verbindung), §9.7 (`adapters::debug::link` mit `DebugLink`, `engine_identity`, `current_epoch`, `SWAP_*`), §9.2 (`AppBuilder::debug_link_token`) | #57 | A (gebündelte PO-Freigabe offen) | Pipeline-Rust (WP8.5), C#-Pipeline (WP9.1), Editor (WP10.5) | nein |
+| 2026-09-17 | §13 (TCP-IO-Thread setzt „TCP“ um: Tor vor dem Handshake, `TooLarge` vor dem ersten Nutzlast-Byte, Frist, `Busy`, Gegendruck statt stillem Verwerfen; Anzahlprüfung der generierten Decoder gegen die Resteingabe nach §2 Regel 9; Hot-Swap von Nicht-Sigil-Assets bleibt in v1 reserviert; Konformanz-Suite läuft in der CI), §9.7 (Reihenfolge in `run_headless`, `Stats`-Takt, Ack-Reihenfolge und Felder bei Status 1 und 2), §12 (Konformanz-Suite läuft in der CI), §2 Regel 14 (paketgewählter Clippy-Schritt der Auslieferungskonfiguration und die Feature-Schritte in der CI) | #57 | K | — | nein |
+| 2026-09-17 | Formatdoku `sigil.md` §15 (Gruppe `bench` im Plattform-Identitäts-Gate: die drei Vollvorhang-Units aus `grimoire_bench`) | #58 | K | — | nein (drei neue Unit-Fixtures `full_curtain_flow/weave/shatter_unit_v1.bin`, keine Erneuerung) |
+| 2026-09-17 | §1 (`grimoire_schemagen` erzeugt zusätzlich die C#-Codecs der Werkzeug-Suite; Umsetzungsvermerk `tools/`: Aufbau der Solution, sinngemäße Anwendung der §2-Regeln 1, 2, 4, 9 und 10 auf C#, SDK- und Paket-Pin, Engine-Version und Build-Hash, CI-Workflow `tools.yml` und Standalone-Gate), §12, §13 (Ort der C#-Konformanztests) | #59 | K | — | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -2831,7 +2856,7 @@ pub fn sigil_library(source: &dyn AssetSource, registry: Arc<BehaviorRegistry>) 
 ### 9.12 Präsentations-Eingaben (Ergänzung M3)
 
 *Stufe A (additiv, neue Default-Methode auf `GamePlugin`; bricht kein Plugin). PO-Entscheid
-2026-09-17: „Haken für Tasten, die nur die Darstellung ändern.“ Freigabe der konkreten API offen.*
+2026-09-17: „Haken für Tasten, die nur die Darstellung ändern.“ PO-Freigabe der API 2026-09-18.*
 
 Tasten und Mausereignisse, die allein die Darstellung ändern (Kamera-Voreinstellungen, Debug-Ansichten,
 eine Screenshot-Taste), brauchten bisher eine `InputMap`-Bindung. Damit lagen sie im `TickInput` und

@@ -8,8 +8,10 @@ generierte Codecs an der Engine, nie über eine Cargo-Kante (Vertrag §1).
 |---|---|
 | `src/Grimoire.Formats` | Debug-Protokoll v1 (Frames, Nachrichten, Handshake der Werkzeugseite) und Pack v1 (Leser, Schreiber, `AssetId`), dazu die aus `schema/*.gschema` generierten Codecs unter `Generated/` |
 | `src/Grimoire.LiveLink` | Live-Link-Client: Verbindung, Handshake, Reconnect mit Backoff, typisierte Nachrichten, Hot-Swap, Degradieren auf Dateiarbeit bei Abriss (PRD-0016 FR-03) |
+| `src/Grimoire.AssetCompiler` | Asset-Compiler `grimoire-ac`: Content-Discovery, `sigilc`-Orchestrierung, Pack und Manifest, `watch --push` (Plan 0002 WP9.2) |
 | `tests/Grimoire.Formats.Tests` | Konformanz gegen die Rust-Golden-Fixtures von `grimoire_debug` und `grimoire_assets`, Grenzen und feindliche Eingaben |
 | `tests/Grimoire.LiveLink.Tests` | Client gegen ein Engine-Double nach Vertrag §13; TCP-Tests nur mit `GRIMOIRE_SOCKET_TESTS=1` |
+| `tests/Grimoire.AssetCompiler.Tests` | Discovery, Pack-Erzeugung und Watch-Schleife gegen einen Compiler-Doppelgänger, dazu der WP4.1-Konformitätskorpus gegen das echte `sigilc` |
 
 ## Bauen und testen
 
@@ -42,3 +44,49 @@ Die Socket-Tests laufen nur mit `GRIMOIRE_SOCKET_TESTS=1`; das setzt ausschließ
   Byte-Literale von `grimoire_debug/tests/handshake_golden.rs`); es gibt keine zweite Kopie, die abweichen
   könnte.
 - **Pfade:** alle relativ; die Suite baut an jedem Ort, an dem das Repo liegt.
+
+## Asset-Compiler `grimoire-ac`
+
+Sigil-Hoheit liegt bei `grimoire_sigilc` (Projekt-ADR-0010): `grimoire-ac` enthält keine Grammatik, keine
+Validierungsregel und keinen Interpreter, sondern entdeckt Content, normalisiert Pfade, ruft
+`sigilc build --json` und schreibt Pack und Manifest. Die Diagnosen des Compilers werden unverändert
+durchgereicht — in JSON als dieselben Objekte, im Textmodus in der Form von `docs/formats/sigil.md` §6.1.
+Ein Test vergleicht diese Ausgabe byteweise mit dem, was `sigilc check` selbst druckt.
+
+```bash
+# Alles unter content/ bauen; Pack und Zwischenstände landen unter packs/ (Build-Artefakt)
+grimoire-ac build content/ --sigilc ../engine/target/release/sigilc
+
+# Maschinenlesbar, mit Zeitmessung auf stderr
+grimoire-ac build content/ --json --timings
+
+# Eine Datei kompilieren und in die laufende Engine schieben
+grimoire-ac push content/sigil/ring.sigil --root content --token "$GRIMOIRE_DEBUG_TOKEN"
+
+# Beim Arbeiten: jede Änderung kompilieren und swappen
+grimoire-ac watch --push content/
+```
+
+- **Exit-Codes** wie `sigilc` (sigil.md §13.1): `0` alles gut, `1` der Lauf fand Probleme (Diagnose,
+  abgelehnter Swap), `2` der Lauf war so nicht durchführbar (Bedienfehler, fehlendes `sigilc`, nicht
+  lesbarer Pfad). Jede Diagnose verhindert das Pack — ein Pack passt zu seinen Quellen vollständig oder
+  wird nicht geschrieben.
+- **Content-Discovery** nimmt den Baum, wie er ist: jede `.sigil`-Datei unterhalb der Wurzel ist eine
+  Quelle, jede andere Datei wird als übersprungen gemeldet, versteckte Verzeichnisse bleiben unberührt.
+  Nichts wird an einem festen Ort erwartet.
+- **Eigene Diagnosen** (Codes `AC****`, damit kein Code zwei Bedeutungen hat): `AC0001` Pfad ist kein
+  `AssetPath` (Vertrag §12) und muss umbenannt werden, `AC0002` zwei Dateien mit einem Asset-Pfad,
+  `AC0003` die Unit ist nicht lesbar oder nennt eine andere Kennung als ihr Pfad, `AC0004` das Pack
+  überschreitet eine Grenze aus Vertrag §12, `AC0005` das `sigilc`-Binary hat eine andere Version als
+  dieser Build (`--allow-version-mismatch` erlaubt es), `AC0006` keine Quelldatei gefunden
+  (`--allow-empty` erlaubt es).
+- **Pack-Identität:** Der Pack-Eintrag trägt den Asset-Pfad der Quelle mit Endung `.sigil`, seine
+  `AssetId` ist damit die `UnitId` der Unit (Vertrag §11.1, §12); die Artversion ist die
+  `SigilUnit`-Formatversion aus dem Unit-Kopf. Der Compiler-Name im Manifest ist `grimoire-ac`, die
+  Compiler-Version die des `sigilc`, das die Unit-Bytes erzeugt hat. Gleiche Quellen ergeben ein
+  byte-gleiches Pack; Zeitmessungen stehen nur auf stderr, nie im Pack oder im Bericht.
+- **Berichtsdokument** `--json` (`grimoire.ac.build`, Schema-Version 1): feste Schlüsselreihenfolge,
+  Kennungen und Hashes als Kleinbuchstaben-Hex, keine Zeitstempel, die Diagnosen des Compilers unverändert
+  eingebettet.
+- **Messung:** Die Zeit eines vollständigen Pack-Rebuilds messen ausschließlich CI-Runner
+  (`.github/scripts/measure-pack-rebuild.sh`, Ziel < 60 s aus PRD-0016), nie der Entwicklungsrechner.
