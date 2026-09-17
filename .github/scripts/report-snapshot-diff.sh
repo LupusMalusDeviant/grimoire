@@ -47,8 +47,9 @@ fi
 diff_lines="$(grep -h -o 'grimoire-snapshot-diff:.*' -- "${logs[@]}" 2>/dev/null | sort -u || true)"
 no_reference_lines="$(grep -h -o 'grimoire-snapshot-no-reference:.*' -- "${logs[@]}" 2>/dev/null | sort -u || true)"
 updated_lines="$(grep -h -o 'grimoire-snapshot-updated:.*' -- "${logs[@]}" 2>/dev/null | sort -u || true)"
+variance_lines="$(grep -h -o 'grimoire-snapshot-variance:.*' -- "${logs[@]}" 2>/dev/null | sort -u || true)"
 
-if [ -z "$diff_lines" ] && [ -z "$no_reference_lines" ] && [ -z "$updated_lines" ]; then
+if [ -z "$diff_lines" ] && [ -z "$no_reference_lines" ] && [ -z "$updated_lines" ] && [ -z "$variance_lines" ]; then
   {
     echo "Keine WP2.8-Snapshot-Zeilen im Log gefunden (Adapter nicht verfügbar, oder die Szenen \
 liefen auf diesem Runner nicht mit \`--ignored\`)."
@@ -102,6 +103,42 @@ if [ -n "$no_reference_lines" ]; then
     echo "Kandidatenbilder liegen im Artefakt \`snapshot-candidates-${label}\`, falls hochgeladen; \
 zur Übernahme als Referenz nach \`crates/grimoire_render/tests/snapshots/<plattform>/\` kopieren \
 und committen."
+    echo
+  } >> "$summary"
+fi
+
+# Plan 0002 WP3.6 (OF-18.2): run-to-run variance per scene on this runner's adapter and, off
+# Windows, the difference to the Windows (WARP) reference (`scene_variance` in snapshot_scenes.rs).
+if [ -n "$variance_lines" ]; then
+  {
+    echo "### OF-18.2: Streuung je Adapter"
+    echo
+    echo "| Szene | Läufe | Lauf-zu-Lauf mean / max | gegen Windows-Referenz |"
+    echo "| --- | --- | --- | --- |"
+  } >> "$summary"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    name="$(sed -n 's/^grimoire-snapshot-variance: name=\([^ ]*\).*/\1/p' <<<"$line")"
+    if grep -q 'skipped=' <<<"$line"; then
+      echo "| ${name} | – | kein Adapter | – |" >> "$summary"
+      continue
+    fi
+    runs="$(sed -n 's/.*runs=\([^ ]*\).*/\1/p' <<<"$line")"
+    run_mean="$(sed -n 's/.*run_mean_abs_diff=\([^ ]*\).*/\1/p' <<<"$line")"
+    run_max="$(sed -n 's/.*run_max_abs_diff=\([^ ]*\).*/\1/p' <<<"$line")"
+    if grep -q 'vs_windows_mean_abs_diff=' <<<"$line"; then
+      vs_mean="$(sed -n 's/.*vs_windows_mean_abs_diff=\([^ ]*\).*/\1/p' <<<"$line")"
+      vs_max="$(sed -n 's/.*vs_windows_max_abs_diff=\([^ ]*\).*/\1/p' <<<"$line")"
+      versus="${vs_mean} / ${vs_max}"
+    else
+      versus="$(sed -n 's/.*vs_windows=\([^ ]*\).*/\1/p' <<<"$line")"
+    fi
+    echo "| ${name} | ${runs} | ${run_mean} / ${run_max} | ${versus} |" >> "$summary"
+  done <<<"$variance_lines"
+  adapter="$(sed -n 's/.*adapter=\[\(.*\)\]$/\1/p' <<<"$(head -n1 <<<"$variance_lines")")"
+  {
+    echo
+    echo "Adapter: ${adapter:-unbekannt}"
     echo
   } >> "$summary"
 fi
