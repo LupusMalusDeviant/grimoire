@@ -2,11 +2,26 @@
 //! golden fixtures under `tests/fixtures/`.
 
 use grimoire_sim::{
-    BuildHash, ContentManifestHash, ENGINE_VERSION, InputFrame, InputLog, MAX_APP_KEY_BYTES,
-    MAX_APP_METADATA, MAX_APP_VALUE_BYTES, MAX_ENGINE_VERSION_BYTES, MAX_INPUT_SLOTS,
-    MAX_SWAP_RECORDS, Replay, ReplayHeader, SimError, SwapRecord, TickInput,
+    BuildHash, ContentManifestHash, InputFrame, InputLog, MAX_APP_KEY_BYTES, MAX_APP_METADATA,
+    MAX_APP_VALUE_BYTES, MAX_ENGINE_VERSION_BYTES, MAX_INPUT_SLOTS, MAX_SWAP_RECORDS, Replay,
+    ReplayHeader, SimError, SwapRecord, TickInput,
 };
 use proptest::prelude::*;
+
+/// `engine_version` of the golden v2 fixtures and of the sample replays built like them. Fixed on
+/// purpose: the fixtures pin the byte format, not the version of the day, so a release that raises
+/// `ENGINE_VERSION` leaves them untouched (PO decision 2026-09-17).
+const FIXTURE_ENGINE_VERSION: &str = "0.4.0";
+
+/// A v2 header with the fixed fixture identity: [`FIXTURE_ENGINE_VERSION`], an unknown build,
+/// `content_manifest`, no swaps and no metadata. Never `ENGINE_VERSION` or `ENGINE_BUILD`, which
+/// change with every release and with `GRIMOIRE_BUILD_HASH`.
+fn fixture_header(content_manifest: ContentManifestHash) -> ReplayHeader {
+    let mut header = ReplayHeader::for_this_build(content_manifest);
+    header.engine_version = FIXTURE_ENGINE_VERSION.to_string();
+    header.engine_build = BuildHash::UNKNOWN;
+    header
+}
 
 fn sample_log(frame_count: usize) -> InputLog {
     let frames = (0..frame_count)
@@ -35,13 +50,13 @@ fn v1_replay() -> Replay {
 
 fn minimal_replay() -> Replay {
     Replay {
-        header: Some(ReplayHeader::for_this_build(ContentManifestHash::EMPTY)),
+        header: Some(fixture_header(ContentManifestHash::EMPTY)),
         log: sample_log(3),
     }
 }
 
 fn full_replay() -> Replay {
-    let mut header = ReplayHeader::for_this_build(ContentManifestHash(0x0011_2233_4455_6677));
+    let mut header = fixture_header(ContentManifestHash(0x0011_2233_4455_6677));
     header.engine_build = BuildHash([0xab; 20]);
     header.swaps = vec![
         SwapRecord::new(2, ContentManifestHash(0xaa)),
@@ -101,6 +116,89 @@ fn v2_full_fixture_round_trips_with_swaps_and_metadata() {
     assert!(!header.app_metadata.is_empty());
     assert!(!header.is_golden_eligible());
     assert_eq!(replay.to_bytes().expect("re-encodes"), V2_FULL_FIXTURE);
+}
+
+/// Appends `frames` sample frames (the values of `sample_log`) in the frame encoding, written out
+/// by hand: slot 0 carries the axes `tick, -tick, 1, -1` and the buttons `tick`, slots 1 to 3 are
+/// zero, each slot four `i16` axes and one `u32` button mask.
+fn hand_frames(bytes: &mut Vec<u8>, frames: u32) {
+    for tick in 0..frames {
+        let axis = tick as i16;
+        for value in [axis, -axis, 1, -1] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&tick.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12 * (MAX_INPUT_SLOTS - 1)]);
+    }
+}
+
+/// The start of a fixture's v2 header written out by hand from the layout table: seed, tick rate,
+/// engine version, build hash and content manifest; the caller appends swaps and metadata.
+fn hand_header_start(build: [u8; 20], content_manifest: u64) -> Vec<u8> {
+    let mut head = Vec::new();
+    head.extend_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
+    head.extend_from_slice(&60u32.to_le_bytes());
+    head.push(5);
+    head.extend_from_slice(b"0.4.0");
+    head.extend_from_slice(&build);
+    head.extend_from_slice(&content_manifest.to_le_bytes());
+    head
+}
+
+/// Magic, version 2, `header_len`, the header, `frame_count` and the frames.
+fn hand_v2(head: &[u8], frames: u32) -> Vec<u8> {
+    let mut bytes = b"GRIMREPL".to_vec();
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&(head.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(head);
+    bytes.extend_from_slice(&u64::from(frames).to_le_bytes());
+    hand_frames(&mut bytes, frames);
+    bytes
+}
+
+/// The checked-in fixtures, written out byte by byte from the layout in `docs/formats/replay.md`
+/// without `Replay::to_bytes` (contract §2 rule 10, project ADR-0011), with the lengths the format
+/// document derives: 224, 220 and 394 bytes, `header_len` 52 and 130.
+#[test]
+fn fixtures_match_their_hand_derived_bytes() {
+    let mut v1 = b"GRIMREPL".to_vec();
+    v1.extend_from_slice(&1u32.to_le_bytes());
+    v1.extend_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
+    v1.extend_from_slice(&60u32.to_le_bytes());
+    v1.extend_from_slice(&4u64.to_le_bytes());
+    hand_frames(&mut v1, 4);
+    assert_eq!(v1.len(), 224);
+    assert_eq!(V1_FIXTURE, v1.as_slice(), "replay_v1.bin");
+
+    let mut minimal_head = hand_header_start([0; 20], 0);
+    minimal_head.extend_from_slice(&0u32.to_le_bytes()); // swap_count
+    minimal_head.extend_from_slice(&0u16.to_le_bytes()); // meta_count
+    assert_eq!(minimal_head.len(), 52);
+    let minimal = hand_v2(&minimal_head, 3);
+    assert_eq!(minimal.len(), 220);
+    assert_eq!(
+        V2_MINIMAL_FIXTURE,
+        minimal.as_slice(),
+        "replay_v2_minimal.bin"
+    );
+
+    let mut full_head = hand_header_start([0xab; 20], 0x0011_2233_4455_6677);
+    full_head.extend_from_slice(&2u32.to_le_bytes()); // swap_count
+    for (tick, manifest) in [(2u64, 0xaau64), (4, 0xbb)] {
+        full_head.extend_from_slice(&tick.to_le_bytes());
+        full_head.extend_from_slice(&manifest.to_le_bytes());
+    }
+    full_head.extend_from_slice(&2u16.to_le_bytes()); // meta_count, keys ascending
+    for (key, value) in [("app.name", "grimoire-harness"), ("app.version", "0.1.1")] {
+        full_head.push(key.len() as u8);
+        full_head.extend_from_slice(key.as_bytes());
+        full_head.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        full_head.extend_from_slice(value.as_bytes());
+    }
+    assert_eq!(full_head.len(), 130);
+    let full = hand_v2(&full_head, 5);
+    assert_eq!(full.len(), 394);
+    assert_eq!(V2_FULL_FIXTURE, full.as_slice(), "replay_v2_full.bin");
 }
 
 // --- round trips and byte-identity with InputLog --------------------------------------------
@@ -203,11 +301,11 @@ fn header_length_exceeding_the_remaining_input_is_rejected() {
 
 // --- oversized counts, checked before allocation ---------------------------------------------
 
-/// Byte offset of the `swap_count` field in a header built by `ReplayHeader::for_this_build`
-/// with no swaps or metadata yet: magic(8) + version(4) + header_len(4) + seed(8) +
-/// tick_rate_hz(4) + engine_version(1 + len) + engine_build(20) + content_manifest(8).
+/// Byte offset of the `swap_count` field in a header built by `fixture_header` with no swaps or
+/// metadata yet: magic(8) + version(4) + header_len(4) + seed(8) + tick_rate_hz(4) +
+/// engine_version(1 + len) + engine_build(20) + content_manifest(8).
 fn swap_count_offset() -> usize {
-    8 + 4 + 4 + 8 + 4 + (1 + ENGINE_VERSION.len()) + 20 + 8
+    8 + 4 + 4 + 8 + 4 + (1 + FIXTURE_ENGINE_VERSION.len()) + 20 + 8
 }
 
 #[test]
@@ -461,6 +559,104 @@ fn swap_tick_equal_to_the_frame_count_is_allowed() {
         log: sample_log(5),
     };
     assert!(replay.to_bytes().is_ok());
+}
+
+// --- record_swap -----------------------------------------------------------------------------
+
+#[test]
+fn record_swap_appends_in_tick_order_and_merges_swaps_at_one_tick_boundary() {
+    let mut header = fixture_header(ContentManifestHash(1));
+    assert!(header.is_golden_eligible());
+    header
+        .record_swap(SwapRecord::new(0, ContentManifestHash(2)))
+        .unwrap();
+    header
+        .record_swap(SwapRecord::new(3, ContentManifestHash(3)))
+        .unwrap();
+    // Two more swaps at the same boundary: one entry with the final content.
+    header
+        .record_swap(SwapRecord::new(3, ContentManifestHash(4)))
+        .unwrap();
+    header
+        .record_swap(SwapRecord::new(3, ContentManifestHash(5)))
+        .unwrap();
+    header
+        .record_swap(SwapRecord::new(5, ContentManifestHash(6)))
+        .unwrap();
+    assert_eq!(
+        header.swaps,
+        vec![
+            SwapRecord::new(0, ContentManifestHash(2)),
+            SwapRecord::new(3, ContentManifestHash(5)),
+            SwapRecord::new(5, ContentManifestHash(6)),
+        ]
+    );
+    assert_eq!(header.content_manifest, ContentManifestHash(1));
+    assert!(!header.is_golden_eligible());
+
+    let replay = Replay {
+        header: Some(header),
+        log: sample_log(5),
+    };
+    let bytes = replay.to_bytes().expect("recorded swaps encode");
+    assert_eq!(Replay::from_bytes(&bytes), Ok(replay));
+}
+
+#[test]
+fn record_swap_rejects_an_earlier_tick_and_changes_nothing() {
+    let mut header = fixture_header(ContentManifestHash::EMPTY);
+    header
+        .record_swap(SwapRecord::new(4, ContentManifestHash(7)))
+        .unwrap();
+    let before = header.clone();
+    assert_eq!(
+        header.record_swap(SwapRecord::new(3, ContentManifestHash(8))),
+        Err(SimError::SwapOrder { index: 1 })
+    );
+    assert_eq!(header, before);
+}
+
+#[test]
+fn record_swap_rejects_one_entry_beyond_the_maximum_but_still_merges_at_the_last_tick() {
+    let mut header = fixture_header(ContentManifestHash::EMPTY);
+    for tick in 0..MAX_SWAP_RECORDS as u64 {
+        header
+            .record_swap(SwapRecord::new(tick, ContentManifestHash(tick)))
+            .unwrap();
+    }
+    let last_tick = MAX_SWAP_RECORDS as u64 - 1;
+    assert_eq!(
+        header.record_swap(SwapRecord::new(last_tick + 1, ContentManifestHash(9))),
+        Err(SimError::TooManyEntries {
+            field: "swaps",
+            count: MAX_SWAP_RECORDS as u64 + 1,
+            max: MAX_SWAP_RECORDS,
+        })
+    );
+    assert_eq!(header.swaps.len(), MAX_SWAP_RECORDS);
+    header
+        .record_swap(SwapRecord::new(last_tick, ContentManifestHash(9)))
+        .expect("a swap at the last recorded tick merges");
+    assert_eq!(
+        header.swaps.last(),
+        Some(&SwapRecord::new(last_tick, ContentManifestHash(9)))
+    );
+}
+
+#[test]
+fn a_recorded_swap_beyond_the_frames_fails_when_encoding() {
+    let mut header = fixture_header(ContentManifestHash::EMPTY);
+    header
+        .record_swap(SwapRecord::new(9, ContentManifestHash(1)))
+        .unwrap();
+    let replay = Replay {
+        header: Some(header),
+        log: sample_log(4),
+    };
+    assert_eq!(
+        replay.to_bytes(),
+        Err(SimError::SwapOutOfRange { tick: 9, frames: 4 })
+    );
 }
 
 // --- BuildHash / ContentManifestHash ------------------------------------------------------------
