@@ -864,8 +864,12 @@ dependencies = [
 name = "grimoire_link"
 version = "0.4.0"
 dependencies = [
+ "grimoire",
  "grimoire_debug",
+ "grimoire_sigil",
  "grimoire_sigilc",
+ "grimoire_sim",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

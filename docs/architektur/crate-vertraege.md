@@ -112,7 +112,12 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
   Wanduhr liest, und misst mit 1 und N Threads über `grimoire_exec`. Wanduhrwerte gelangen nie in Zustands- oder
   Subsystem-Hashes. Ihre Bibliothek enthält die JSON-Schema-Typen für Bench-Ergebnisse und Golden Master (§15).
 - **`grimoire_link`** aktiviert das Feature `tcp` von `grimoire_debug` fest und nutzt `sigilc` als Bibliothek.
-  In P1 ist es kein Release-Artefakt (P-14); gebaut wird aus dem Tag.
+  In P1 ist es kein Release-Artefakt (P-14); gebaut wird aus dem Tag. *Ergänzung (WP8.5):* Es enthält die
+  Werkzeugseite des Debug-Links — den Client-Transport, den Client einer Verbindung, das Übersetzen einer
+  `.sigil`-Datei und die Beobachtung der Datei — samt CLI `grimoire-link` (`crates/grimoire_link/README.md`).
+  Seine Tests hängen als Dev-Kanten an der Fassade (Engine-ADR-0008: ein Werkzeug darf jede Laufzeit-Crate
+  nutzen) und treiben eine echte Engine; nichts, was ein Spiel ausliefert, hängt an dieser Crate. Für den
+  Handshake liest es `ENGINE_VERSION` und `ENGINE_BUILD` aus `grimoire_sim` (§13 „Handshake“ Schritt 7).
 - **`grimoire_schemagen`** (additiv, *Nachtrag WP8.1 zu Engine-ADR-0008 — vom PO freigegeben am 2026-09-16, V-20*):
   Build-Zeit-Schema-Compiler (Projekt-ADR-0011, Option 2e), der `schema/*.gschema` liest und Rust-Codec
   sowie `docs/formats/*.md`-Feldtabellen für `grimoire_debug` und `grimoire_assets` erzeugt, seit WP9.1 außerdem
@@ -3895,6 +3900,27 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
     keine Kante zu `grimoire` oder `grimoire_sim` hat (§1). `frame_time_ns` und `dropped_time_ns` sind die
     Nanosekunden der `Duration`, bei Überlauf `u64::MAX`. `fps` ist wie im Katalog `f32`; die Fassade übernimmt
     `FrameStats::fps` (`f64`, §9) mit `as f32`.
+
+**Werkzeugseite des Links (Ergänzung P1, Plan 0002 WP8.5)**
+
+*Stufe K.* Die Engine-Seite bleibt unverändert; dieser Absatz sagt nur, wo die Gegenseite liegt, weil §13 und
+Engine-ADR-0008 sie bisher nur ankündigten („Client-Transport von `grimoire-link`“).
+
+- Der Client-Transport (`TcpClientTransport`), der Verbindungs-Client (`LinkClient`, Handshake über
+  `connect_handshake`, `SwapAck` abwarten, `Stats` und `Log` sammeln), das Übersetzen einer `.sigil`-Datei und die
+  Beobachtung der Datei liegen in der Werkzeug-Crate `grimoire_link` (§1), nicht in `grimoire_debug`. Damit bleibt
+  `grimoire_debug` die Engine-Seite: Transport-Server, `EngineLink`, Protokoll und Profiler-Daten.
+- Ein Werkzeug darf blockieren: `LinkClient` wartet mit Frist auf Antworten. Die Engine blockiert nie (§9.7).
+- Das Werkzeug ist je Engine-Tag neu zu bauen (§13 „Handshake-Reject“); es präsentiert `ENGINE_VERSION` und
+  `ENGINE_BUILD` seines Builds.
+- Die CLI (`grimoire-link stats|swap|watch`) ist in `crates/grimoire_link/README.md` beschrieben; Exit-Codes wie
+  `sigilc` (0 in Ordnung, 1 Probleme, 2 Aufrufe, die nicht laufen können).
+- **Nachweis „Hot-Reload via Dev-Link“ (DoD):** `crates/grimoire_link/tests/hot_reload_e2e.rs` lässt eine echte
+  Engine die Hauptschleife der Fassade headless laufen, ein Werkzeug daneben eine `.sigil`-Datei beobachten und
+  prüft, dass ein Speichern das Muster genau ab dem bestätigten Tick ändert (Hashes davor gleich, danach
+  verschieden, Kugelzahl größer). Lokal über den In-Process-Transport, in der CI zusätzlich über einen echten
+  Socket. Das Schaufenster dazu ist `tests/hot_swap_showcase.rs` (Offscreen-GIF des Tausches, CI-Job
+  `showcase-gif`).
 
 **Profiler: Budgets, Scope-API und Export (Ergänzung P1, Plan 0002 WP6.3)**
 

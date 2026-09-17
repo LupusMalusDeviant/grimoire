@@ -1,0 +1,64 @@
+sigil 1
+// The edited `sigil_curtain` of the M3 showcase (Plan 0002 WP8.5): the same two emitters of
+// `crates/grimoire/tests/fixtures/sigil_curtain.sigil`, retuned the way a designer would while the
+// engine runs — wider arms, faster volleys, swapped palettes and a diamond grain — so the swap is
+// unmistakable in the rendered frames. `tests/hot_swap_showcase.rs` saves this source over a copy
+// of the original under the same content path, which is what keeps the `UnitId` and makes it a hot
+// swap rather than a new unit (contract §11.8).
+
+meta {
+  name = "Sigil Curtain"
+  difficulty = [normal, curtain]
+  density = 640
+}
+
+// Diamond shard instead of the rice grain: the arms read as blades now.
+bullet grain {
+  silhouette = diamond
+  palette = enemy.hex_magenta
+  glow = 1.0
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+}
+
+// The counter spiral keeps its orbs, in the other palette and brighter.
+bullet orb {
+  silhouette = orb
+  palette = enemy.poison_lime
+  glow = 1.0
+  radius = 0.3u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter curtain {
+  bullet = grain
+  repeat = forever
+  interval = 2t
+  speed = 0.11u/t
+  block spiral {
+    arms = 9
+    step = 13deg
+    start = 90deg
+  }
+  modifier rotate {
+    rate = -0.6deg/t // drifts the other way now
+  }
+}
+
+emitter counter {
+  bullet = orb
+  delay = 4t
+  repeat = forever
+  interval = 5t
+  speed = 0.07u/t
+  block spiral {
+    arms = 5
+    step = 17deg
+    start = 270deg
+  }
+  modifier rotate {
+    rate = 0.45deg/t
+  }
+}

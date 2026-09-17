@@ -1,6 +1,6 @@
 [package]
 name = "grimoire_link"
-description = "CLI `grimoire-link`: compiles a .sigil file via grimoire_sigilc and pushes the unit to a running engine over the debug link (Plan-0002 WP8.4/WP8.5). Not a release artefact in P1 (PO decision P-14)."
+description = "Library and CLI `grimoire-link`: compiles a .sigil file via grimoire_sigilc and pushes the unit to a running engine over the debug link (Plan-0002 WP8.4/WP8.5). Not a release artefact in P1 (PO decision P-14)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,20 @@ path = "src/bin/grimoire-link.rs"
 [dependencies]
 grimoire_debug = { workspace = true, features = ["tcp"] }
 grimoire_sigilc.workspace = true
+# The handshake presents the engine version and build hash this tool was built against (contract
+# §13 "Handshake" step 7: a tool is rebuilt per engine tag), both constants of grimoire_sim.
+grimoire_sim.workspace = true
+thiserror.workspace = true
+
+# The headless end-to-end proof of hot reload (Plan 0002 WP8.5, `tests/hot_reload_e2e.rs`) and the
+# hot-swap showcase GIF (`tests/hot_swap_showcase.rs`) drive a real engine through the facade's own
+# main loop, with the debug link the facade serves (contract §9.7). Engine ADR-0008 lets this tool
+# crate depend on any runtime crate; the edge stays a dev edge, so nothing a game ships pulls the
+# facade in through this crate. `grimoire_sigil` gives the tests the unit and pool types the facade
+# re-exports anyway.
+[dev-dependencies]
+grimoire = { workspace = true, features = ["debug-link"] }
+grimoire_sigil.workspace = true
 
 [lints]
 workspace = true
