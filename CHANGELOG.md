@@ -5,6 +5,13 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+### Added
+- `grimoire_sim`, `grimoire_sigil`: Swap-Markierungen im Replay v2 aufzeichnen (Plan 0002 WP7.1, Vertrag §8.1 und §11.8, Stufe A, PO-Freigabe offen). `ReplayHeader::record_swap` hängt einen `SwapRecord` in Tick-Reihenfolge an und fasst mehrere Tausche an einer Tick-Grenze zu einem Eintrag mit dem Endstand zusammen; ein früherer Tick (`SwapOrder`) oder ein Eintrag über `MAX_SWAP_RECORDS` hinaus (`TooManyEntries`) ist ein Fehler ohne Änderung. `impl From<SwapReport> for SwapRecord` bildet den Eintrag eines Tauschs (`effective_tick`, Manifest danach), sodass eine aufzeichnende Sitzung `header.record_swap(report.into())` schreibt. `grimoire_sigil/tests/replay_record.rs` zeichnet eine Sigil-Sitzung mit Tauschen und Anwendungs-Metadaten (`app.git`, `app.engine_pin`) auf, kodiert und dekodiert sie und zeigt: Ohne die Units stimmt jeder Zustands-Hash genau bis zum ersten Swap-Tick, danach nicht mehr; mit ihnen, vor dem jeweiligen Tick eingespielt, stimmt jeder. Neue Formatdoku `docs/formats/replay.md` (Version 1 und 2, Fehlertabelle, Header-Felder, Aufzeichnung, Reproduzierbarkeit, kommentierte Fixtures).
+
+### Changed
+- CI: `ci.yml`, `nightly.yml` und `release.yml` setzen `GRIMOIRE_BUILD_HASH` auf den gebauten Commit, wie Vertrag §8.1 es vorsieht; `ENGINE_BUILD` und damit der Build-Hash jedes Replays v2 aus einem Engine-Workflow ist jetzt bekannt. Lokale Builds und Builds aus einem Cargo-git-Checkout bleiben `UNKNOWN`. Der Unit-Test prüft beide Fälle und schlägt fehl, wenn die Variable zur Laufzeit gesetzt, aber nicht einkompiliert ist.
+- `grimoire_sim`: Die Replay-Fixtures halten das Format fest statt der Tagesversion (PO-Sammelentscheid 2026-09-17 „Replay-Fixtures der Engine“). Sie tragen die feste Engine-Version `0.4.0` und einen festen Build-Hash statt `ENGINE_VERSION` und `ENGINE_BUILD`; ein Release erzeugt sie nicht mehr neu, der Schritt ist aus dem Release-Ablauf in `CONTRIBUTING.md` entfernt. Die drei Dateien sind bytegleich geblieben. Ein neuer Test schreibt sie ohne Encoder byteweise aus der Layout-Tabelle nach.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added
