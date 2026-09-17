@@ -261,6 +261,8 @@ fn sum_pass_durations(stamps: &[u64], period_ns: f64) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use super::*;
     use crate::{Renderer, RendererConfig, SpriteInstance, StageFrame, WgpuRenderer};
 
@@ -281,8 +283,11 @@ mod tests {
         let mut renderer = match WgpuRenderer::new_offscreen(64, 36, RendererConfig::default()) {
             Ok(renderer) => renderer,
             Err(error) => {
-                println!(
-                    "::warning title=WP6.3 GPU timer test skipped::no GPU adapter available ({error})"
+                // Direct stdout writes reach the CI log although the test passes (libtest captures
+                // only the print macros), like the adapter lines of `tests/offscreen.rs`.
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "\n::warning title=WP6.3 GPU timer test skipped::no GPU adapter available ({error})"
                 );
                 return;
             }
@@ -299,8 +304,9 @@ mod tests {
             "no readback can have completed before the first frame"
         );
         if !renderer.gpu_timer_enabled() {
-            println!(
-                "adapter {} offers no timestamp queries: gpu_time stays None",
+            let _ = writeln!(
+                std::io::stdout(),
+                "\ngrimoire-gpu-timer: timestamp_queries=false gpu_time=none {}",
                 renderer.adapter_report_line()
             );
             for _ in 0..3 {
@@ -320,8 +326,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         let measured = measured.expect("a timestamp readback completes within 2,000 frames");
-        println!(
-            "WP6.3 GPU pass time on {}: {measured:?}",
+        let _ = writeln!(
+            std::io::stdout(),
+            "\ngrimoire-gpu-timer: timestamp_queries=true gpu_time_ns={} frame=64x36 {}",
+            measured.as_nanos(),
             renderer.adapter_report_line()
         );
         assert!(
