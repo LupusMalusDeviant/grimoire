@@ -1,8 +1,8 @@
 # ADR-0017: Skelettanimation — Abtastung in der Präsentation, Takt aus der Simulation
 
-- **Status:** Vorgeschlagen
+- **Status:** Akzeptiert (PO, 2026-09-17)
 - **Datum:** 2026-09-17
-- **Entscheider:** Lupus Malus Deviant (PO), Entscheidung aussteht; vorbereitet durch Claude
+- **Entscheider:** Lupus Malus Deviant (PO), vorbereitet durch Claude
 - **Bezug:** Spiel-Repo [PRD-0002](https://github.com/LupusMalusDeviant/fiends-n-patrons/blob/main/docs/prd/0002-grimoire-engine-architektur.md)
   (FR-04, FR-06, FR-07, Non-Goals, NFR-Budgets), [PRD-0003](https://github.com/LupusMalusDeviant/fiends-n-patrons/blob/main/docs/prd/0003-rendering-und-art.md)
   (Ebenen, FR-13, FR-14), [PRD-0005](https://github.com/LupusMalusDeviant/fiends-n-patrons/blob/main/docs/prd/0005-kampfsystem-spieler.md)
@@ -59,9 +59,10 @@ aus dem Bericht `…_report.json`.
 Zwei Befunde prägen die Entscheidung:
 
 - **Autorenbild und Tick passen nicht aufeinander.** Ein Bild bei 24 fps dauert 2,5 Ticks der 60-Hz-Simulation
-  (`DEFAULT_TICK_RATE_HZ`, §9). Je nach Zählbasis der Markierungen liegen 5 oder 10 der 15 Markierungen auf
-  einem halben Tick. Die Zählbasis ist nicht dokumentiert; `dead` = 41 in einem Clip mit 41 Bildern spricht
-  für die Blender-Zählung ab 1. {{TODO: Zählbasis der Markierungen im Bericht bestätigen}}
+  (`DEFAULT_TICK_RATE_HZ`, §9). Der Bericht zählt Bilder wie Blender ab 1 — `dead` = 41 in einem Clip mit
+  41 Bildern wäre ab 0 kein gültiger Index —, also liegen nach Abzug des ersten Bildes 5 der 15 Markierungen
+  auf einem halben Tick (ab 0 gezählt wären es 10). So oder so braucht eine clip-getriebene Umrechnung eine
+  Rundungsregel.
 - **Die Clips sind ortsfest.** Die README des Showcase-Ordners sagt es („die Spielsteuerung bestimmt die
   eigentliche Strecke"), und die Wurzeldaten bestätigen es: Root Motion trägt keine Spielinformation.
 
@@ -124,7 +125,7 @@ Markierungen als Sim-Ereignisse. Der Konverter rechnet Bilder in Ticks um.
   Golden Master des Spiels.
 - Widerspricht PRD-0005 FR-14: Ein Parade-Fenster zu balancieren hieße, ein Animations-Asset neu zu
   exportieren.
-- Halbe Ticks brauchen eine Rundungsregel, die in den Sim-Content eingeht (5 oder 10 von 15 Markierungen).
+- Halbe Ticks brauchen eine Rundungsregel, die in den Sim-Content eingeht (5 von 15 Markierungen).
 - Abtast- oder Ereigniscode müsste in die Determinismus-Menge (identische `clippy.toml`, §3) und brauchte neue
   Crate-Kanten zwischen Sim-Seite und Figurendaten — Stufe I, Crate-Map-ADR.
 
@@ -251,10 +252,16 @@ Animation ändert an Upload, Draw-Calls und Vertex-Skinning nichts — nur die W
 
 ## Clip-Datenformat (Vorschlag für den Vertrags-PR)
 
-- **Art und Pfad:** eigene Anwendungsart `FNP_CLIP` im freien Bereich `0x8000..=0xFFFF` (§12, keine Änderung am
-  Pack-Format v1), eigene `kind_version` 1 wie bei `FNP_MESH`. Pfad `figures/<figur>/clip/<clip>`; die ID folgt
-  aus dem Pfad, `FNP_FIGURE` bleibt in Fassung 1. {{TODO: Artnummer festlegen; `0x8005` meiden, die der
-  Konverter-Strang A zeitweise für `FNP_MATERIAL` benutzte}}
+- **Art und Pfad:** eigene Anwendungsart `FNP_CLIP` = **`0x8005`**, eigene `kind_version` 1 wie bei `FNP_MESH`.
+  Pfad `figures/<figur>/clip/<clip>`; die ID folgt aus dem Pfad, `FNP_FIGURE` bleibt in Fassung 1. Begründung
+  der Nummer: `docs/formats/pack.md` §5 (Pack v1, gemergt) hält fest, dass `2`–`5` für künftige Engine-Formate
+  reserviert bleiben und die Figuren-Nutzlasten den Anwendungsbereich `0x8000..=0xFFFF` belegen — `0x8000`
+  `FNP_MESH`, `0x8001` `FNP_TEXTURE_RAW`, `0x8002` `FNP_SKELETON`, `0x8003` `FNP_FIGURE`, `0x8004`
+  `FNP_MATERIAL`. `0x8005` ist die nächste freie Nummer und sonst nirgends vergeben. Dass Konverter-Strang A
+  `0x8005` einmal für `FNP_MATERIAL` vorsah, ist ohne Folgen: Ausgeliefert wurde nie etwas mit dieser Nummer,
+  Formatdoku und Pack-Bauer des Spiels nennen `0x8004`, und eine Verwechslung fiele strukturell auf, weil IDs
+  aus Pfaden entstehen und `AssetStore::load` die Art vor dem Dekodieren gegen die erwartete prüft
+  (`KindMismatch`, §12). Keine Änderung am Pack-Format v1.
 - **Kopf:** Version, `joint_count` (1 bis `MAX_SKIN_JOINTS`, muss dem Skelett entsprechen), Skelett-Fingerabdruck
   (`StableHasher` über Knochenzahl und Elternindizes, erkennt einen Clip für ein anderes Rig gleicher
   Knochenzahl), Autorenrate in Hz, Bildzahl, Flags (Bit 0: Schleife).
@@ -271,9 +278,14 @@ Animation ändert an Upload, Draw-Calls und Vertex-Skinning nichts — nur die W
   Abtastung nimmt immer den kürzeren Weg (gemessen nötig: 22 Wechsel in 7 Clips der Hexe). Der Konverter
   glättet die Vorzeichen zusätzlich.
 - **Markierungen:** Liste aus Bildindex und Name (≤ 63 Byte UTF-8), nach Bild sortiert. Die Engine deutet
-  Namen nicht; sie dienen als Anker der Zeit-Verzerrung und der Konverter-Prüfung.
+  Namen nicht; sie dienen als Anker der Zeit-Verzerrung und der Konverter-Prüfung. Der Index zählt im Format
+  ab 0 und liegt unter der Bildzahl; der Bericht des Autorenwerkzeugs zählt dagegen ab 1 (Blender-Bildnummern:
+  `death` trägt `dead` = 41 bei 41 Bildern, was ab 0 kein gültiger Index wäre), der Konverter zieht also 1 ab
+  und lehnt eine Markierung außerhalb des Clips ab.
 - **Grenzen und Fehler:** dokumentierte Obergrenzen vor jeder Allokation (§2 Regel 9), keine Restbytes.
-  {{TODO: Grenzen für Bildzahl und Markierungen, Vorschlag 4.096 bzw. 64}}
+  Festgelegt: höchstens **4.096 Bilder** je Clip — 170 s bei 24 fps, das Zwanzigfache des längsten gelieferten
+  Clips, und selbst mit `MAX_SKIN_JOINTS` = 256 Knochen nur rund 40 MiB und damit weit unter `MAX_ENTRY_LEN`
+  (256 MiB, §12) — und höchstens **64 Markierungen** je Clip (gemessen höchstens zwei).
 - **Formatdokument:** `docs/formats/figure-clip.md` mit byteweiser Golden-Fixture (§2 Regel 10), vor dem
   Konverter gemergt; bei Abweichung gilt die Engine-Fassung.
 - **Nicht in Fassung 1:** Quantisierung, Kurven, Root-Motion-Extraktion, additive Clips, Masken für
@@ -300,18 +312,21 @@ Start-Tick, vorige Aktion und Wechsel-Tick sowie die Anker in Ticks; die Darstel
 
 ## Entscheidung
 
-**Vorschlag:** Option A2 wie unter „Empfehlung". PO-Entscheid aussteht; die Einzelfragen stehen unter „Offene
-PO-Entscheidungen". Diese ADR gilt erst nach PO-Freigabe als angenommen.
+**Gewählte Option: A2** wie unter „Empfehlung" — ein zustandsloses Animationsmodul in `grimoire_render`, die
+Simulation hält den Takt in Ticks, der Clip folgt. Der PO hat die ADR am 2026-09-17 angenommen und dabei
+**jede** der neun Einzelfragen so entschieden, wie sie empfohlen war (siehe „Entschiedene Einzelfragen").
+Die Umsetzung ist nicht Teil dieser ADR; sie wird ein eigenes Arbeitspaket mit Vertrags-PR nach §2b.
 
 ### Einstufung nach §2b
 
 - **Dieser PR** ändert keinen Vertrag (nur ADR und Index).
-- **Umsetzung als Modul in `grimoire_render` (Empfehlung): Stufe A.** Neue öffentliche Typen und Funktionen in
+- **Umsetzung als Modul in `grimoire_render` (so entschieden): Stufe A.** Neue öffentliche Typen und Funktionen in
   `grimoire_render` und `grimoire::adapters::figure_assets`, eine neue Anwendungsart ohne Änderung an §12, ein
   neues Formatdokument; kein Hash, kein `repr(C)`-Layout, keine Kante ändert sich. Vertrags-PR mit Code, Tests
   und CHANGELOG unter `[Unreleased]`, PATCH-Version, gebündelte PO-Freigabe (V-20). Das Spiel nutzt es erst
   nach einem Release-Tag.
-- **Eigene Crate `grimoire_anim`: Stufe I** (neue Crate-Kanten), zusätzlich Crate-Map-ADR, MINOR-Version.
+- **Nicht gewählt, zum Vergleich:** eine eigene Crate `grimoire_anim` wäre Stufe I (neue Crate-Kanten) mit
+  Crate-Map-ADR und MINOR-Version.
 - **Variante A1 oder spätere knochengenaue Spiel-Logik: Stufe I** (Content-Manifest-Hash nach §12,
   Determinismus-Menge, neue Kanten) und ein eigenes ADR.
 
@@ -357,8 +372,9 @@ der Plan für P2 ist noch nicht angelegt.
   OF-18.2: blockierend unter Windows (WARP) und Linux (lavapipe), macOS im Warnmodus bis P3; Toleranz
   unverändert (Mittel ≤ 3,0, Maximum ≤ 60); Windows- und Linux-Referenz vor dem Merge. Ein Gegenfall belegt,
   dass die Szene eine nicht angewandte Pose über der Toleranz erkennt.
-- **Messung:** ein Fall in `grimoire_bench` für 100 × 26 Knochen mit Überblendung als Trend.
-  {{TODO: ob der Fall ins Bench-Gate gehört}}
+- **Messung:** ein Szenario in `grimoire_bench` für 100 × 26 Knochen mit Überblendung, im Gate wie
+  `sigil_extract_10k`: Die scharfe Gate-Metrik ist `Ir` gegen eine akzeptierte Basis (ADR-0010), und eine reine
+  Rechenszene ohne GPU und ohne Wanduhr passt genau dazu. Der Wanduhrwert bleibt Trend.
 
 ## Konsequenzen
 
@@ -397,32 +413,33 @@ der Plan für P2 ist noch nicht angelegt.
 - Die GPU-Kosten des Skinnings sind nicht gemessen und werden durch diese Entscheidung nicht kleiner; ein
   späterer GPU-Pfad für sehr große Schwärme (Option C) wäre eine eigene Vertragsänderung.
 
-## Offene PO-Entscheidungen
+## Entschiedene Einzelfragen (PO, 2026-09-17)
 
-1. **Grundsatz:** Engine-Modul (A) statt Spiel-eigener Animation (B), GPU-Backen (C) oder fertiger Crate (D)?
-   Empfehlung: A.
-2. **Takt:** Simulation führt, Clip folgt (A2) statt Clip führt (A1)? Empfehlung: A2.
-3. **Ort:** Modul in `grimoire_render` (Stufe A) statt eigener Crate `grimoire_anim` (Stufe I, Crate-Map-ADR)?
-   Empfehlung: Modul in `grimoire_render`.
-4. **Root Motion:** keine in der Simulation; Wurzelversatz bleibt Bild; braucht die Simulation einen
-   Sockelpunkt, dann als gebackene Content-Konstante? Empfehlung: ja.
+Alle neun Punkte wurden wie empfohlen entschieden.
+
+1. **Grundsatz:** Engine-Modul (A) statt Spiel-eigener Animation (B), GPU-Backen (C) oder fertiger Crate (D).
+2. **Takt:** Simulation führt, Clip folgt (A2) statt Clip führt (A1).
+3. **Ort:** Modul in `grimoire_render` (Stufe A) statt eigener Crate `grimoire_anim` (Stufe I, Crate-Map-ADR).
+4. **Root Motion:** keine in der Simulation; der Wurzelversatz bleibt Bild. Braucht die Simulation einen
+   Sockelpunkt, kommt er als gebackene Content-Konstante.
 5. **Ablage:** Abtastwerte in der Autorenrate, konstante Spuren einmal, keine Quantisierung, kein Umtasten auf
-   60 Hz, eigene Art `FNP_CLIP` mit Pfadkonvention, `FNP_FIGURE` unverändert? Empfehlung: ja.
-6. **Autorenrate:** 24 fps beibehalten (das Format speichert die Rate) statt Export mit 30 oder 60 fps, bei dem
-   jedes Bild auf einem ganzen Tick läge? Empfehlung: 24 fps beibehalten; mit A2 bringt eine andere Rate nichts.
+   60 Hz, eigene Art `FNP_CLIP` mit Pfadkonvention, `FNP_FIGURE` unverändert.
+6. **Autorenrate:** 24 fps bleiben; das Format speichert die Rate.
 7. **Schnitt und Zeitpunkt:** minimaler Schnitt (`idle`/`walk`, harter Wechsel) als P2-Vorbereitung direkt nach
-   dem statischen Piloten; Überblendung und Verzerrung vor dem Kampf-Kit? Empfehlung: ja.
-8. **GPU-Backen:** zurückstellen und neu bewerten, wenn die Abtastung auf Referenz-Hardware mehr als ein Viertel
-   des Extract-Budgets braucht oder das Spiel mehr als 300 gleichzeitig animierte Figuren plant? Empfehlung:
-   zurückstellen.
+   dem statischen Piloten; Überblendung und Zeit-Verzerrung vor dem Kampf-Kit.
+8. **GPU-Backen:** zurückgestellt, neu bewertet, wenn die Abtastung auf Referenz-Hardware mehr als ein Viertel
+   des Extract-Budgets braucht oder das Spiel mehr als 300 gleichzeitig animierte Figuren plant.
 9. **Überblend-Quelle (Spielseite):** vorige Aktion und Wechsel-Tick im Sim-Zustand statt Cache in der
-   Darstellung? Empfehlung: Sim-Zustand, weil Rewind und Replay-Viewer sonst springen.
+   Darstellung, weil Rewind und Replay-Viewer sonst springen.
 
 ## Weitere Informationen
 
-- **Offene Fakten** (im Text als {{TODO}} markiert): Zählbasis der Markierungen; Artnummer `FNP_CLIP`; Grenzen
-  für Bildzahl und Markierungen; Grenzen der Verzerrung; GPU-Skinning-Kosten auf Referenz-Hardware; Aufwand
-  des minimalen Schnitts; ob der Wurzelversatz von `death`/`spawn` stört; ob der Bench-Fall ins Gate gehört.
+- **Mit der Annahme geklärt:** Zählbasis der Markierungen (Bericht ab 1, Format ab 0); Artnummer `FNP_CLIP`
+  = `0x8005`; Grenzen 4.096 Bilder und 64 Markierungen je Clip; das Bench-Szenario läuft im Gate über `Ir`.
+- **Weiterhin offen** (im Text als {{TODO}} markiert): Grenzen der Zeit-Verzerrung für die Konverter-Prüfung
+  (entscheidbar mit den ersten Aktionsdaten in P2); GPU-Kosten des Vertex-Skinnings auf Referenz-Hardware
+  (Messsitzung WP3.3); Aufwand des minimalen Schnitts (mit dem P2-Plan); ob der Wurzelversatz von
+  `death`/`spawn` im Bild stört (Sichtprüfung am Piloten).
 - **Beobachtung außerhalb dieser Entscheidung:** Die bestehenden Figuren-Nutzlasten (`FNP_MESH`,
   `FNP_MATERIAL`, `FNP_TEXTURE_RAW`, `FNP_SKELETON`, `FNP_FIGURE`) haben kein Dokument unter `docs/formats/`,
   obwohl §2 Regel 10 eines je Format verlangt; §6 nennt sie „kein Vertragsbestandteil". Das Clip-Format sollte
