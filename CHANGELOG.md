@@ -5,6 +5,21 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+### Added
+- `grimoire_collide`, `grimoire_bench`, `grimoire_exec`: Kollision v0 fertig (Plan 0002 WP6.5, Vertrag §14, PO-Entscheid P-3).
+  - Bench-Szenarien `collide_uniform` und `collide_cluster`: je Tick 10.000 Bullet-Kreise und 100 Gegner-Entities mit `Collider` über `rebuild_par`, `overlapping_batch` und `graze_ring`. In `collide_uniform` sind die Bullets über eine Arena von 64 × 64 Einheiten verteilt, in `collide_cluster` liegen alle in den vier Gitterzellen um das Graze-Zentrum.
+  - `wallclock` misst beide auf einem Thread und auf einem `ThreadPoolExecutor` mit N Threads und druckt sie gegen das Budget von 1,5 ms je Tick. `collide_uniform` geht mit einem Thread ins Callgrind-Gate, `collide_cluster` bleibt Trend.
+  - Das Hash-Gate in `grimoire_exec` fährt mit 1, 2 und N Threads die goldene Abfrageszene und eine neue, feste Blockszene (`GOLDEN_BLOCK_QUERY_HASH`, 3.000 Objekte, 64 Anfragen, mehrere Blöcke auf beiden datenparallelen Wegen).
+  - Neu sind außerdem `tests/conformance.rs`, ein Proptest `overlapping_batch` gegen Einzelabfragen, `tests/alloc.rs` mit zählendem Allokator und das Konsolenbeispiel `collide_query` (in der CI nur gebaut).
+  - Vertrag §14: nur Stufe K.
+
+### Fixed
+- `grimoire_collide`: `rebuild` allozierte bei jedem Aufruf einen Puffer für die Zellbereiche, und `overlapping_batch` allozierte je Anfrage und wuchs je Treffer. Beides widersprach Vertrag §14 („Leistung“).
+  - Die Puffer liegen jetzt im Gitter und in `BatchHits` und werden wiederverwendet.
+  - Die Schlüsselprüfung des Debug-Builds sortiert einen wiederverwendeten Puffer, statt eine Menge aufzubauen.
+  - Ergebnisse, Hash und goldene Konstanten bleiben gleich.
+- CI: Die Konformanz-Suite von `grimoire_collide` lief nie, weil kein Workspace-Mitglied das Feature `conformance` einschaltet. Der neue Schritt „Test (grimoire_collide, feature conformance)“ führt sie aus und lintet den Feature-Code.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added
