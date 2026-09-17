@@ -4,12 +4,9 @@
 //! `schema/pack_manifest_v1.gschema`; do not edit it by hand (see that file's own header comment,
 //! or `grimoire_schemagen`'s crate docs for the compiler that writes it).
 //!
-//! [`pack_manifest::PackManifestBody`] is **not** wired into [`crate::PackReader`]/
-//! [`crate::PackWriter`] yet: those keep their hand-written manifest encode/decode for now (see
-//! `schema/pack_manifest_v1.gschema`'s header comment for why, and Plan-0002 WP8.3 for the
-//! follow-up that revisits the swap). This module exists so the generated codec is exercised by
-//! its own round-trip and golden-fixture tests regardless, proving it matches contract §12's
-//! manifest layout byte-for-byte on its own.
+//! [`pack_manifest::PackManifestBody`] is the manifest codec of [`crate::PackReader`] and
+//! [`crate::PackWriter`] (Plan-0002 WP8.3); its own round-trip and golden-fixture tests keep
+//! checking it on its own as well.
 //!
 //! This one-line glue module is itself hand-written and not regenerated, the same way
 //! `grimoire_debug`'s sibling module is (see that crate's own `src/generated.rs` for why).

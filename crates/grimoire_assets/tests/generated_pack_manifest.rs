@@ -1,16 +1,16 @@
 //! Behaviour tests for the generated pack v1 manifest codec (contract §12, project ADR-0011,
 //! Plan-0002 WP8.1): round trips, every-truncation-fails, an oversized declared count/length
-//! that must fail before it would allocate, `decode` never panicking on arbitrary bytes, and a
-//! cross-check against the existing, hand-written `PackReader`/`PackWriter`'s own golden fixture
-//! (`tests/fixtures/pack_v1_minimal.grimpack`, already trusted by `tests/pack_format.rs`) proving
-//! the generated codec parses and reproduces that exact manifest byte-for-byte, without this
-//! generated type being wired into `PackReader`/`PackWriter` itself (see
-//! `schema/pack_manifest_v1.gschema`'s header comment and `grimoire_assets::generated`'s module
-//! docs for why that wiring is deferred to Plan-0002 WP8.3).
+//! that must fail before it would allocate, `decode` never panicking on arbitrary bytes, the codec's
+//! limits against the contract constants, and a cross-check against the golden fixture
+//! `tests/fixtures/pack_v1_minimal.grimpack` proving the codec parses and reproduces that exact
+//! manifest byte-for-byte. Since Plan-0002 WP8.3 `PackReader`/`PackWriter` use this codec for the
+//! manifest; these tests keep checking it on its own as well.
 
 use std::sync::Arc;
 
-use grimoire_assets::{AssetSource, PackManifestBody, PackManifestV1Error, PackReader};
+use grimoire_assets::{
+    AssetSource, MAX_ENTRIES, MAX_PATH_LEN, PackManifestBody, PackManifestV1Error, PackReader,
+};
 use proptest::prelude::*;
 
 // --- A sample manifest body, and the existing golden pack fixture's own manifest --------------
@@ -214,4 +214,39 @@ proptest! {
         }
         let _ = PackManifestBody::decode(&bytes);
     }
+}
+
+/// The generated codec's limits are the ones contract §12 names (`MAX_PATH_LEN`, `MAX_ENTRIES`,
+/// 64-byte compiler strings, a 64 KiB application block): `PackReader` and `PackWriter` rely on
+/// them since Plan 0002 WP8.3, so a schema edit that changed one must fail here.
+#[test]
+fn codec_limits_equal_the_contract_constants() {
+    fn encodes(compiler: String, paths: Vec<String>, application: Vec<u8>) -> bool {
+        let body = PackManifestBody {
+            manifest_version: 1,
+            compiler,
+            compiler_version: "1".to_owned(),
+            entry_count: paths.len() as u32,
+            paths,
+            application,
+        };
+        body.encode(&mut Vec::new()).is_ok()
+    }
+    let one = || "c".to_owned();
+    assert!(encodes("c".repeat(64), vec![], vec![]));
+    assert!(!encodes("c".repeat(65), vec![], vec![]));
+    assert!(encodes(one(), vec!["p".repeat(MAX_PATH_LEN)], vec![]));
+    assert!(!encodes(one(), vec!["p".repeat(MAX_PATH_LEN + 1)], vec![]));
+    assert!(encodes(
+        one(),
+        vec![String::new(); MAX_ENTRIES as usize],
+        vec![]
+    ));
+    assert!(!encodes(
+        one(),
+        vec![String::new(); MAX_ENTRIES as usize + 1],
+        vec![]
+    ));
+    assert!(encodes(one(), vec![], vec![0; 64 * 1024]));
+    assert!(!encodes(one(), vec![], vec![0; 64 * 1024 + 1]));
 }

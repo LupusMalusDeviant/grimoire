@@ -16,14 +16,14 @@
 //! [`PackReader::from_bytes`] never panics, for any input, and reports a structural problem as a
 //! [`PackError`] instead.
 //!
-//! ## Generated manifest codec (project ADR-0011, Plan-0002 WP8.1)
+//! ## Generated manifest codec (project ADR-0011, Plan-0002 WP8.1/WP8.3)
 //!
-//! [`PackManifestBody`] is a schema-generated, standalone codec for the contract §12 manifest
-//! layout, with its own `encode`/`decode` following contract §2 rule 9. It is **not** used by
-//! [`PackReader`]/[`PackWriter`] yet — see `schema/pack_manifest_v1.gschema`'s header comment
-//! and the (private) `generated` module's own docs for why, and Plan-0002 WP8.3 for the
-//! follow-up that revisits the swap. [`PackManifest`] (below) remains this crate's real,
-//! hand-written manifest type.
+//! [`PackManifestBody`] is the schema-generated codec for the contract §12 manifest layout
+//! (`schema/pack_manifest_v1.gschema`). [`PackReader`] and [`PackWriter`] encode and decode the
+//! manifest only through it and map its errors onto [`PackError::Manifest`]; the header, the table
+//! of contents, payload alignment and the cross-checks between manifest and TOC stay in this crate.
+//! [`PackManifest`] is the read-only view a reader hands out. `docs/formats/pack.md` documents the
+//! complete pack v1 layout.
 
 mod error;
 mod generated;
