@@ -22,14 +22,25 @@
 //! ("keine Vertragsänderung nötig") — [`FNP_MATERIAL`] at `0x8004` instead of the spec's `3`, the
 //! other four kinds exactly as the spec assigned them (`0x8000`-`0x8003` were already free).
 //!
-//! Not part of an animation system: [`load_figure`] loads geometry, materials, textures and the
-//! skeleton and registers them; it never computes a pose. A caller wanting to *draw* a loaded
-//! figure supplies a `Vec<[[f32; 4]; 4]>` of skinning matrices — see
-//! `grimoire_render::figure_format::{rest_pose_skin_matrices, compute_skin_matrices}` — and builds
-//! the `MeshInstance`/`SkinBinding`/`StageFrame::joint_matrices` entries itself; that is a
-//! per-frame scene decision, not something a one-shot loader should own.
+//! [`load_figure`] loads geometry, materials, textures and the skeleton and registers them; it
+//! never computes a pose. A caller wanting to *draw* a loaded figure supplies a
+//! `Vec<[[f32; 4]; 4]>` of skinning matrices — see
+//! `grimoire_render::figure_format::{rest_pose_skin_matrices, compute_skin_matrices}`, or
+//! `grimoire_render::figure_clip::ClipSampler` for a pose out of a clip — and builds the
+//! `MeshInstance`/`SkinBinding`/`StageFrame::joint_matrices` entries itself; that is a per-frame
+//! scene decision, not something a one-shot loader should own.
+//!
+//! **Clips** ([`FNP_CLIP`], engine ADR-0017) follow exactly the same split: [`load_clip`] reads one
+//! `figures/<name>/clip/<clip>` entry, decodes it with `grimoire_render::figure_clip::decode_clip`
+//! and cross-checks it against the figure's skeleton — the joint count *and* the skeleton
+//! fingerprint, which is the check a pack alone cannot make. Which clip plays, at what time and
+//! with what crossfade stays with the caller, because ADR-0017 puts that in the simulation as
+//! content data in ticks and the pose in `extract_stage` as a pure function of it. This module
+//! therefore has no clip playback of any kind, and nothing here is a system, a resource or world
+//! state.
 
 use grimoire_assets::{AssetError, AssetId, AssetKind, AssetPath, AssetStore};
+use grimoire_render::figure_clip::{self, ClipData};
 use grimoire_render::figure_format::{self, FigureFormatError, MaterialPayload, SkeletonData};
 use grimoire_render::{
     MeshError, MeshHandle, PbrMaterial, TextureError, TextureHandle, WgpuRenderer,
@@ -49,6 +60,10 @@ pub const FNP_FIGURE: AssetKind = AssetKind(0x8003);
 /// `FNP_MATERIAL` — **at `0x8004`, not the shared spec's `3`**; see this module's doc comment for
 /// why `3` could not be used as written.
 pub const FNP_MATERIAL: AssetKind = AssetKind(0x8004);
+/// `FNP_CLIP` (engine ADR-0017): one skeletal animation clip of a figure, at
+/// `figures/<name>/clip/<clip>`. The next free application-defined kind after the five figure
+/// payloads above; `docs/formats/pack.md` §5 and `docs/formats/figure-clip.md` §1 record it.
+pub const FNP_CLIP: AssetKind = AssetKind(0x8005);
 
 /// Failure loading a figure (P1 "Figuren in der Engine" package). `#[non_exhaustive]`: new
 /// variants are additive.
@@ -104,6 +119,40 @@ pub struct LoadedFigure {
     pub bounds_min: [f32; 3],
     /// Axis-aligned bounding box maximum, model space.
     pub bounds_max: [f32; 3],
+}
+
+/// Loads and decodes the clip at `figures/<figure_name>/clip/<clip_name>` (kind [`FNP_CLIP`],
+/// engine ADR-0017) and checks it against `skeleton`.
+///
+/// The check is [`figure_clip::ClipData::validate_against`]: the clip's joint count *and* its
+/// stored skeleton fingerprint must match. The fingerprint is what catches a clip authored for a
+/// different rig with the same number of joints — without it that clip would load cleanly and then
+/// pose the figure into nonsense. Pass the [`LoadedFigure::skeleton`] of the figure the clip
+/// belongs to.
+///
+/// Does **not** register anything with the renderer and does not need a [`RenderAssets`]: a clip is
+/// CPU-side data that becomes a pose in `extract_stage`, never a GPU resource (ADR-0017 defers
+/// GPU-baked animation).
+///
+/// # Errors
+/// [`FigureLoadError::Asset`] if the entry is missing, has the wrong kind or fails to decode, and
+/// the same wrapped as [`AssetError::Decode`] if it does not belong to `skeleton`. Never panics for
+/// any pack content.
+pub fn load_clip(
+    store: &mut AssetStore,
+    figure_name: &str,
+    clip_name: &str,
+    skeleton: &SkeletonData,
+) -> Result<ClipData, FigureLoadError> {
+    let clip_id = figure_path_id(figure_name, &format!("clip/{clip_name}"))?;
+    let handle = store.load(clip_id, FNP_CLIP, figure_clip::decode_clip)?;
+    let clip = store
+        .get(handle)
+        .expect("just loaded above, so it is present")
+        .clone();
+    clip.validate_against(skeleton)
+        .map_err(|error| as_decode_error(clip_id, &error))?;
+    Ok(clip)
 }
 
 /// Builds the [`AssetId`] of `figures/<figure_name>/<leaf>` (shared spec path convention).

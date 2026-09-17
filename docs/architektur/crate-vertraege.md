@@ -183,7 +183,8 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
     Blöcke längenpräfixiert mit Obergrenze; keine Iterationsreihenfolge ungeordneter Container in den Bytes. Jedes
     Format hat ein Dokument `docs/formats/<format>.md` in diesem Repo (nach P-9) und byteweise
     Golden-Fixtures unter Versionskontrolle; in P1 sind das `sigil.md` (§11.1), `pack.md` (§12),
-    `debug-protocol.md` (§13), `replay.md` (§8.1), `bench-result.md` und `golden-master.md` (§15). Eine
+    `debug-protocol.md` (§13), `replay.md` (§8.1), `figure-clip.md` (§6, Engine-ADR-0017),
+    `bench-result.md` und `golden-master.md` (§15). Eine
     Formatänderung erhöht die Version. Nach der SemVer-Politik ist sie inkompatibel, wenn ältere Versionen danach
     nicht mehr lesbar sind, sonst additiv (§2b; etwa Replay v2 neben v1, §8.1). Welche älteren Versionen lesbar
     bleiben, legt der Abschnitt des Formats fest. Nachrichtenströme (Debug-Protokoll, §13) tragen Magic und
@@ -455,6 +456,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-17 | §13 (TCP-IO-Thread setzt „TCP“ um: Tor vor dem Handshake, `TooLarge` vor dem ersten Nutzlast-Byte, Frist, `Busy`, Gegendruck statt stillem Verwerfen; Anzahlprüfung der generierten Decoder gegen die Resteingabe nach §2 Regel 9; Hot-Swap von Nicht-Sigil-Assets bleibt in v1 reserviert; Konformanz-Suite läuft in der CI), §9.7 (Reihenfolge in `run_headless`, `Stats`-Takt, Ack-Reihenfolge und Felder bei Status 1 und 2), §12 (Konformanz-Suite läuft in der CI), §2 Regel 14 (paketgewählter Clippy-Schritt der Auslieferungskonfiguration und die Feature-Schritte in der CI) | #57 | K | — | nein |
 | 2026-09-17 | Formatdoku `sigil.md` §15 (Gruppe `bench` im Plattform-Identitäts-Gate: die drei Vollvorhang-Units aus `grimoire_bench`) | #58 | K | — | nein (drei neue Unit-Fixtures `full_curtain_flow/weave/shatter_unit_v1.bin`, keine Erneuerung) |
 | 2026-09-17 | §1 (`grimoire_schemagen` erzeugt zusätzlich die C#-Codecs der Werkzeug-Suite; Umsetzungsvermerk `tools/`: Aufbau der Solution, sinngemäße Anwendung der §2-Regeln 1, 2, 4, 9 und 10 auf C#, SDK- und Paket-Pin, Engine-Version und Build-Hash, CI-Workflow `tools.yml` und Standalone-Gate), §12, §13 (Ort der C#-Konformanztests) | #59 | K | — | nein |
+| 2026-09-18 | §6 (Skelettanimation: Modul `grimoire_render::figure_clip`, Art `FNP_CLIP`), §9.1, §9.10 (`figure_assets::load_clip`), Formatdoku `figure-clip.md` neu, §2 Regel 10 (Liste der Formatdokumente) | #64 | A (PO-Freigabe 2026-09-18, gebündelt) | Spiel (Figuren-Konverter: Clips als `FNP_CLIP` exportieren), Render-A/B | nein (neue Golden-Fixture `figure_clip_v1.bin` samt Herleitung, neue goldene Posen-Hashes) |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -1010,6 +1012,81 @@ pub struct SkinBinding {                 // Debug, Clone, Copy, PartialEq, Eq, D
   (`grimoire::adapters::figure_assets`), die als einzige Crate beide Seiten kennt. Kein
   Vertragsbestandteil dieses Abschnitts; siehe §12 für das Pack-Format selbst und den
   Pull-Request-Text für die dort verwendeten `AssetKind`-Werte.
+
+**Skelettanimation: Clips abtasten (Ergänzung, Engine-ADR-0017, Stufe A)**
+
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe),
+einschließlich des Magic `FNP_CLIP` im Kopf (§2 Regel 10, abweichend von der Feldliste der ADR),
+des numerischen Gegenfalls statt neuer Referenzbilder und der Entscheidung, die Grenzen der
+Zeit-Verzerrung dem Konverter zu überlassen.* Umsetzung des PO-Entscheids zu
+[ADR-0017](../adr/0017-skelettanimation-abtastung-in-der-praesentation.md) (Option A2). Additiv zur
+Knochenverformung oben: kein bestehendes Feld, kein bestehender Typ und kein Zähler ändert sich, der
+Skinning-Pfad der GPU bleibt unangetastet, und eine Figur ohne Clip verhält sich exakt wie zuvor.
+
+`grimoire_render::figure_clip` ist das Gegenstück zu `figure_format` für Bewegung: es dekodiert die
+Pack-Nutzlast `FNP_CLIP` aus rohen Bytes (ohne Kante zu `grimoire_assets`, wie oben) und tastet
+daraus eine Pose ab. Das **Byte-Layout, die Grenzen, die Fehlerfälle und die Abtastregeln stehen im
+Formatdokument [`figure-clip.md`](../formats/figure-clip.md)** (§2 Regel 10), das damit
+Vertragsbestandteil ist; dieser Abschnitt ist die verbindliche Kurzfassung.
+
+```rust
+// grimoire_render::figure_clip — neu, alles additiv:
+pub const CLIP_MAGIC: [u8; 8];            // b"FNP_CLIP"
+pub const CLIP_FORMAT_VERSION: u32 = 1;
+pub const MAX_CLIP_FRAMES: u32 = 4096;
+pub const MAX_CLIP_MARKERS: u32 = 64;
+pub const MAX_CLIP_MARKER_NAME_LEN: usize = 63;
+pub const MAX_CLIP_FRAME_RATE_HZ: f32 = 1000.0;
+pub const CLIP_QUATERNION_TOLERANCE: f32 = 1e-3;
+pub struct ClipData;                       // Debug, Clone, PartialEq; nur von decode_clip erzeugt
+                                           // joint_count(), frame_count(), frame_rate_hz(),
+                                           // is_looping(), skeleton_fingerprint(),
+                                           // duration_seconds(), markers(), marker_time(&str),
+                                           // validate_against(&SkeletonData)
+pub struct ClipMarker { pub frame: u32, pub name: String }   // #[non_exhaustive], nur von
+                                           // decode_clip erzeugt (§2 Regel 13)
+pub fn decode_clip(&[u8]) -> Result<ClipData, FigureFormatError>;
+pub fn skeleton_fingerprint(&SkeletonData) -> u64;
+pub fn sample_pose(&ClipData, time: f32) -> Vec<JointPose>;
+pub fn sample_pose_into(&ClipData, time: f32, out: &mut Vec<JointPose>);
+pub fn blend_poses_into(&[JointPose], &[JointPose], weight: f32, out: &mut Vec<JointPose>)
+    -> Result<(), FigureFormatError>;
+pub fn crossfade_pose_into(&ClipData, f32, &ClipData, f32, weight: f32, &mut Vec<JointPose>)
+    -> Result<(), FigureFormatError>;
+pub struct TimeAnchor { pub clip_time: f32, pub target_time: f32 }   // Copy, Debug, PartialEq; new()
+pub fn warped_clip_time(&[TimeAnchor], target_time: f32) -> Result<f32, FigureFormatError>;
+pub struct ClipSampler;                    // Debug, Clone, Default; new(), pose(), matrices(),
+                                           // sample(), sample_crossfade(), skin_matrices(&SkeletonData)
+// FigureFormatError (bereits #[non_exhaustive]) wächst um die Clip-Varianten aus figure-clip.md §8.
+```
+
+**Semantik:**
+- **Zustandslos.** Keine Funktion und kein Typ hier hält Clip, Zeit, Gewicht oder Abspielstand;
+  `ClipSampler` besitzt ausschließlich wiederverwendete Puffer. Die Pose ist eine reine Funktion aus
+  (Clip, Zeit), damit sie nach Rewind, Snapshot-Restore und beim Scrubben eines Replays stimmt, ohne
+  dass Darstellungszustand wiederhergestellt wird. Ein Abspiel-Zustandsautomat, Spielereignisse, IK,
+  Retargeting, additive Clips und Teilkörper-Masken sind ausdrücklich **nicht** Teil davon
+  (PRD-0002 Non-Goals).
+- **Kein Root Motion in der Simulation.** Der Wurzelversatz eines Clips bleibt Bild; die Simulation
+  bewegt die Figur.
+- **Clips sind Präsentation.** Sie erreichen weder Welt noch Zustands-Hash, Replay oder Golden
+  Master. Das Timing einer Aktion liegt als Content-Datum in Ticks in der Simulation des Spiels
+  (ADR-0017, Variante A2); die Markierungen des Clips sind nur Anker der Zeit-Verzerrung, und die
+  Engine deutet ihre Namen nie.
+- **Bestimmtheit.** Die Abtastung benutzt ausschließlich `+`, `-`, `*`, `/`, `%` und `sqrt` auf
+  `f32` — keine Transzendentalfunktion, kein `dmath` —, sodass eine abgetastete Pose auf Windows,
+  Linux und macOS bitgleich ist; goldene Posen-Hashes prüfen das. Rotationen interpolieren mit nlerp
+  **stets auf dem kürzeren Weg** (gemessen nötig: 22 Vorzeichenwechsel in 7 Clips der Hexe). Der Code
+  liegt weiterhin außerhalb der Determinismus-Menge (§3) und bekommt keine `clippy.toml`.
+- **Palette.** `ClipSampler::skin_matrices` liefert dieselben Matrizen wie
+  `figure_format::compute_skin_matrices` für dieselbe Pose, nur in wiederverwendeten Puffern; die
+  Tabelle und ihre Indizierung (`StageFrame::joint_matrices`, `SkinBinding`, `MAX_SKIN_JOINTS`)
+  bleiben unverändert.
+- **Fremde Bytes.** `decode_clip` liefert bei jeder fehlerhaften Eingabe einen Fehler und nie einen
+  Panic; jede Anzahl wird vor der Allokation gegen die verbleibende Eingabe und gegen eine
+  dokumentierte Obergrenze geprüft (§2 Regel 9). Golden-Fixture und Herleitung:
+  `crates/grimoire_render/tests/fixtures/figure_clip_v1.bin` und `.hex`.
+- **GPU.** Nichts ändert sich: gebackene Animation auf der GPU ist zurückgestellt (ADR-0017).
 
 **Clustered Forward+ und Lichtbudget (Ergänzung P1, Plan 0002 WP3.4, Engine-ADR-0015
 „Compute-Clustering")**
@@ -2161,6 +2238,7 @@ Engine-ADR „Crate-Map-Erweiterung P1“.
 |-------|----------|--------|---------|
 | `grimoire::adapters::sigil_render` | Sigil → Render | Extraktion Pool → `BulletVisual` → `BulletInstance` (mit Palettenraum und Interpolation) in `StageFrame::bullets` | §6, §11, API §9.9 (WP5.3) |
 | `grimoire::adapters::sigil_collide` | Sigil → Kollision | Broadphase über Bullets und `Collider`-Entities, Graze-Ring-Abfrage je Tick | §9.6 (Ressourcentypen `GrazeProbe`, `GrazeHits` mit den Skeletten in WP1.3, Plugin und Systeme WP11.2) |
+| `grimoire::adapters::figure_assets` | Assets → Render | Figuren-Nutzlasten aus einer `AssetSource` dekodieren und beim Renderer anmelden; dazu Clips (`FNP_CLIP`) laden und gegen das Skelett der Figur prüfen | §6, §12, API §9.10 (WP8.3, Engine-ADR-0017) |
 | `grimoire::adapters::assets` | Assets → Sigil | Sigil-Einträge aus `AssetSource` an `SigilUnit::from_bytes`, Bibliothek für `grimoire_sigil::install` | §11.2, §12, API §9.11 (WP8.3) |
 | `grimoire::adapters::debug` | Debug ↔ Sim/Render | Uhrzugriff des Profilers über `PlatformContext::clock`, `SystemObserver`-Anbindung, Overlay in `StageFrame::debug_sprites`, Warteschlange für Swaps | §9.7, §13 |
 
@@ -2781,6 +2859,14 @@ pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub 
 // grimoire::adapters::figure_assets zusätzlich:
 //     load_figure_into(&mut AssetStore, &mut dyn RenderAssets, figure_name: &str) -> Result<LoadedFigure, FigureLoadError>
 //     (load_figure bleibt unverändert und ruft load_figure_into mit dem Renderer auf)
+// grimoire::adapters::figure_assets, Engine-ADR-0017 (Stufe A, PO-Freigabe 2026-09-18):
+//     pub const FNP_CLIP: AssetKind = AssetKind(0x8005)
+//     load_clip(&mut AssetStore, figure_name: &str, clip_name: &str, &SkeletonData)
+//         -> Result<ClipData, FigureLoadError>
+//     liest figures/<figur>/clip/<clip>, dekodiert über figure_clip::decode_clip und prüft
+//     Knochenzahl und Skelett-Fingerabdruck (§6, docs/formats/figure-clip.md). Meldet nichts beim
+//     Renderer an und braucht kein RenderAssets: ein Clip wird in extract_stage zur Pose, nie zu
+//     einer GPU-Ressource.
 ```
 
 - **Zeitpunkt (ergänzt `init` in §9 und §9.3):** Renderer erzeugen → `Simulation::new` und Executor → `build` je

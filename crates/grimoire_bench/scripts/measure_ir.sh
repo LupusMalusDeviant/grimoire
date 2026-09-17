@@ -139,5 +139,10 @@ measure_one light_cluster render_light_cluster_256
 # enemies per tick through `rebuild_par`, `overlapping_batch` and `graze_ring` on one thread. The
 # worst-case `collide_cluster` stays a wall-clock trend and is not measured here.
 measure_one collide_uniform collide_uniform
+# Engine ADR-0017: clip sampling of 30 enemy figures of 26 joints plus one hero of 31, with
+# and without crossfade. In the gate over Ir like sigil_extract_10k; the wall clock stays a
+# trend.
+measure_one figure_clip_sample figure_clip_sample_811
+measure_one figure_clip_crossfade figure_clip_crossfade_811
 
 cat "$OUT"

@@ -99,7 +99,10 @@ adapter `grimoire::adapters::assets` ([§10](#10-loading-sigil-units)) checks bo
 with `PackWriter`) is an ordinary pack v1 file. Its payload formats (`FNP_MESH` and the other
 `figure_format` payloads of `grimoire_render`) use the application range, not the reserved engine
 kinds: `FNP_MESH` `0x8000`, `FNP_TEXTURE_RAW` `0x8001`, `FNP_SKELETON` `0x8002`, `FNP_FIGURE`
-`0x8003`, `FNP_MATERIAL` `0x8004` (`grimoire::adapters::figure_assets`). Kinds `2`–`5` stay
+`0x8003`, `FNP_MATERIAL` `0x8004`, `FNP_CLIP` `0x8005` (`grimoire::adapters::figure_assets`).
+`FNP_CLIP` is one skeletal animation clip of a figure, at `figures/<name>/clip/<clip>`; its
+payload is the only one of the six with a format document of its own,
+[`figure-clip.md`](figure-clip.md) (engine ADR-0017). Kinds `2`–`5` stay
 reserved for engine formats that do not exist yet. When the engine defines one (for example a mesh
 format owned by the renderer), a contract change unreserves the kind, fixes the meaning of its
 `kind_version`, and the game's pack builder moves its entries from the application range to the
