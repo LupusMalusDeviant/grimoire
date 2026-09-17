@@ -10,8 +10,10 @@
 //!
 //! Usage: `wallclock --sha <40 hex> --os <os> --arch <arch> --logical-cpus <n> [--dirty]
 //!   [--image <img>] [--cpu-model <model>] [--fingerprint k=v,...] [--run-id <id> --run-attempt <n>]`
-//! Prints six JSON Lines (`ecs_query_10k`, `sim_step_600`, `sigil_extract_10k`, `sigil_update_6k`,
-//! `sigil_update_10k`, `sigil_churn_2k`) to stdout, and one human-readable budget line per Sigil
+//! Prints eight JSON Lines (`ecs_query_10k`, `sim_step_600`, `sigil_extract_10k`, `sigil_update_6k`,
+//! `sigil_update_10k`, `sigil_churn_2k`, and since Plan 0002 WP3.6 `render_bullet_upload_10k` and
+//! `render_light_cluster_256`, whose summed median per frame is printed against the 1.5 ms budget of
+//! WP3.3) to stdout, and one human-readable budget line per Sigil
 //! bench to stderr (median time per extraction against the plan's 0.5 ms budget, median time per
 //! tick against the 1.0 ms budget of Plan 0002 WP5.4), so the CI log shows the numbers the plan
 //! asks for without decoding JSON. The budget lines are trend output like everything here: a
@@ -22,14 +24,16 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use grimoire_bench::scenarios::{
-    ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS, EXTRACT_SCENARIO,
-    EXTRACT_WALLCLOCK_ROUNDS, SIGIL_CHURN_BULLETS, SIGIL_CHURN_PER_TICK, SIGIL_CHURN_SCENARIO,
-    SIGIL_CHURN_WALLCLOCK_TICKS, SIGIL_ENTITIES, SIGIL_SCENARIO, SIGIL_TICK_BUDGET_MS,
-    SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_SCENARIO, SIGIL_UPDATE_10K_WALLCLOCK_TICKS,
-    SIGIL_WALLCLOCK_TICKS, SIM_ENTITIES, SIM_SCENARIO, SIM_WALLCLOCK_TICKS, build_ecs_world,
-    build_sigil_churn, build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
-    run_ecs_rounds, run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks,
-    sigil_update_fill_ticks,
+    BULLET_UPLOAD_SCENARIO, ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS,
+    EXTRACT_SCENARIO, EXTRACT_WALLCLOCK_ROUNDS, LIGHT_CLUSTER_SCENARIO, RENDER_BULLETS,
+    RENDER_POINT_LIGHTS, RENDER_UPLOAD_BUDGET_MS, RENDER_WALLCLOCK_FRAMES, SIGIL_CHURN_BULLETS,
+    SIGIL_CHURN_PER_TICK, SIGIL_CHURN_SCENARIO, SIGIL_CHURN_WALLCLOCK_TICKS, SIGIL_ENTITIES,
+    SIGIL_SCENARIO, SIGIL_TICK_BUDGET_MS, SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_SCENARIO,
+    SIGIL_UPDATE_10K_WALLCLOCK_TICKS, SIGIL_WALLCLOCK_TICKS, SIM_ENTITIES, SIM_SCENARIO,
+    SIM_WALLCLOCK_TICKS, build_ecs_world, build_render_cpu, build_sigil_churn, build_sigil_extract,
+    build_sigil_update, build_sigil_update_10k, build_sim, run_bullet_upload_frames,
+    run_ecs_rounds, run_light_cluster_frames, run_sigil_extract_rounds, run_sigil_update_ticks,
+    run_sim_ticks, sigil_update_fill_ticks,
 };
 use grimoire_bench::schema::{
     BenchResult, CommitRef, ExecutorInfo, ParamValue, RunKey, RunnerInfo, ValueOrigin, median,
@@ -161,6 +165,23 @@ fn measure_extract() -> Vec<f64> {
     samples
 }
 
+/// Samples `frames` preparations of one render CPU bench body, after the usual warm-up.
+fn measure_render(
+    run: fn(&mut grimoire_bench::scenarios::RenderCpuBench, u32, u32) -> usize,
+) -> Vec<f64> {
+    let mut bench = build_render_cpu();
+    for _ in 0..WARMUP_SAMPLES {
+        run(&mut bench, RENDER_WALLCLOCK_FRAMES, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run(&mut bench, RENDER_WALLCLOCK_FRAMES, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
 /// Samples `ticks` simulation steps of an already built, steady `sim`, after the usual warm-up.
 fn measure_sigil_ticks(mut sim: Simulation, ticks: u32) -> Vec<f64> {
     for _ in 0..WARMUP_SAMPLES {
@@ -287,6 +308,25 @@ fn main() -> ExitCode {
             update_10k_params,
         ),
         result_for(&meta, SIGIL_CHURN_SCENARIO, churn, churn_params),
+        result_for(
+            &meta,
+            BULLET_UPLOAD_SCENARIO,
+            measure_render(run_bullet_upload_frames),
+            BTreeMap::from([
+                ("bullets".to_string(), int(RENDER_BULLETS)),
+                ("frames".to_string(), int(RENDER_WALLCLOCK_FRAMES)),
+            ]),
+        ),
+        result_for(
+            &meta,
+            LIGHT_CLUSTER_SCENARIO,
+            measure_render(run_light_cluster_frames),
+            BTreeMap::from([
+                ("lights".to_string(), int(RENDER_POINT_LIGHTS)),
+                ("bullets".to_string(), int(RENDER_BULLETS)),
+                ("frames".to_string(), int(RENDER_WALLCLOCK_FRAMES)),
+            ]),
+        ),
     ];
     // Plan 0002 WP5.3 and WP5.4 budgets, as trend lines for the log (never a gate, engine
     // ADR-0010).
@@ -322,6 +362,20 @@ fn main() -> ExitCode {
             result.scenario
         );
     }
+
+    // Plan 0002 WP3.3/WP3.6: bullet upload plus clustering against the render-CPU share of 1.5 ms.
+    let per_frame_ms =
+        |result: &BenchResult| result.median / f64::from(RENDER_WALLCLOCK_FRAMES) / 1.0e6;
+    let (upload_ms, cluster_ms) = (per_frame_ms(&results[6]), per_frame_ms(&results[7]));
+    let render_ms = upload_ms + cluster_ms;
+    let verdict = if render_ms <= RENDER_UPLOAD_BUDGET_MS {
+        "within"
+    } else {
+        "OVER"
+    };
+    eprintln!(
+        "{BULLET_UPLOAD_SCENARIO} + {LIGHT_CLUSTER_SCENARIO}: median {upload_ms:.4} + {cluster_ms:.4} = {render_ms:.4} ms per frame, {RENDER_BULLETS} bullets and {RENDER_POINT_LIGHTS} lights (budget {RENDER_UPLOAD_BUDGET_MS:.1} ms: {verdict}; wall clock, trend only)"
+    );
 
     for result in &results {
         match result.to_json_line() {
