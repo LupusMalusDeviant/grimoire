@@ -260,6 +260,50 @@ fn load_figure_round_trips_a_hand_written_pack() {
     }
 }
 
+/// A plugin under the facade loads the figure through the asset hook (contract §9.2): the same
+/// pack, registered with the headless registry of `run_headless_frames`, no GPU needed.
+#[test]
+fn load_figure_into_registers_a_pack_figure_through_the_plugin_hook() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use grimoire::prelude::*;
+    use grimoire::{PluginError, RenderAssets};
+
+    type Loaded = Rc<RefCell<Option<figure_assets::LoadedFigure>>>;
+
+    struct FigurePlugin {
+        loaded: Loaded,
+    }
+
+    impl GamePlugin for FigurePlugin {
+        fn name(&self) -> &str {
+            "figure"
+        }
+
+        fn register_assets(&mut self, assets: &mut dyn RenderAssets) -> Result<(), PluginError> {
+            let reader = PackReader::from_bytes(Arc::from(write_fixture_pack()))?;
+            let mut store = AssetStore::new(Box::new(reader));
+            let figure = figure_assets::load_figure_into(&mut store, assets, FIGURE_NAME)?;
+            *self.loaded.borrow_mut() = Some(figure);
+            Ok(())
+        }
+    }
+
+    let loaded = Loaded::default();
+    App::new(WindowConfig::default())
+        .plugin(FigurePlugin {
+            loaded: Rc::clone(&loaded),
+        })
+        .run_headless_frames(1, Duration::from_millis(16))
+        .expect("the fixture figure registers");
+    let figure = loaded.borrow_mut().take().expect("register_assets ran");
+    assert_eq!(figure.parts.len(), 1);
+    assert_eq!(figure.parts[0].mesh, grimoire_render::MeshHandle(0));
+    assert_eq!(figure.skeleton.joint_count(), 2);
+}
+
 mod property_tests {
     use super::*;
     use proptest::prelude::*;

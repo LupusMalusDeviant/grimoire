@@ -35,6 +35,8 @@ use grimoire_render::{
     MeshError, MeshHandle, PbrMaterial, TextureError, TextureHandle, WgpuRenderer,
 };
 
+use crate::render_assets::RenderAssets;
+
 /// `FNP_MESH` (shared spec): geometry of one figure part, application-defined kind
 /// (`0x8000..=0xFFFF`, contract §12 — no contract change needed for this range itself).
 pub const FNP_MESH: AssetKind = AssetKind(0x8000);
@@ -173,6 +175,9 @@ fn as_decode_error(id: AssetId, error: &FigureFormatError) -> FigureLoadError {
 /// Loads and registers the figure at `figures/<figure_name>/figure` (shared spec path convention)
 /// through `store`, registering every mesh and texture with `renderer`.
 ///
+/// Identical to [`load_figure_into`] with the renderer as the registration target; a plugin under
+/// [`crate::App`] calls [`load_figure_into`] from [`crate::GamePlugin::register_assets`] instead.
+///
 /// Reads, in order: the figure manifest (kind [`FNP_FIGURE`]); its skeleton ([`FNP_SKELETON`]);
 /// every texture it lists ([`FNP_TEXTURE_RAW`], registered via
 /// [`WgpuRenderer::register_texture`] in list order, so a material's texture index resolves to the
@@ -188,6 +193,21 @@ fn as_decode_error(id: AssetId, error: &FigureFormatError) -> FigureLoadError {
 pub fn load_figure(
     store: &mut AssetStore,
     renderer: &mut WgpuRenderer,
+    figure_name: &str,
+) -> Result<LoadedFigure, FigureLoadError> {
+    load_figure_into(store, renderer, figure_name)
+}
+
+/// Loads the figure at `figures/<figure_name>/figure` through `store` like [`load_figure`], but
+/// registers every mesh and texture with any [`RenderAssets`]: the renderer a plugin receives in
+/// [`crate::GamePlugin::register_assets`] (contract §9.2), which is `WgpuRenderer` on the desktop
+/// and offscreen and a [`crate::HeadlessRenderAssets`] in headless frame runs.
+///
+/// # Errors
+/// Like [`load_figure`].
+pub fn load_figure_into(
+    store: &mut AssetStore,
+    renderer: &mut dyn RenderAssets,
     figure_name: &str,
 ) -> Result<LoadedFigure, FigureLoadError> {
     let figure_id = figure_path_id(figure_name, "figure")?;
