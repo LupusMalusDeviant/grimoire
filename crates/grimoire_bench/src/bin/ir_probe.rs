@@ -7,7 +7,10 @@
 //!
 //! Plan 0002 WP5.3 adds a third bench body, `sigil_extract` (`sigil_extract_10k`: the Sigil -> Render
 //! extraction adapter over 10,000 bullets), for `baseline` and `params`; the calibration proof
-//! keeps calibrating the two P0 benches only.
+//! keeps calibrating the two P0 benches only. Plan 0002 WP5.4 adds three `sigil.*` tick bodies:
+//! `sigil_update` (`sigil_update_6k`, the WP5.1 micro-bench, now measured), `sigil_update_10k`
+//! (10,000 active bullets) and `sigil_churn` (`sigil_churn_2k`: 2,000 spawns and 2,000 despawns
+//! per tick).
 //!
 //! Usage:
 //!   `ir_probe <ecs|sim|sigil_extract> baseline` — the real, uninjected candidate measurement.
@@ -27,17 +30,24 @@ use std::hint::black_box;
 use std::process::ExitCode;
 
 use grimoire_bench::scenarios::{
-    ECS_ENTITIES, ECS_IR_ROUNDS, EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, SIM_ENTITIES, SIM_IR_TICKS,
-    build_ecs_world, build_sigil_extract, build_sim, run_calibration_units, run_ecs_rounds,
-    run_sigil_extract_rounds, run_sim_ticks,
+    ECS_ENTITIES, ECS_IR_ROUNDS, EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, SIGIL_CHURN_BULLETS,
+    SIGIL_CHURN_IR_TICKS, SIGIL_CHURN_PER_TICK, SIGIL_ENTITIES, SIGIL_IR_TICKS,
+    SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_IR_TICKS, SIM_ENTITIES, SIM_IR_TICKS,
+    build_ecs_world, build_sigil_churn, build_sigil_extract, build_sigil_update,
+    build_sigil_update_10k, build_sim, run_calibration_units, run_ecs_rounds,
+    run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks, sigil_update_fill_ticks,
 };
+
+/// Every bench body `baseline` and `params` accept.
+const BENCHES: &str =
+    "'ecs', 'sim', 'sigil_extract', 'sigil_update', 'sigil_update_10k' or 'sigil_churn'";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let (Some(bench), Some(mode)) = (args.next(), args.next()) else {
-        eprintln!("usage: ir_probe <ecs|sim> baseline");
+        eprintln!("usage: ir_probe <bench> baseline   (bench: {BENCHES})");
         eprintln!("       ir_probe <ecs|sim> calibrated <units>");
-        eprintln!("       ir_probe <ecs|sim> params");
+        eprintln!("       ir_probe <bench> params");
         return ExitCode::FAILURE;
     };
 
@@ -67,8 +77,15 @@ fn print_params(bench: &str) -> ExitCode {
         "ecs" => println!("entities={ECS_ENTITIES},rounds={ECS_IR_ROUNDS}"),
         "sim" => println!("entities={SIM_ENTITIES},ticks={SIM_IR_TICKS}"),
         "sigil_extract" => println!("bullets={EXTRACT_BULLETS},rounds={EXTRACT_IR_ROUNDS}"),
+        "sigil_update" => println!("bullets={SIGIL_ENTITIES},ticks={SIGIL_IR_TICKS}"),
+        "sigil_update_10k" => {
+            println!("bullets={SIGIL_UPDATE_10K_BULLETS},ticks={SIGIL_UPDATE_10K_IR_TICKS}");
+        }
+        "sigil_churn" => println!(
+            "bullets={SIGIL_CHURN_BULLETS},per_tick={SIGIL_CHURN_PER_TICK},ticks={SIGIL_CHURN_IR_TICKS}"
+        ),
         other => {
-            eprintln!("unknown bench {other:?}, expected 'ecs', 'sim' or 'sigil_extract'");
+            eprintln!("unknown bench {other:?}, expected {BENCHES}");
             return ExitCode::FAILURE;
         }
     }
@@ -89,8 +106,24 @@ fn run_baseline(bench: &str) -> ExitCode {
             let mut bench = build_sigil_extract(0xB5_11_C1_0C_C0_FF_EE_00);
             black_box(run_sigil_extract_rounds(&mut bench, EXTRACT_IR_ROUNDS, 0));
         }
+        "sigil_update" => {
+            let mut sim = build_sigil_update(0xB5_11_C1_0C_C0_FF_EE_00);
+            run_sigil_update_ticks(&mut sim, sigil_update_fill_ticks(), 0);
+            run_sigil_update_ticks(&mut sim, SIGIL_IR_TICKS, 0);
+            black_box(sim.tick());
+        }
+        "sigil_update_10k" => {
+            let mut sim = build_sigil_update_10k(0xB5_11_C1_0C_C0_FF_EE_00);
+            run_sigil_update_ticks(&mut sim, SIGIL_UPDATE_10K_IR_TICKS, 0);
+            black_box(sim.tick());
+        }
+        "sigil_churn" => {
+            let mut sim = build_sigil_churn(0xB5_11_C1_0C_C0_FF_EE_00);
+            run_sigil_update_ticks(&mut sim, SIGIL_CHURN_IR_TICKS, 0);
+            black_box(sim.tick());
+        }
         other => {
-            eprintln!("unknown bench {other:?}, expected 'ecs', 'sim' or 'sigil_extract'");
+            eprintln!("unknown bench {other:?}, expected {BENCHES}");
             return ExitCode::FAILURE;
         }
     }
