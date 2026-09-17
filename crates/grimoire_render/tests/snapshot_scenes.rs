@@ -52,11 +52,11 @@
 //! One reference PNG per scene/variant lives under `tests/snapshots/<platform>/`, `<platform>`
 //! being [`support::platform_dir`]'s `"windows"`, `"linux"` or `"macos"` (matching the CI matrix's
 //! three driver families — WARP, lavapipe, the paravirtual Metal device — per PRD-0018's adapter
-//! table, OF-18.2). Only `tests/snapshots/windows/*.png` is checked in by this change: it is the
-//! only platform this harness could actually run the software adapter on to produce one (no
-//! hand-tuned pixels — each file is exactly what `WgpuRenderer` produced here). Linux and macOS
-//! references are left for a follow-up once CI has produced a candidate to review (see the "no
-//! reference yet" branch below and `.github/scripts/report-snapshot-diff.sh`).
+//! table, OF-18.2). No reference is hand-tuned: each file is exactly what `WgpuRenderer` produced
+//! on that platform's software adapter. The Windows references were rendered on WARP directly; the
+//! Linux references (plan 0002 WP3.6) are the lavapipe candidates of a CI run, taken unchanged from
+//! its `snapshot-candidates-ubuntu-latest` artifact (see the "no reference yet" branch below and
+//! `.github/scripts/report-snapshot-diff.sh`). macOS has none, see below.
 //!
 //! **macOS is a documented special case, not an oversight:** PRD-0018's adapter table shows
 //! `macos-latest` handing out "Apple Paravirtual device" as a Metal adapter of device type

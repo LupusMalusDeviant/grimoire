@@ -2466,7 +2466,7 @@ pub struct ScreenSpace;                                   // Copy, PartialEq, De
   keine Taste, nur Kopfzeile ohne Profiler, Hash-Neutralität, offscreen über `run_offscreen`: Overlay erscheint und
   verschwindet), `tests/overlay_scene.rs` (Testszene `overlay`: Farbprüfung je Zeile ohne Referenz in jedem
   `cargo test`, dazu der Referenzvergleich mit Toleranzmetrik und Warnmodus aus WP2.8 im CI-Schritt der
-  Render-Testszenen; Referenz zunächst nur für Windows).
+  Render-Testszenen; Referenzen für Windows und, seit WP3.6, Linux).
 
 ### 9.8 InputMap-Preset: Zielachsen 2/3 (Ergänzung P1)
 
