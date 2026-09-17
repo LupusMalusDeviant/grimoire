@@ -17,6 +17,16 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
   - Das Hash-Gate in `grimoire_exec` fährt mit 1, 2 und N Threads die goldene Abfrageszene und eine neue, feste Blockszene (`GOLDEN_BLOCK_QUERY_HASH`, 3.000 Objekte, 64 Anfragen, mehrere Blöcke auf beiden datenparallelen Wegen).
   - Neu sind außerdem `tests/conformance.rs`, ein Proptest `overlapping_batch` gegen Einzelabfragen, `tests/alloc.rs` mit zählendem Allokator und das Konsolenbeispiel `collide_query` (in der CI nur gebaut).
   - Vertrag §14: nur Stufe K.
+- `grimoire_bench`: Benchmark-Szene „Vollvorhang“ (Plan 0002 WP6.6, PRD-0004), nur im Wanduhr-Trend.
+  - Drei mit `sigilc` übersetzte Units unter `fixtures/` (Quellen daneben, von `grimoire_sigilc/tests/unit_fixtures.rs` aktuell gehalten und im Plattform-Identitäts-Gate WP4.4 als Gruppe `bench`). Sie nutzen jeden Modifikator-Typ, die Bausteine ring, spiral, fan, wave, line und scatter und die Transformationen burst, reverse und change_type. Drei Units, weil eine Unit jede gezeichnete Silhouette nur einmal verwenden darf (PRD-0003 Regel 3).
+  - Jeder Emitter feuert endlos von drei Ursprüngen; der Bestand bleibt nach 600 Ticks bei etwa 10.000 lebenden Bullets (per Test geprüft), dazu die 100 Gegner der Kollisions-Benches.
+  - `wallclock` misst je Tick diese Phasen:
+    - Simulation, Extraktion und Kollision (so, wie der Adapter aus Vertrag §9.6 das Gitter aufbauen wird);
+    - die Render-Vorbereitung ohne GPU (Bullet-Upload und Clustering über `grimoire_render::measurement`);
+    - `render_stage` offscreen (in der CI auf dem Software-Adapter) samt der GPU-Zeit aus den Timestamp-Queries.
+  - Die ersten vier Phasen werden gegen ihr Budget aus dem P1-Stresstest gedruckt (1,0 / 0,5 / 1,5 / 1,5 ms). `render_stage` und GPU-Zeit bekommen kein Urteil, weil auf dem Software-Adapter der Rasterizer in diesem Aufruf auf der CPU läuft.
+  - Der Job `gate` installiert dafür lavapipe; fehlt der Adapter, scheitert der Schritt, statt die Render-Phase still wegzulassen.
+  - Kein neues Gate-Szenario, keine Basis nötig. Vertrag unverändert.
 
 ### Changed
 - `grimoire_debug`: Der TCP-Transport setzt jetzt um, was Vertrag §13 seinem IO-Thread zuweist (Plan 0002 WP8.4): vor dem Handshake genau ein Frame von höchstens `MAX_HELLO_FRAME_LEN` Byte, geprüft vor dem ersten Nutzlast-Byte (sonst `Error(TooLarge)`), danach nichts, bis die Engine ihr `Hello` gesendet hat; `Error(HandshakeRequired)` nach `HANDSHAKE_TIMEOUT`; `Error(Busy)` für einen zweiten Client; die Byte-Obergrenze der Eingangswarteschlange mit Gegendruck. Verbindungsgrenzen (Stufe A, PO-Freigabe offen): `poll` liefert nach den Frames einer beendeten Verbindung genau einmal `Err(TransportError::Disconnected)`, `send` ohne Client `NotConnected`, `disconnect` schließt nur die zuletzt gesehene Verbindung nach dem Schreiben ihrer ausstehenden Frames, und Frames für eine frühere Verbindung erreichen nie eine spätere.
