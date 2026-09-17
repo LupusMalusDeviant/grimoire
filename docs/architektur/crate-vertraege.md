@@ -384,7 +384,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-16 | §6 (Clustered Forward+: `StageRendererConfig`/`LightBudget` mit Vorgabe `Low`, Zähler `point_lights_over_budget`, `clusters_with_lights`, `light_cluster_index_entries`, Vorgabe `BulletLightCap` 0,25) | #26 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.5) | nein |
 | 2026-09-16 | §6 (`point_light_from_bullet` als einziger Erzeugungsweg für Geschoss-Lichter; Klarstellung im Licht-Kanal) | #26 | A (PO-Entscheid 2026-09-16) | Render-B (WP3.5) | nein |
 | 2026-09-16 | §6 (Multisampling: `Msaa`, `StageRendererConfig::msaa` mit Vorgabe `X4`, Engine-ADR-0016) | #27 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-A/B (Paket „Texturqualität") | ja (sieben Windows-Referenzbilder der Render-Testszenen; Abweichungen an Kanten gemessen) |
-| 2026-09-16 | §6 (echte Tangenten: `MeshVertex::tangent`, 72 statt 56 Byte; `decode_mesh` liest `FNP_MESH` Fassung 1 und 2) | #28 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-A/B (Paket „Texturqualität") | nein |
+| 2026-09-16 | §6 (echte Tangenten: `MeshVertex::tangent`, 72 statt 56 Byte; `decode_mesh` liest `FNP_MESH` Fassung 1 und 2) | #28 | I (PO-Freigabe 2026-09-17, gebündelt; Einstufung berichtigt: geändertes `repr(C)`-Layout) | Render-A/B (Paket „Texturqualität") | nein |
 | 2026-09-17 | §6 (Bullet-Pass: `bullet_silhouette`, `bullet_palette`, `WgpuRenderer::last_stage_pass_order`, abgeleitete Geschoss-Lichter), §9.1, §9.9 (Adapter `grimoire::adapters::sigil_render`) | #29 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.6, WP3.7), Sigil-Laufzeit (WP5.4 ff.) | nein |
 | 2026-09-17 | §6 (Tabellengrenzen in `bullets_rejected_invalid`; fester Pass-Graph; Marker- und Debug-Sprites werden gezeichnet) | #29 | K | — | nein |
 
