@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "env_logger",
  "grimoire_assets",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_assets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_core",
  "grimoire_platform",
@@ -780,11 +780,11 @@ dependencies = [
 
 [[package]]
 name = "grimoire_audio"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "grimoire_bench"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire",
  "grimoire_core",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_collide"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_core",
  "grimoire_ecs",
@@ -809,14 +809,14 @@ dependencies = [
 
 [[package]]
 name = "grimoire_core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "grimoire_debug"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proptest",
  "serde_json",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_ecs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_core",
  "proptest",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_exec"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire",
  "grimoire_core",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_gpu"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_platform",
  "log",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_link"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_debug",
  "grimoire_sigilc",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_platform"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "env_logger",
  "log",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "env_logger",
@@ -892,11 +892,11 @@ dependencies = [
 
 [[package]]
 name = "grimoire_schemagen"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "grimoire_sigil"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_core",
  "grimoire_ecs",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_sigilc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_core",
  "grimoire_ecs",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_sim"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "grimoire_core",
  "grimoire_ecs",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "grimoire_ui"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "half"
