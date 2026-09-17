@@ -1650,7 +1650,8 @@ pub struct ReplayHeader {
     pub app_metadata: BTreeMap<String, String>,   // ≤ MAX_APP_METADATA Einträge
 }                                                 // Clone, Eq, Debug; for_this_build(content_manifest) -> Self
                                                   // (ENGINE_VERSION, ENGINE_BUILD, keine Swaps, keine Metadaten);
-                                                  // is_golden_eligible() -> bool (== swaps.is_empty())
+                                                  // is_golden_eligible() -> bool (== swaps.is_empty());
+                                                  // record_swap(&mut self, SwapRecord) -> Result<(), SimError>  (WP7.1)
 pub struct Replay { pub header: Option<ReplayHeader>, pub log: InputLog }  // None = Version 1; Clone, Eq, Debug
                                                   // FORMAT_VERSION = 2; from_bytes(&[u8]) -> Result<Replay, SimError>;
                                                   // to_bytes(&self) -> Result<Vec<u8>, SimError>
@@ -1707,13 +1708,19 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   Tausch vor dem ersten `step` hat `tick = 0`. Den Stand direkt nach der Installation des Contents beschreibt
   `content_manifest`. Unit-Bytes stehen nicht im Replay (§11.8). Ein Replay mit mindestens einem Eintrag ist nie
   golden (`is_golden_eligible() == false`); Golden-Master-Werkzeuge weisen es ab (§15.2).
+  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `ReplayHeader::record_swap` hängt einen Eintrag in
+  Tick-Reihenfolge an. Hat er den Tick des letzten Eintrags, ersetzt er dessen `content_manifest` (mehrere Tausche an
+  einer Grenze ergeben so den Endstand). Ein früherer Tick liefert `SwapOrder { index: swaps.len() }`, ein neuer
+  Eintrag über `MAX_SWAP_RECORDS` hinaus `TooManyEntries`; bei einem Fehler ändert sich nichts. `tick ≤ frames.len()`
+  prüft erst `to_bytes`. Den Eintrag liefert `grimoire_sigil` aus dem `SwapReport` (§11.8).
 - **Kein Simulationszustand:** Header-Felder gehen weder in `state_hash` noch in Snapshots noch in `replay` ein.
   `replay(sim, &r.log, hash_every)` bleibt unverändert. Den Header prüft der Aufrufer: Er baut die Simulation mit
   `log.seed` und entscheidet selbst, was ein abweichender `content_manifest` bedeutet.
 - **Build-Hash:** `ENGINE_BUILD` wird zur Übersetzungszeit im `const`-Kontext aus `GRIMOIRE_BUILD_HASH` gelesen
   (40 Hex-Kleinbuchstaben). Ein ungültiger Wert ist ein Übersetzungsfehler, ein fehlender ergibt `UNKNOWN`.
-  Engine-CI und Release-Workflow setzen die Variable auf den gebauten Commit. Lokale Builds und Builds aus einem
-  Cargo-git-Checkout sind ohne sie `UNKNOWN`. Replay-Dateien unterscheiden sich damit je Build: **Golden Master
+  Engine-CI und Release-Workflow setzen die Variable auf den gebauten Commit (*umgesetzt in WP7.1:* `ci.yml`,
+  `nightly.yml` und `release.yml` setzen `GRIMOIRE_BUILD_HASH: ${{ github.sha }}` für alle Jobs). Lokale Builds und
+  Builds aus einem Cargo-git-Checkout sind ohne sie `UNKNOWN`. Replay-Dateien unterscheiden sich damit je Build: **Golden Master
   vergleichen Checkpoint-Hashes, nie Replay-Bytes.**
 - `engine_version` ist Information. Kein Leser weist ein Replay deswegen ab; ein Version-Guard kommt mit PRD-0015
   FR-04, nicht in P1.
@@ -1726,6 +1733,11 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
 - **Dokumentation und Fixtures:** `docs/formats/replay.md`. Byteweise Golden-Fixtures liegen unter
   `crates/grimoire_sim/tests/fixtures/`: `replay_v1.bin`, `replay_v2_minimal.bin`, `replay_v2_full.bin` mit Swaps
   und Metadaten. Sie dienen auch Verbrauchern außerhalb von Rust als Referenz.
+  *Umsetzung (WP7.1, PO-Sammelentscheid 2026-09-17 „Replay-Fixtures der Engine“):* Die Fixtures halten das Format
+  fest, nicht die Tagesversion. Sie tragen die feste `engine_version` `"0.4.0"` und einen festen Build-Hash statt
+  `ENGINE_VERSION` und `ENGINE_BUILD`; ein Release und `GRIMOIRE_BUILD_HASH` ändern sie nicht, neu erzeugt werden sie
+  nur nach einer bewussten Formatänderung. Die Bytes blieben beim Entkoppeln gleich. Ein Test schreibt alle drei ohne
+  Encoder byteweise aus der Layout-Tabelle nach; `docs/formats/replay.md` zeigt sie kommentiert.
 - **Vertragstests (WP1.3):**
   - Rundreise beider Versionen.
   - Jede Kürzung einer gültigen Eingabe liefert `Err`.
@@ -1733,7 +1745,10 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   - `swap_count = u32::MAX` bzw. `frame_count = u64::MAX` bei 64 Byte Eingabe liefert `Err` ohne Allokation.
   - Jedes Maximum + 1 liefert `Err`.
   - Die v1-Fixture ergibt `header = None` und dasselbe `InputLog` wie `InputLog::from_bytes`.
-  - `ENGINE_BUILD` ohne Variable ist `UNKNOWN`.
+  - `ENGINE_BUILD` ohne Variable ist `UNKNOWN`; mit Variable ist es deren Commit (WP7.1).
+  - WP7.1: `record_swap` hängt in Tick-Reihenfolge an, fasst Tausche einer Grenze zusammen und weist früheren Tick
+    und Überlauf ohne Änderung ab; eine aufgezeichnete Sigil-Sitzung mit Tauschen ist ohne die Units genau bis zum
+    ersten Swap-Tick reproduzierbar und mit ihnen vollständig (`grimoire_sigil/tests/replay_record.rs`).
 
 ### 8.2 Snapshots: Lesezugriff und geprüfte Wiederherstellung (Ergänzung P1)
 
@@ -3100,6 +3115,7 @@ pub struct SwapReport {                          // Copy, Eq, Debug; nur von rep
 }
 pub fn replace_unit(sim: &mut Simulation, unit: SigilUnit) -> Result<SwapReport, SigilError>;
 pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(), SigilError>;
+impl From<SwapReport> for grimoire_sim::SwapRecord;   // WP7.1: { tick: effective_tick, content_manifest: epoch.manifest_hash }
 ```
 
 **Semantik:**
@@ -3143,6 +3159,11 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   Endstand. Unit-Bytes stehen in P1 nicht im Replay: Eine Swap-Session ist ohne dieselben Units nur bis zum ersten
   Swap-Tick reproduzierbar, gilt als nicht golden (`is_golden_eligible() == false`), und das Golden-Master-Werkzeug
   schreibt aus ihr keinen Master (§15.2, WP7.5).
+  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `impl From<SwapReport> for SwapRecord` bildet genau diesen Eintrag;
+  eine aufzeichnende Sitzung schreibt `header.record_swap(report.into())` (§8.1). Die Zusammenfassung mehrerer Tausche
+  an einer Grenze übernimmt `record_swap`. Mit denselben Units ist eine Sitzung, die je Grenze höchstens einmal
+  tauscht, vollständig reproduzierbar; bei zusammengefassten Tauschen fehlt die Swap-Anzahl der Epoche, die in
+  `state_hash` eingeht.
 - **`restore_checked`** nutzt `Simulation::restore_checked` (§8.2): Die Prüfung liest
   `snapshot.resource::<SigilContent>()` und vergleicht dessen Epoche mit der geladenen. Sind beide gleich oder fehlen
   beide, wird wiederhergestellt. Sonst liefert es `ContentEpochMismatch { snapshot, loaded }` und ändert nichts; es

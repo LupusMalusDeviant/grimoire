@@ -271,6 +271,44 @@ impl ReplayHeader {
     pub fn is_golden_eligible(&self) -> bool {
         self.swaps.is_empty()
     }
+
+    /// Records a content hot-swap that takes effect at `record.tick` (contract §8.1, §11.8).
+    ///
+    /// A recording session calls this once per successful swap, in the order the swaps happen
+    /// (`grimoire_sigil` turns its `SwapReport` into a [`SwapRecord`]). A swap at the same tick
+    /// as the last recorded one replaces that entry's content manifest, so several swaps at one
+    /// tick boundary leave a single entry with the final content. Whether `record.tick` lies
+    /// within the recorded frames is checked when the replay is encoded
+    /// ([`SimError::SwapOutOfRange`]). On error nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// - [`SimError::SwapOrder`] if `record.tick` is earlier than the last recorded swap; `index`
+    ///   is the position the record would have taken.
+    /// - [`SimError::TooManyEntries`] if a new entry would exceed [`MAX_SWAP_RECORDS`].
+    pub fn record_swap(&mut self, record: SwapRecord) -> Result<(), SimError> {
+        match self.swaps.last_mut() {
+            Some(last) if last.tick == record.tick => {
+                last.content_manifest = record.content_manifest;
+                return Ok(());
+            }
+            Some(last) if record.tick < last.tick => {
+                return Err(SimError::SwapOrder {
+                    index: self.swaps.len(),
+                });
+            }
+            _ => {}
+        }
+        if self.swaps.len() >= MAX_SWAP_RECORDS {
+            return Err(SimError::TooManyEntries {
+                field: "swaps",
+                count: self.swaps.len() as u64 + 1,
+                max: MAX_SWAP_RECORDS,
+            });
+        }
+        self.swaps.push(record);
+        Ok(())
+    }
 }
 
 /// A recorded run in the version-1 or version-2 binary format; see the module documentation.
@@ -723,10 +761,26 @@ mod tests {
     }
 
     #[test]
-    fn engine_build_without_the_env_var_is_unknown() {
-        // GRIMOIRE_BUILD_HASH is not set for this local test build (engine CI sets it in a
-        // separate step this crate does not depend on).
-        assert_eq!(ENGINE_BUILD, BuildHash::UNKNOWN);
+    fn engine_build_follows_grimoire_build_hash() {
+        // Without GRIMOIRE_BUILD_HASH at compile time (local builds, cargo git checkouts) the
+        // build is unknown; engine CI, the nightly and the release workflow set it to the built
+        // commit (contract §8.1).
+        match option_env!("GRIMOIRE_BUILD_HASH") {
+            None => assert_eq!(ENGINE_BUILD, BuildHash::UNKNOWN),
+            Some(hex) => {
+                assert!(ENGINE_BUILD.is_known());
+                assert_eq!(ENGINE_BUILD.to_hex(), hex);
+            }
+        }
+        // Those workflows set the variable for the whole job, so it is also visible at run time:
+        // a build that missed it at compile time fails here instead of passing silently.
+        if let Ok(hex) = std::env::var("GRIMOIRE_BUILD_HASH") {
+            assert_eq!(
+                ENGINE_BUILD.to_hex(),
+                hex,
+                "GRIMOIRE_BUILD_HASH is set at run time but was not compiled into ENGINE_BUILD"
+            );
+        }
     }
 
     #[test]
@@ -746,11 +800,30 @@ mod tests {
     //   cargo test -p grimoire_sim --lib -- --ignored regenerate_fixtures
     //
     // The three builders below (`v1_fixture_replay`, `minimal_fixture_replay`,
-    // `full_fixture_replay`) must stay byte-for-byte in sync with the identically-named
-    // expectations in `tests/replay.rs`, which re-derive the same values from the same public
-    // API to check the checked-in files without depending on this module's internals.
+    // `full_fixture_replay`) must stay byte-for-byte in sync with the expectations in
+    // `tests/replay.rs`, which re-derive the same values from the public API and additionally
+    // write every fixture out byte by byte from the layout table, without the encoder.
+    //
+    // The fixtures pin the byte format, not the version of the day: their `engine_version` and
+    // `engine_build` are fixed values, never `ENGINE_VERSION` or `ENGINE_BUILD`, so neither a
+    // release that raises the crate version nor a build with `GRIMOIRE_BUILD_HASH` changes them.
 
     use crate::input::{InputFrame, TickInput};
+
+    /// `engine_version` of every v2 fixture, fixed on purpose (see above).
+    const FIXTURE_ENGINE_VERSION: &str = "0.4.0";
+
+    /// A v2 header with the fixed fixture identity: [`FIXTURE_ENGINE_VERSION`], an unknown build,
+    /// `content_manifest`, no swaps and no metadata.
+    fn fixture_header(content_manifest: ContentManifestHash) -> ReplayHeader {
+        ReplayHeader {
+            engine_version: FIXTURE_ENGINE_VERSION.to_string(),
+            engine_build: BuildHash::UNKNOWN,
+            content_manifest,
+            swaps: Vec::new(),
+            app_metadata: BTreeMap::new(),
+        }
+    }
 
     fn fixture_log(frame_count: usize) -> InputLog {
         let frames = (0..frame_count)
@@ -779,13 +852,13 @@ mod tests {
 
     fn minimal_fixture_replay() -> Replay {
         Replay {
-            header: Some(ReplayHeader::for_this_build(ContentManifestHash::EMPTY)),
+            header: Some(fixture_header(ContentManifestHash::EMPTY)),
             log: fixture_log(3),
         }
     }
 
     fn full_fixture_replay() -> Replay {
-        let mut header = ReplayHeader::for_this_build(ContentManifestHash(0x0011_2233_4455_6677));
+        let mut header = fixture_header(ContentManifestHash(0x0011_2233_4455_6677));
         header.engine_build = BuildHash([0xab; 20]);
         header.swaps = vec![
             SwapRecord::new(2, ContentManifestHash(0xaa)),
@@ -804,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the checked-in fixtures under tests/fixtures/; run manually after a deliberate format change"]
+    #[ignore = "regenerates the checked-in fixtures under tests/fixtures/; run manually after a deliberate format change, never for a release"]
     fn regenerate_fixtures() {
         write_fixture("replay_v1.bin", &v1_fixture_replay());
         write_fixture("replay_v2_minimal.bin", &minimal_fixture_replay());

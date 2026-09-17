@@ -173,30 +173,21 @@ Voraussetzung: Der letzte CI-Lauf auf `main` ist grün.
 
 1. **Version heben** in `Cargo.toml` unter `[workspace.package]` (`version = "X.Y.Z"`), dann
    `cargo check --workspace`, damit `Cargo.lock` die neuen Crate-Versionen enthält.
-2. **Replay-Fixtures neu erzeugen.** Der Replay-Header trägt `ENGINE_VERSION`
-   (`env!("CARGO_PKG_VERSION")`), und die eingecheckten Byte-Fixtures unter
-   `crates/grimoire_sim/tests/fixtures/` enthalten diese Zeichenkette wörtlich. Eine
-   Versionsanhebung bricht `-p grimoire_sim --test replay` deshalb zwangsläufig:
-
-   ```bash
-   cargo test -p grimoire_sim --lib -- --ignored regenerate_fixtures
-   cargo test -p grimoire_sim --test replay
-   ```
-
-   Die neuen Fixtures gehören in denselben Release-Commit. *Bekannte Falle, offen:* Besser wäre,
-   die goldenen Fixtures von der Crate-Version zu entkoppeln, damit sie das Format festnageln statt
-   der Tagesversion — eigener Pull Request, nicht im Release.
-3. **CHANGELOG pflegen:** `[Unreleased]` in `## [X.Y.Z] - JJJJ-MM-TT` umbenennen, einen neuen leeren
+   Die Replay-Fixtures unter `crates/grimoire_sim/tests/fixtures/` bleiben dabei unverändert: Sie
+   tragen eine feste Engine-Version (`0.4.0`) und einen unbekannten Build-Hash statt
+   `ENGINE_VERSION` und `ENGINE_BUILD`, halten also das Format fest und nicht die Tagesversion
+   (`docs/formats/replay.md`). Ein Release erzeugt sie nie neu.
+2. **CHANGELOG pflegen:** `[Unreleased]` in `## [X.Y.Z] - JJJJ-MM-TT` umbenennen, einen neuen leeren
    `[Unreleased]`-Abschnitt anlegen, inkompatible Änderungen mit Migrationshinweis aufführen. Einen
    Entwurf liefert `git cliff --unreleased --tag vX.Y.Z --strip header` (falls git-cliff lokal
    installiert ist).
-4. **Commit und Push:** `chore(release): vX.Y.Z`, pushen, CI-Lauf überwachen (siehe oben).
-5. **Tag setzen und pushen:**
+3. **Commit und Push:** `chore(release): vX.Y.Z`, pushen, CI-Lauf überwachen (siehe oben).
+4. **Tag setzen und pushen:**
    ```bash
    git tag -a vX.Y.Z -m "Grimoire vX.Y.Z"
    git push origin vX.Y.Z
    ```
-6. **Release-Lauf überwachen:**
+5. **Release-Lauf überwachen:**
    ```bash
    run_id=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
    gh run watch "$run_id" --exit-status
