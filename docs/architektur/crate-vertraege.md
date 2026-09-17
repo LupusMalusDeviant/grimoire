@@ -1839,7 +1839,9 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   Tausch vor dem ersten `step` hat `tick = 0`. Den Stand direkt nach der Installation des Contents beschreibt
   `content_manifest`. Unit-Bytes stehen nicht im Replay (§11.8). Ein Replay mit mindestens einem Eintrag ist nie
   golden (`is_golden_eligible() == false`); Golden-Master-Werkzeuge weisen es ab (§15.2).
-  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `ReplayHeader::record_swap` hängt einen Eintrag in
+  *Umsetzung (WP7.1); freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe),
+  einschließlich der entschiedenen Empfehlung, sie freizugeben, weil sie die hier schon festgelegte Regel als
+  API führt und WP8.4 genau diese Stelle braucht:* `ReplayHeader::record_swap` hängt einen Eintrag in
   Tick-Reihenfolge an. Hat er den Tick des letzten Eintrags, ersetzt er dessen `content_manifest` (mehrere Tausche an
   einer Grenze ergeben so den Endstand). Ein früherer Tick liefert `SwapOrder { index: swaps.len() }`, ein neuer
   Eintrag über `MAX_SWAP_RECORDS` hinaus `TooManyEntries`; bei einem Fehler ändert sich nichts. `tick ≤ frames.len()`
@@ -2013,9 +2015,12 @@ pub mod stream {
 
 ### 8.5 Subsystem-Hashes und Divergenz-Diagnose (Ergänzung P1, WP7.2)
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung von OF-18.1 über den Beobachter aus §7.2 und
-§8.4. Welche Dichte Harness und Golden Master verwenden, schlägt [ADR-0018](../adr/0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md)
-vor (Status Vorgeschlagen); die API trägt jede Dichte.
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe).* Umsetzung von
+OF-18.1 über den Beobachter aus §7.2 und §8.4. Welche Dichte Harness und Golden Master verwenden, legt
+[ADR-0018](../adr/0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md) fest — erkennen alle
+60 Ticks, bei einer Abweichung nur das erste Fenster je System je Tick eingrenzen, Golden Master speichern
+keine System-Hashes —, vom PO am 2026-09-18 angenommen; die API trägt jede Dichte. (Der Statusvermerk der
+ADR-Datei selbst steht noch auf „Vorgeschlagen“ und wird mit der ADR nachgezogen.)
 
 ```rust
 pub struct TraceGranularity;                      // private Felder; Copy, Eq, Hash, Debug
@@ -2271,7 +2276,7 @@ pub trait GamePlugin {                                                  // zusä
 }
 // AppBuilder zusätzlich: profiler(bool) -> Self (Default true), overlay_key(Option<KeyCode>) -> Self (Default Some(KeyCode::F3))
 // AppBuilder zusätzlich, nur mit Feature `debug-link`: debug_link(Box<dyn grimoire_debug::DebugTransport>) -> Self,
-//     debug_link_token([u8; 32]) -> Self (WP8.4, Stufe A, PO-Freigabe offen; §9.7)
+//     debug_link_token([u8; 32]) -> Self (WP8.4, Stufe A, PO-Freigabe 2026-09-18; §9.7)
 pub struct PointerState;     // Clone, Copy, Default, PartialEq, Debug; apply(&RawInputEvent),
                              // position() -> Option<[f32; 2]> (physische Pixel, Ursprung oben links, Y nach unten)
 pub const AIM_MIN_DISTANCE: f32 = 0.01;                                 // Welteinheiten, Chebyshev-Abstand
@@ -2586,8 +2591,9 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 
 **Debug-Link-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP8.4)**
 
-*Stufe A, PO-Freigabe offen:* die API unten. Die mit „Klarstellung“ markierten Punkte präzisieren den freigegebenen
-Text oben und sind Stufe K.
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+entschiedenen Empfehlung, das Null-Token als Vorgabe für einen übergebenen Transport zu behalten:* die API
+unten. Die mit „Klarstellung“ markierten Punkte präzisieren den freigegebenen Text oben und sind Stufe K.
 
 ```rust
 // grimoire::adapters::debug::link (nur Feature debug-link)
@@ -2913,7 +2919,9 @@ pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub 
 
 ### 9.11 Adapter Assets → Sigil (`grimoire::adapters::assets`)
 
-*Stufe A, PO-Freigabe offen.* Ergänzung P1, Plan 0002 WP8.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+entschiedenen Empfehlung, die API anzunehmen, weil das Spiel Sigil-Content aus einem Pack sonst nicht laden
+kann (WP9.2).* Ergänzung P1, Plan 0002 WP8.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt
 die öffentliche API fest.
 
 ```rust
@@ -3480,7 +3488,8 @@ impl From<SwapReport> for grimoire_sim::SwapRecord;   // WP7.1: { tick: effectiv
   Endstand. Unit-Bytes stehen in P1 nicht im Replay: Eine Swap-Session ist ohne dieselben Units nur bis zum ersten
   Swap-Tick reproduzierbar, gilt als nicht golden (`is_golden_eligible() == false`), und das Golden-Master-Werkzeug
   schreibt aus ihr keinen Master (§15.2, WP7.5).
-  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `impl From<SwapReport> for SwapRecord` bildet genau diesen Eintrag;
+  *Umsetzung (WP7.1); freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe):*
+  `impl From<SwapReport> for SwapRecord` bildet genau diesen Eintrag;
   eine aufzeichnende Sitzung schreibt `header.record_swap(report.into())` (§8.1). Die Zusammenfassung mehrerer Tausche
   an einer Grenze übernimmt `record_swap`. Mit denselben Units ist eine Sitzung, die je Grenze höchstens einmal
   tauscht, vollständig reproduzierbar; bei zusammengefassten Tauschen fehlt die Swap-Anzahl der Epoche, die in
@@ -4136,9 +4145,11 @@ pub enum ExportError;         // #[non_exhaustive], thiserror: Io { kind: io::Er
 
 **Engine-Server (Ergänzung P1, Plan 0002 WP8.4)**
 
-*Stufe A, PO-Freigabe offen:* `EngineLink`, `LinkEvent`, `LinkError`, `InProcessTransport::send_bytes` und die
-Verbindungsgrenzen des TCP-Transports (unten). Die mit „Klarstellung“ markierten Punkte setzen den freigegebenen Text
-oben um und sind Stufe K.
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+entschiedenen Einstufung der Verbindungsgrenzen als Stufe A statt I — §13 legte das Ergebnis an der Grenze nicht
+fest, und außer Tests nutzte niemand den Transport:* `EngineLink`, `LinkEvent`, `LinkError`,
+`InProcessTransport::send_bytes` und die Verbindungsgrenzen des TCP-Transports (unten). Die mit „Klarstellung“
+markierten Punkte setzen den freigegebenen Text oben um und sind Stufe K.
 
 ```rust
 pub struct EngineLink;                // Debug; new(Box<dyn DebugTransport>, EngineIdentity), is_connected() -> bool,

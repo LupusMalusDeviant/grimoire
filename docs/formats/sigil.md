@@ -1229,6 +1229,7 @@ compiles, with that runner's `sigilc` and from the repository root with relative
 | `reference` | `crates/grimoire_sigilc/tests/reference/*.sigil` ([§14](#14-reference-patterns)) | that directory | `tests/reference/behaviors.json` |
 | `facade` | `crates/grimoire/tests/fixtures/*.sigil` | `crates/grimoire/tests` (the canonical paths of the unit fixtures) | — |
 | `bench` | `crates/grimoire_bench/fixtures/*.sigil` (the full-curtain units, plan 0002 WP6.6) | `crates/grimoire_bench` (the canonical paths of the unit fixtures) | — |
+| `link` | `crates/grimoire_link/tests/patterns/*.sigil` (the dev-link test patterns, plan 0002 WP8.5) | `crates/grimoire_link/tests` (the canonical paths of the test patterns) | — |
 
 It writes the units (`units/<group>/<canonical path>.unit`), each group's `sigilc build --json`
 report, and the `sigilc check --json` reports of `tests/corpus/invalid` and
