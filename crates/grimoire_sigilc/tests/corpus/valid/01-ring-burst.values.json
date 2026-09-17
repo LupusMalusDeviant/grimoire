@@ -1,0 +1,261 @@
+{
+  "schema": "grimoire.sigilc.values",
+  "schema_version": 1,
+  "file": "valid/01-ring-burst.sigil",
+  "diagnostics": [],
+  "values": [
+    {
+      "node_path": "meta.name",
+      "kind": "string",
+      "text": "\"Ring Burst\"",
+      "number": null,
+      "unit": null,
+      "line": 7,
+      "column": 10,
+      "end_line": 7,
+      "end_column": 22
+    },
+    {
+      "node_path": "meta.difficulty",
+      "kind": "list",
+      "text": "[easy, opener]",
+      "number": null,
+      "unit": null,
+      "line": 8,
+      "column": 16,
+      "end_line": 8,
+      "end_column": 30
+    },
+    {
+      "node_path": "meta.difficulty[0]",
+      "kind": "ref",
+      "text": "easy",
+      "number": null,
+      "unit": null,
+      "line": 8,
+      "column": 17,
+      "end_line": 8,
+      "end_column": 21
+    },
+    {
+      "node_path": "meta.difficulty[1]",
+      "kind": "ref",
+      "text": "opener",
+      "number": null,
+      "unit": null,
+      "line": 8,
+      "column": 23,
+      "end_line": 8,
+      "end_column": 29
+    },
+    {
+      "node_path": "meta.density",
+      "kind": "int",
+      "text": "96",
+      "number": "96",
+      "unit": null,
+      "line": 9,
+      "column": 13,
+      "end_line": 9,
+      "end_column": 15
+    },
+    {
+      "node_path": "bullets.orb.silhouette",
+      "kind": "ref",
+      "text": "orb",
+      "number": null,
+      "unit": null,
+      "line": 14,
+      "column": 16,
+      "end_line": 14,
+      "end_column": 19
+    },
+    {
+      "node_path": "bullets.orb.palette",
+      "kind": "ref",
+      "text": "enemy.crimson",
+      "number": null,
+      "unit": null,
+      "line": 15,
+      "column": 13,
+      "end_line": 15,
+      "end_column": 26
+    },
+    {
+      "node_path": "bullets.orb.glow",
+      "kind": "float",
+      "text": "0.6",
+      "number": "0.6",
+      "unit": null,
+      "line": 16,
+      "column": 10,
+      "end_line": 16,
+      "end_column": 13
+    },
+    {
+      "node_path": "bullets.orb.radius",
+      "kind": "quantity",
+      "text": "0.25u",
+      "number": "0.25",
+      "unit": "u",
+      "line": 17,
+      "column": 12,
+      "end_line": 17,
+      "end_column": 17
+    },
+    {
+      "node_path": "bullets.orb.damage",
+      "kind": "int",
+      "text": "1",
+      "number": "1",
+      "unit": null,
+      "line": 18,
+      "column": 12,
+      "end_line": 18,
+      "end_column": 13
+    },
+    {
+      "node_path": "bullets.orb.flags",
+      "kind": "list",
+      "text": "[smashable, grazeable]",
+      "number": null,
+      "unit": null,
+      "line": 19,
+      "column": 11,
+      "end_line": 19,
+      "end_column": 33
+    },
+    {
+      "node_path": "bullets.orb.flags[0]",
+      "kind": "ref",
+      "text": "smashable",
+      "number": null,
+      "unit": null,
+      "line": 19,
+      "column": 12,
+      "end_line": 19,
+      "end_column": 21
+    },
+    {
+      "node_path": "bullets.orb.flags[1]",
+      "kind": "ref",
+      "text": "grazeable",
+      "number": null,
+      "unit": null,
+      "line": 19,
+      "column": 23,
+      "end_line": 19,
+      "end_column": 32
+    },
+    {
+      "node_path": "bullets.orb.despawn_vfx",
+      "kind": "ref",
+      "text": "soul_wisp",
+      "number": null,
+      "unit": null,
+      "line": 20,
+      "column": 17,
+      "end_line": 20,
+      "end_column": 26
+    },
+    {
+      "node_path": "emitters.burst.bullet",
+      "kind": "ref",
+      "text": "orb",
+      "number": null,
+      "unit": null,
+      "line": 24,
+      "column": 12,
+      "end_line": 24,
+      "end_column": 15
+    },
+    {
+      "node_path": "emitters.burst.delay",
+      "kind": "quantity",
+      "text": "30t",
+      "number": "30",
+      "unit": "t",
+      "line": 25,
+      "column": 11,
+      "end_line": 25,
+      "end_column": 14
+    },
+    {
+      "node_path": "emitters.burst.repeat",
+      "kind": "int",
+      "text": "4",
+      "number": "4",
+      "unit": null,
+      "line": 26,
+      "column": 12,
+      "end_line": 26,
+      "end_column": 13
+    },
+    {
+      "node_path": "emitters.burst.interval",
+      "kind": "quantity",
+      "text": "45t",
+      "number": "45",
+      "unit": "t",
+      "line": 27,
+      "column": 14,
+      "end_line": 27,
+      "end_column": 17
+    },
+    {
+      "node_path": "emitters.burst.speed",
+      "kind": "quantity",
+      "text": "0.05u/t",
+      "number": "0.05",
+      "unit": "u/t",
+      "line": 28,
+      "column": 11,
+      "end_line": 28,
+      "end_column": 18
+    },
+    {
+      "node_path": "emitters.burst.block.count",
+      "kind": "int",
+      "text": "24",
+      "number": "24",
+      "unit": null,
+      "line": 30,
+      "column": 13,
+      "end_line": 30,
+      "end_column": 15
+    },
+    {
+      "node_path": "emitters.burst.block.start",
+      "kind": "quantity",
+      "text": "7.5deg",
+      "number": "7.5",
+      "unit": "deg",
+      "line": 31,
+      "column": 13,
+      "end_line": 31,
+      "end_column": 19
+    },
+    {
+      "node_path": "emitters.burst.modifiers[0].rate",
+      "kind": "quantity",
+      "text": "0.002u/t2",
+      "number": "0.002",
+      "unit": "u/t2",
+      "line": 34,
+      "column": 12,
+      "end_line": 34,
+      "end_column": 21
+    },
+    {
+      "node_path": "emitters.burst.modifiers[0].max_speed",
+      "kind": "quantity",
+      "text": "0.2u/t",
+      "number": "0.2",
+      "unit": "u/t",
+      "line": 35,
+      "column": 17,
+      "end_line": 35,
+      "end_column": 23
+    }
+  ]
+}
