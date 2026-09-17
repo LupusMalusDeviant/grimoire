@@ -2422,6 +2422,79 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
   (PO, 2026-09-17): ein gemeinsamer Katalog für Silhouetten und Paletten mit festen Namen ersetzt die Nummerierung je
   Unit, vor weiterem Sigil-Content; Umsetzung offen.
 
+### 9.10 Asset-Haken für Plugins und Offscreen-Lauf (Ergänzung P1)
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung des PO-Entscheids vom 2026-09-17
+(Plan 0002, „Fassaden-Haken für Assets“): Plugins melden Meshes und Texturen über die Fassade beim Renderer
+der Hauptschleife an, damit ein Spiel ohne eigene Schleife Figuren aus einem Pack laden kann und Profiler und
+Overlay (§9.7) mitbekommt. Der Entscheid legt fest, *dass* der Haken kommt; Typen, Name und Zeitpunkt unten
+sind der Vorschlag dieses Pakets. Die Registrierung bleibt renderer-spezifisch (§6, Klarstellung
+2026-09-16): `grimoire_render::Renderer` ändert sich nicht, der Haken liegt in der Fassade.
+
+```rust
+pub trait GamePlugin {                                   // zusätzlich, bereitgestellte Methode (bricht keine Plugins)
+    fn register_assets(&mut self, assets: &mut dyn RenderAssets) -> Result<(), PluginError> { Ok(()) }
+}
+pub type PluginError = Box<dyn std::error::Error + Send + Sync + 'static>;
+pub trait RenderAssets {                                 // objektsicher
+    fn register_mesh(&mut self, mesh: MeshData) -> Result<MeshHandle, MeshError>;
+    fn register_texture(&mut self, texture: TextureData) -> Result<TextureHandle, TextureError>;
+}
+impl RenderAssets for WgpuRenderer;                      // leitet an register_mesh/register_texture weiter
+pub struct HeadlessRenderAssets;                         // Default, Clone, Eq, Debug; new(), meshes_registered() -> u32,
+                                                         // textures_registered() -> u32; impl RenderAssets ohne GPU
+// GrimoireError zusätzlich (bereits #[non_exhaustive]):
+//     Assets { plugin: String, #[source] source: PluginError }
+// AppBuilder zusätzlich:
+//     stage_renderer_config(StageRendererConfig) -> Self   (Default StageRendererConfig::default(); renderer_config setzt nur `base`)
+//     run_offscreen(self, run: OffscreenRun, events: &mut dyn FnMut(u64, &mut Vec<PlatformEvent>),
+//                   capture: &mut dyn FnMut(u64, &[u8])) -> Result<LoopReport, GrimoireError>
+#[non_exhaustive]
+pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub frame_delta: Duration,
+                          pub capture_every: u64 }       // Copy, Eq, Debug; new(width, height, frames, frame_delta), capture_every = 0
+// grimoire::adapters::figure_assets zusätzlich:
+//     load_figure_into(&mut AssetStore, &mut dyn RenderAssets, figure_name: &str) -> Result<LoadedFigure, FigureLoadError>
+//     (load_figure bleibt unverändert und ruft load_figure_into mit dem Renderer auf)
+```
+
+- **Zeitpunkt (ergänzt `init` in §9 und §9.3):** Renderer erzeugen → `Simulation::new` und Executor → `build` je
+  Plugin → **`register_assets` je Plugin in Registrierungsreihenfolge, genau einmal je Lauf** → `window_created`
+  je Plugin (nur mit Fenster) → gegebenenfalls Debug-Link (§9.7) → erster Frame. Nach `build`, weil ein Plugin
+  dort seine Konfiguration festlegt; vor `window_created` und dem ersten Frame, damit `extract_stage` die Handles
+  schon im ersten Frame hat.
+- **Ziel je Lauf:** `run` und `run_offscreen` übergeben den `WgpuRenderer` der Schleife, `run_headless_frames*`
+  ein `HeadlessRenderAssets`. `run_headless` hat keinen Renderer und ruft den Haken nie auf; ein Plugin muss ohne
+  ihn auskommen (etwa mit Platzhalter-Handles), wie es heute ohne `extract` auskommt.
+- **Handles:** jede Implementierung vergibt sie je Art in Aufrufreihenfolge ab 0, über alle Plugins eines Laufs
+  fortlaufend. `HeadlessRenderAssets` prüft wie `WgpuRenderer` (`MeshData::validate`, `TextureData::validate`)
+  und vergibt dieselben Handles, lädt aber nichts hoch; eine abgelehnte Eingabe verbraucht kein Handle. Handles
+  sind Präsentationszustand: Das Plugin hält sie selbst, sie erreichen die Simulation nie, kein Hash hängt von
+  ihnen ab (Test). `NullRenderer` bleibt ohne Registry (§6); seine Zähler ändern sich nicht.
+- **Fehler:** Liefert ein Plugin `Err`, protokolliert die Fassade den Fehler und ruft weder weitere
+  `register_assets` noch `window_created` auf. `init` gilt als gelungen, damit jedes gebaute Plugin `shutdown`
+  erhält. Es läuft kein Frame, und der Lauf endet mit `GrimoireError::Assets { plugin, source }`, wobei `plugin`
+  der `name()` des Plugins ist. Das unterscheidet sich bewusst vom fehlgeschlagenen Renderer-Aufbau, bei dem
+  weder `build` noch `shutdown` laufen (§9): Hier sind die Plugins schon gebaut.
+- **`stage_renderer_config`:** `run` erzeugt den Fensterrenderer über `WgpuRenderer::new_for_window_staged`,
+  `run_offscreen` über `new_offscreen_staged`, beide mit dieser Konfiguration. Mit der Vorgabe ist das
+  gleichwertig zu `new_for_window(window, renderer_config)`; ein Spiel wählt so Lichtbudget und Multisampling
+  (§6), ohne eine eigene Schleife zu bauen.
+- **`run_offscreen`:** dieselbe Hauptschleife wie `run`, über einen Offscreen-`WgpuRenderer` der Größe
+  `width` × `height` und die manuelle Uhr (`frame_delta` vor jedem Frame), ohne Fenster. Skriptierte Events wie
+  `run_headless_frames_with_events`; die Zielabtastung (§9.3) sieht die Offscreen-Größe als Viewport. Nach jedem
+  abgeschlossenen Frame `n` mit `n % capture_every == 0` (nie bei 0) erhält `capture(n, rgba)` das Bild als
+  sRGB-RGBA8, oberste Zeile zuerst (`WgpuRenderer::read_offscreen_rgba`). Ein Rücklesefehler beendet den Lauf mit
+  `GrimoireError::Render`. `LoopReport::hashes` folgt der Headless-Semantik (§9). Zweck: Tests und Aufnahmen
+  eines Spiels über genau den Weg, den der Desktop-Lauf zeichnet, statt über eine nachgebaute Schleife.
+- **Tests:** `crates/grimoire/tests/asset_hook.rs` – Reihenfolge der Haken und fortlaufende Handles über zwei
+  Plugins, kein Aufruf in `run_headless`, Fehlerpfad (keine weiteren Haken, kein Frame, `shutdown` für alle),
+  ungültiges Mesh als Plugin-Fehler, identische Hashes mit und ohne registrierende Plugins, `HeadlessRenderAssets`
+  direkt, und ein Offscreen-Test: Ein Plugin registriert ein Mesh über den Haken, `run_offscreen` rendert es
+  (drei Frames, jeder aufgenommen); dieselbe Instanz ohne Registrierung zeichnet nichts (Aufnahme jedes zweiten
+  Frames). Der Offscreen-Test nimmt wie `grimoire_render/tests/offscreen.rs` eine prozessweite GPU-Sperre.
+  `tests/figure_pack.rs` lädt die Test-Figur über `load_figure_into` aus einem Plugin in
+  `run_headless_frames`.
+
 ## 10. `grimoire_exec`
 
 ```rust
