@@ -70,7 +70,8 @@ jobs:
       - name: Fail on fnp_ references (PRD-0002 FR-01)
         run: |
           set +e
-          git grep -n -I -e 'fnp_' -- Cargo.toml ':(glob)crates/**/Cargo.toml' ':(glob)crates/**/*.rs'
+          # tools/ holds the C# tooling suite (P-1); contract §1 extends the gate to it.
+          git grep -n -I -e 'fnp_' -- Cargo.toml ':(glob)crates/**/Cargo.toml' ':(glob)crates/**/*.rs' ':(glob)tools/**'
           status=$?
           set -e
           case "$status" in
@@ -79,7 +80,7 @@ jobs:
               exit 1
               ;;
             1)
-              echo "Keine fnp_-Referenzen in Cargo.toml oder crates/ gefunden."
+              echo "Keine fnp_-Referenzen in Cargo.toml, crates/ oder tools/ gefunden."
               ;;
             *)
               echo "::error title=Standalone-Gate defekt::git grep ist mit Status ${status} fehlgeschlagen."

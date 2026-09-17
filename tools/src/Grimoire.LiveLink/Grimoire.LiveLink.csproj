@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Live-link client of the Grimoire debug protocol v1 (PRD-0016 FR-03, contract §13): connection,
+       handshake, reconnect, typed messages, and degrading to file work when the link drops. -->
+  <PropertyGroup>
+    <RootNamespace>Grimoire.LiveLink</RootNamespace>
+    <Description>Live-link client for the Grimoire engine's debug protocol v1.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Grimoire.Formats/Grimoire.Formats.csproj" />
+  </ItemGroup>
+</Project>
