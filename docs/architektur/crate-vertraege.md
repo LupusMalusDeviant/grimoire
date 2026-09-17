@@ -1225,7 +1225,8 @@ impl WgpuRenderer {
 - **Marker- und Debug-Kanal werden gezeichnet:** `marker_sprites` und `debug_sprites` zeichnet die Sprite-Pipeline
   jetzt tatsächlich, mit `base.camera` wie die Welt-Sprites. Bisher wurden sie nur gezählt. Unter `Camera25D` sitzt
   der Spieler-Marker damit nicht auf seiner Bodenposition; ein Folge-Vertrags-PR projiziert ihn wie die Bullets auf
-  die Bodenebene (PO-Entscheid 2026-09-17; Umsetzung offen).
+  die Bodenebene (PO-Entscheid 2026-09-17). **Umgesetzt mit WP3.6:** siehe „Spieler-Marker auf der Bodenebene“
+  unten; `debug_sprites` bleiben bei `base.camera`.
 - **Geschoss-Lichter aus dem Bullet-Kanal (PO-Entscheid 2026-09-16, WP3.4 oben):** Der Renderer leitet aus
   `StageFrame::bullets` selbst Lichter ab, ausschließlich über `point_light_from_bullet`. Jede akzeptierte Instanz mit
   `glow > 0` fällt in ein weltfestes Raster von Zellen mit 4 Welteinheiten Kantenlänge um das Kameraziel
@@ -1269,6 +1270,40 @@ pub gpu_time: Option<Duration>,   // Summe der Pass-Dauern eines kürzlich gezei
 - **Test:** `gpu_timer.rs` rendert offscreen, bis eine Messung vorliegt (höchstens 2.000 Frames), prüft die
   Plausibilität und den Fall `None` bei Nullgröße; auf einem Adapter ohne Timestamp-Queries prüft er, dass
   `gpu_time` `None` bleibt. Die Referenzszenen (WP2.8) bleiben bitgleich.
+
+**Spieler-Marker auf der Bodenebene (Ergänzung P1, Plan 0002 WP3.6)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung des PO-Entscheids vom 2026-09-17 („ein
+Folge-Vertrags-PR projiziert ihn wie die Geschosse auf die Bodenebene“). Keine Signatur und kein `repr(C)`-Layout
+ändert sich; geändert ist, wo ein Frame mit `camera_25d` seine Marker zeichnet. Eingestuft als A und nicht als I,
+weil die SemVer-Politik geänderte Bilder nicht als inkompatibel nennt und kein Referenzbild betroffen ist; die
+Verhaltensänderung ist hier ausdrücklich vermerkt.
+
+- **Mit `StageFrame::camera_25d`:** Jede Instanz von `marker_sprites` ist ein kamerazugewandtes Billboard auf der
+  Bodenebene (Z = 0), projiziert genau wie der Bullet-Pass: dieselbe View-Projection mit den Clip-Ebenen des
+  Mesh-Passes und dieselben Achsen (Kamera rechts und oben). `position` ist der Bodenpunkt, `half_size` die
+  Ausdehnung in Welteinheiten entlang dieser Achsen, `rotation` dreht in der Billboard-Ebene; `shape` und `color`
+  wie bisher. Ein Marker an einem Bodenpunkt liegt also dort, wo `Camera25D::ground_to_screen` ihn abbildet (Test).
+  Ist die Kamera für den Bullet-Pass unbrauchbar (nicht endliche Matrix), zeichnet auch der Marker-Kanal nichts.
+- **Ohne `camera_25d`:** unverändert über `base.camera` (flacher 2D-Pfad, bitgleich).
+- **`debug_sprites`** und die Welt-Sprites in `base.sprites` bleiben in jedem Fall bei `base.camera`, damit
+  Bildschirm-Overlays (§9.7) pixelgenau bleiben.
+- **Zähler und Zeichenaufrufe** wie bisher: `sprites_drawn` zählt die Marker, ein Marker-Kanal ist ein
+  Zeichenaufruf.
+- **Umsetzung:** zweiter Vertex-Einstieg `vs_billboard` im Sprite-Shader mit eigener Pipeline; `vs_main` bleibt
+  unverändert, alle Referenzbilder bleiben bitgleich.
+
+**Render-Testszenen `lights_256` und `bullets_on_top`, Messhaken für das Bench-Gate (Plan 0002 WP3.6)**
+
+*Stufe K (Klarstellung).* Die in §2a und oben genannte Szene `bullets_on_top` und die Szene `lights_256` liegen in
+`crates/grimoire_render/tests/snapshot_scenes.rs` (Warnmodus, Referenzen je Plattform). Beide prüfen ihre
+Eigenschaft vor dem Referenzvergleich selbst: `lights_256` rendert 256 Punktlichter mit `LightBudget::High`, keines
+wird verworfen, die beleuchteten Flecken zeigen verschiedene Farbtöne; `bullets_on_top` legt Geschosse mit Glow und
+den Spieler-Marker auf eine von einem Punktlicht weiß gebrannte Bodenstelle, Körperfarbe und Rand bleiben dort
+lesbar (PRD-0003 Regel 1). `grimoire_render::measurement::CpuFramePreparation` ist ein Mess-Haken wie
+`render_stage_with_specular_aa`, **kein Vertragsbestandteil**: Er führt die CPU-Schritte von Bullet-Upload und
+Licht-Clustering ohne GPU aus, über dieselben Funktionen wie der Renderer, für die Bench-Szenarien
+`render_bullet_upload_10k` und `render_light_cluster_256` in `grimoire_bench`.
 
 ## 7. `grimoire_ecs`
 
