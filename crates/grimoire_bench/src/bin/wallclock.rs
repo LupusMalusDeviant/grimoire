@@ -39,18 +39,21 @@ use grimoire_bench::curtain::{
 };
 
 use grimoire_bench::scenarios::{
-    BULLET_UPLOAD_SCENARIO, COLLIDE_BULLETS, COLLIDE_CLUSTER_SCENARIO, COLLIDE_ENEMIES,
-    COLLIDE_TICK_BUDGET_MS, COLLIDE_UNIFORM_SCENARIO, COLLIDE_WALLCLOCK_TICKS, CollideLayout,
-    ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS, EXTRACT_SCENARIO,
+    BULLET_UPLOAD_SCENARIO, CLIP_CROSSFADE_SCENARIO, CLIP_ENEMIES, CLIP_ENEMY_JOINTS,
+    CLIP_HERO_JOINTS, CLIP_JOINTS_PER_FRAME, CLIP_SAMPLE_SCENARIO, CLIP_WALLCLOCK_FRAMES,
+    COLLIDE_BULLETS, COLLIDE_CLUSTER_SCENARIO, COLLIDE_ENEMIES, COLLIDE_TICK_BUDGET_MS,
+    COLLIDE_UNIFORM_SCENARIO, COLLIDE_WALLCLOCK_TICKS, CollideLayout, ECS_ENTITIES, ECS_SCENARIO,
+    ECS_WALLCLOCK_ROUNDS, EXTRACT_BUDGET_MS, EXTRACT_BULLETS, EXTRACT_SCENARIO,
     EXTRACT_WALLCLOCK_ROUNDS, LIGHT_CLUSTER_SCENARIO, RENDER_BULLETS, RENDER_POINT_LIGHTS,
     RENDER_UPLOAD_BUDGET_MS, RENDER_WALLCLOCK_FRAMES, SIGIL_CHURN_BULLETS, SIGIL_CHURN_PER_TICK,
     SIGIL_CHURN_SCENARIO, SIGIL_CHURN_WALLCLOCK_TICKS, SIGIL_ENTITIES, SIGIL_SCENARIO,
     SIGIL_TICK_BUDGET_MS, SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_SCENARIO,
     SIGIL_UPDATE_10K_WALLCLOCK_TICKS, SIGIL_WALLCLOCK_TICKS, SIM_ENTITIES, SIM_SCENARIO,
-    SIM_WALLCLOCK_TICKS, build_collide, build_ecs_world, build_render_cpu, build_sigil_churn,
-    build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
-    run_bullet_upload_frames, run_collide_ticks, run_ecs_rounds, run_light_cluster_frames,
-    run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks, sigil_update_fill_ticks,
+    SIM_WALLCLOCK_TICKS, build_collide, build_ecs_world, build_figure_clip, build_render_cpu,
+    build_sigil_churn, build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
+    run_bullet_upload_frames, run_clip_crossfade_frames, run_clip_sample_frames, run_collide_ticks,
+    run_ecs_rounds, run_light_cluster_frames, run_sigil_extract_rounds, run_sigil_update_ticks,
+    run_sim_ticks, sigil_update_fill_ticks,
 };
 use grimoire_bench::schema::{
     BenchResult, CommitRef, ExecutorInfo, ParamValue, RunKey, RunnerInfo, ValueOrigin, median,
@@ -185,6 +188,23 @@ fn measure_extract() -> Vec<f64> {
 }
 
 /// Samples `frames` preparations of one render CPU bench body, after the usual warm-up.
+/// Engine ADR-0017: one clip-sampling bench, sampled like the render CPU benches below.
+fn measure_figure_clip(
+    run: fn(&mut grimoire_bench::scenarios::FigureClipBench, u32, u32) -> usize,
+) -> Vec<f64> {
+    let mut bench = build_figure_clip();
+    for _ in 0..WARMUP_SAMPLES {
+        run(&mut bench, CLIP_WALLCLOCK_FRAMES, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run(&mut bench, CLIP_WALLCLOCK_FRAMES, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
 fn measure_render(
     run: fn(&mut grimoire_bench::scenarios::RenderCpuBench, u32, u32) -> usize,
 ) -> Vec<f64> {
@@ -425,6 +445,13 @@ fn main() -> ExitCode {
     ]);
 
     let int = |value: u32| ParamValue::Int(i64::from(value));
+    let clip_params = || {
+        BTreeMap::from([
+            ("figures".to_string(), int(CLIP_ENEMIES + 1)),
+            ("joints".to_string(), int(CLIP_JOINTS_PER_FRAME)),
+            ("frames".to_string(), int(CLIP_WALLCLOCK_FRAMES)),
+        ])
+    };
     let update_6k_params = BTreeMap::from([
         ("bullets".to_string(), int(SIGIL_ENTITIES)),
         ("ticks".to_string(), int(SIGIL_WALLCLOCK_TICKS)),
@@ -484,6 +511,18 @@ fn main() -> ExitCode {
                 ("frames".to_string(), int(RENDER_WALLCLOCK_FRAMES)),
             ]),
         ),
+        result_for(
+            &meta,
+            CLIP_SAMPLE_SCENARIO,
+            measure_figure_clip(run_clip_sample_frames),
+            clip_params(),
+        ),
+        result_for(
+            &meta,
+            CLIP_CROSSFADE_SCENARIO,
+            measure_figure_clip(run_clip_crossfade_frames),
+            clip_params(),
+        ),
     ];
     // Plan 0002 WP5.3 and WP5.4 budgets, as trend lines for the log (never a gate, engine
     // ADR-0010).
@@ -533,6 +572,20 @@ fn main() -> ExitCode {
     eprintln!(
         "{BULLET_UPLOAD_SCENARIO} + {LIGHT_CLUSTER_SCENARIO}: median {upload_ms:.4} + {cluster_ms:.4} = {render_ms:.4} ms per frame, {RENDER_BULLETS} bullets and {RENDER_POINT_LIGHTS} lights (budget {RENDER_UPLOAD_BUDGET_MS:.1} ms: {verdict}; wall clock, trend only)"
     );
+
+    // Engine ADR-0017: clip sampling as a share of the 0.5 ms extraction budget, with and
+    // without crossfade. A trend line like every other wall-clock number here (engine
+    // ADR-0010).
+    for result in [&results[8], &results[9]] {
+        let per_frame_ms = result.median / f64::from(CLIP_WALLCLOCK_FRAMES) / 1.0e6;
+        let share = per_frame_ms / EXTRACT_BUDGET_MS * 100.0;
+        let per_joint_ns =
+            result.median / f64::from(CLIP_WALLCLOCK_FRAMES) / f64::from(CLIP_JOINTS_PER_FRAME);
+        eprintln!(
+            "{}: median {per_frame_ms:.4} ms per frame for {CLIP_JOINTS_PER_FRAME} joints ({CLIP_ENEMIES} x {CLIP_ENEMY_JOINTS} + {CLIP_HERO_JOINTS}), {per_joint_ns:.1} ns per joint, {share:.1}% of the {EXTRACT_BUDGET_MS:.1} ms extraction budget (wall clock, trend only)",
+            result.scenario
+        );
+    }
 
     // Plan 0002 WP6.5 (contract §14): both collision benches on one thread and on N threads, against
     // the collision budget of 1.5 ms per tick.

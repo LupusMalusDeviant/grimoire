@@ -47,10 +47,20 @@
 //! through `grimoire_render::measurement`, which runs the renderer's own CPU steps without a GPU.
 //! Their sum is printed against the WP3.3 budget of 1.5 ms ([`RENDER_UPLOAD_BUDGET_MS`]) as a trend
 //! line; their `Ir` counts enter the regression gate.
+//!
+//! Engine ADR-0017 adds the clip-sampling benches `figure_clip_sample_811` and
+//! `figure_clip_crossfade_811`: 30 enemy figures of 26 joints plus one hero of 31, sampled out of
+//! `FNP_CLIP` clips through `grimoire_render::figure_clip` and composed into one joint palette per
+//! frame — the "30 Imps + Hexe" row of that ADR's own measurement table, so the runner value is
+//! directly comparable to the local one it recorded. Their wall-clock medians are printed against
+//! the 0.5 ms extraction budget ([`EXTRACT_BUDGET_MS`]) as a trend line; their `Ir` counts enter
+//! the regression gate like `sigil_extract_10k`.
 
 use std::hint::black_box;
 
 use grimoire::adapters::sigil_render::extract_bullets;
+use grimoire::render::figure_clip::{self, ClipData, ClipSampler};
+use grimoire::render::figure_format::{JointData, SkeletonData};
 use grimoire::render::measurement::CpuFramePreparation;
 use grimoire::render::{
     BULLET_PASS_PALETTE_SPACE, BulletInstance, Camera25D, LightBudget, PointLight, StageFrame,
@@ -954,6 +964,250 @@ pub fn run_light_cluster_frames(
     lights
 }
 
+// ---- Engine ADR-0017: the clip-sampling benches --------------------------------------------------
+
+/// Extraction budget per frame in milliseconds (PRD-0002 NFR, `DEFAULT_BUDGETS` in contract §9.7).
+/// Clip sampling is one item inside it, next to bullet extraction; printed as a share of this
+/// number, never as a CI gate on shared runners (engine ADR-0010).
+pub const EXTRACT_BUDGET_MS: f64 = 0.5;
+
+/// Scenario name of the plain clip-sampling benchmark (contract §15.1).
+pub const CLIP_SAMPLE_SCENARIO: &str = "figure_clip_sample_811";
+/// Scenario name of the crossfading clip-sampling benchmark (contract §15.1).
+pub const CLIP_CROSSFADE_SCENARIO: &str = "figure_clip_crossfade_811";
+
+/// Enemy figures per benchmark frame, each with [`CLIP_ENEMY_JOINTS`] joints — the imp of the
+/// pilot import (engine ADR-0017, "Befund").
+pub const CLIP_ENEMIES: u32 = 30;
+/// Joints of one enemy figure (the measured imp rig).
+pub const CLIP_ENEMY_JOINTS: u32 = 26;
+/// Joints of the hero figure (the measured bone-mask witch rig).
+pub const CLIP_HERO_JOINTS: u32 = 31;
+/// Joints posed per benchmark frame: `30 x 26 + 31`, the "30 Imps + Hexe" row of ADR-0017's own
+/// measurement table, so the CI number is directly comparable to the local one in the ADR.
+pub const CLIP_JOINTS_PER_FRAME: u32 = CLIP_ENEMIES * CLIP_ENEMY_JOINTS + CLIP_HERO_JOINTS;
+/// Frames stored in each benchmark clip: one second at [`CLIP_RATE_HZ`], the length of both imp
+/// clips.
+pub const CLIP_FRAMES: u32 = 25;
+/// Authoring rate of the benchmark clips, as the pilot figures were exported (ADR-0017 keeps 24).
+pub const CLIP_RATE_HZ: f32 = 24.0;
+/// Frames per wall-clock sample of both clip benches.
+pub const CLIP_WALLCLOCK_FRAMES: u32 = 200;
+/// Frames per Callgrind probe of both clip benches.
+pub const CLIP_IR_FRAMES: u32 = 100;
+
+/// The clip benches' state: two rigs with two clips each, plus the buffers a per-frame caller
+/// reuses.
+///
+/// **Every track is sampled**, none constant — deliberately worse than the authored clips, where
+/// only 5 to 11 of 93 tracks vary (ADR-0017, "Befund"). The measured number is therefore an upper
+/// bound for the real content, the same choice the ADR's own throwaway measurement made.
+pub struct FigureClipBench {
+    enemy: RigBench,
+    hero: RigBench,
+    sampler: ClipSampler,
+    /// Where the per-figure palettes are concatenated, exactly as `extract_stage` fills
+    /// `StageFrame::joint_matrices`.
+    palette: Vec<[[f32; 4]; 4]>,
+}
+
+/// One rig and the two clips authored for it.
+struct RigBench {
+    skeleton: SkeletonData,
+    idle: ClipData,
+    walk: ClipData,
+}
+
+fn push_f32s(buf: &mut Vec<u8>, values: &[f32]) {
+    for &value in values {
+        buf.extend_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// A chain-and-branch rig of `joint_count` joints, parents always before children, with a pure
+/// translation bind pose so the inverse bind matrix is an exact translation rather than a
+/// numerically inverted matrix.
+fn bench_skeleton(joint_count: u32) -> SkeletonData {
+    let mut joints: Vec<JointData> = Vec::with_capacity(joint_count as usize);
+    let mut bind_position: Vec<[f32; 3]> = Vec::with_capacity(joint_count as usize);
+    for index in 0..joint_count {
+        let parent = if index == 0 {
+            None
+        } else {
+            // A binary tree: shallow enough to look like a real limb hierarchy, and every parent
+            // index is strictly below its child's.
+            Some((index - 1) / 2)
+        };
+        let offset = [0.05, 0.0, 0.2];
+        let position = match parent {
+            Some(parent) => {
+                let base = bind_position[parent as usize];
+                [
+                    base[0] + offset[0],
+                    base[1] + offset[1],
+                    base[2] + offset[2],
+                ]
+            }
+            None => offset,
+        };
+        bind_position.push(position);
+        joints.push(JointData {
+            parent,
+            inverse_bind: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [-position[0], -position[1], -position[2], 1.0],
+            ],
+            name: String::new(),
+            translation: offset,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        });
+    }
+    SkeletonData { joints }
+}
+
+/// Builds an `FNP_CLIP` payload for `skeleton` with every track sampled, then decodes it — so the
+/// bench measures the same `ClipData` shape a pack produces, and the payload layout is exercised
+/// here as well as in `grimoire_render`'s own tests.
+///
+/// `phase` shifts the rotation curve so the two clips of one rig differ. The rotations swing far
+/// enough that neighbouring keys land in opposite hemispheres now and then, so the shorter-path
+/// branch of the sampler is taken in the measured loop rather than only in the tests.
+fn bench_clip(skeleton: &SkeletonData, phase: f32) -> ClipData {
+    let joint_count = u32::try_from(skeleton.joints.len()).expect("small bench rig");
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&figure_clip::CLIP_MAGIC);
+    buf.extend_from_slice(&figure_clip::CLIP_FORMAT_VERSION.to_le_bytes());
+    buf.extend_from_slice(&1u32.to_le_bytes()); // looping
+    buf.extend_from_slice(&joint_count.to_le_bytes());
+    buf.extend_from_slice(&CLIP_FRAMES.to_le_bytes());
+    buf.extend_from_slice(&CLIP_RATE_HZ.to_le_bytes());
+    buf.extend_from_slice(&figure_clip::skeleton_fingerprint(skeleton).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // marker_count
+
+    for (index, joint) in skeleton.joints.iter().enumerate() {
+        let joint_phase = phase + index as f32 * 0.37;
+        // Translation: sampled, a small wobble around the rest offset.
+        buf.push(1);
+        for frame in 0..CLIP_FRAMES {
+            let t = frame as f32 / CLIP_FRAMES as f32 * std::f32::consts::TAU + joint_phase;
+            push_f32s(
+                &mut buf,
+                &[
+                    joint.translation[0] + 0.01 * t.sin(),
+                    joint.translation[1] + 0.01 * t.cos(),
+                    joint.translation[2],
+                ],
+            );
+        }
+        // Rotation: sampled, a wide swing about a joint-dependent axis. The half-angle passes
+        // beyond a half turn, so consecutive keys change hemisphere and the sign flips the
+        // authored clips contain are present here too.
+        buf.push(1);
+        let axis_split = index % 3;
+        for frame in 0..CLIP_FRAMES {
+            let angle =
+                (frame as f32 / CLIP_FRAMES as f32) * std::f32::consts::TAU * 1.5 + joint_phase;
+            let (sin, cos) = ((angle * 0.5).sin(), (angle * 0.5).cos());
+            let mut quaternion = [0.0f32, 0.0, 0.0, cos];
+            quaternion[axis_split] = sin;
+            push_f32s(&mut buf, &quaternion);
+        }
+        // Scale: sampled and constant in value, because a converter that keeps every channel
+        // would emit exactly this — the storage decision is what the bench is pricing, not the
+        // values.
+        buf.push(1);
+        for _ in 0..CLIP_FRAMES {
+            push_f32s(&mut buf, &[1.0, 1.0, 1.0]);
+        }
+    }
+
+    figure_clip::decode_clip(&buf)
+        .expect("the benchmark clip payload is well-formed by construction")
+}
+
+fn bench_rig(joint_count: u32) -> RigBench {
+    let skeleton = bench_skeleton(joint_count);
+    let idle = bench_clip(&skeleton, 0.0);
+    let walk = bench_clip(&skeleton, 1.1);
+    RigBench {
+        skeleton,
+        idle,
+        walk,
+    }
+}
+
+/// Builds the clip benches' rigs and clips (engine ADR-0017).
+#[must_use]
+pub fn build_figure_clip() -> FigureClipBench {
+    FigureClipBench {
+        enemy: bench_rig(CLIP_ENEMY_JOINTS),
+        hero: bench_rig(CLIP_HERO_JOINTS),
+        sampler: ClipSampler::new(),
+        palette: Vec::with_capacity(CLIP_JOINTS_PER_FRAME as usize),
+    }
+}
+
+/// One benchmark frame: samples every figure's clip at its own time and concatenates the resulting
+/// palettes, the way `extract_stage` would. With `crossfade`, every figure blends two clips
+/// instead of sampling one.
+fn clip_frame(bench: &mut FigureClipBench, frame: u32, crossfade: bool) {
+    bench.palette.clear();
+    // Every figure sits at a different time, as a real crowd would; the alpha of the render frame
+    // is already folded into these times by the caller (ADR-0017, option A2).
+    let base = frame as f32 / 60.0;
+    for figure in 0..=CLIP_ENEMIES {
+        let rig = if figure == CLIP_ENEMIES {
+            &bench.hero
+        } else {
+            &bench.enemy
+        };
+        let time = base + figure as f32 * 0.017;
+        if crossfade {
+            let weight = (figure as f32 * 0.031) % 1.0;
+            bench
+                .sampler
+                .sample_crossfade(&rig.idle, time, &rig.walk, time * 0.9, weight)
+                .expect("both clips of one rig pose the same joints");
+        } else {
+            bench.sampler.sample(&rig.idle, time);
+        }
+        let matrices = bench
+            .sampler
+            .skin_matrices(&rig.skeleton)
+            .expect("the clip and its skeleton have the same joint count");
+        bench.palette.extend_from_slice(matrices);
+    }
+}
+
+/// Runs `frames + extra_frames` plain sampling frames and returns the palette length of the last
+/// one. `extra_frames` is the nominal regression injection, like the other benches'.
+pub fn run_clip_sample_frames(
+    bench: &mut FigureClipBench,
+    frames: u32,
+    extra_frames: u32,
+) -> usize {
+    for frame in 0..(frames + extra_frames) {
+        clip_frame(black_box(bench), black_box(frame), false);
+    }
+    black_box(bench.palette.len())
+}
+
+/// Runs `frames + extra_frames` crossfading sampling frames and returns the palette length of the
+/// last one.
+pub fn run_clip_crossfade_frames(
+    bench: &mut FigureClipBench,
+    frames: u32,
+    extra_frames: u32,
+) -> usize {
+    for frame in 0..(frames + extra_frames) {
+        clip_frame(black_box(bench), black_box(frame), true);
+    }
+    black_box(bench.palette.len())
+}
+
 // ---- Plan 0002 WP6.5: the collision benches ------------------------------------------------------
 
 /// Collision budget per tick in milliseconds: broadphase rebuild, the enemy queries and the graze
@@ -1257,6 +1511,76 @@ mod tests {
             "bullets occupy {} of the arena's 256 cells",
             cells.len()
         );
+    }
+
+    // ---- Engine ADR-0017: the clip benches measure what they claim to ----------------------
+
+    #[test]
+    fn the_clip_bench_poses_the_joint_count_its_name_claims() {
+        let mut bench = build_figure_clip();
+        assert_eq!(run_clip_sample_frames(&mut bench, 1, 0), 811);
+        assert_eq!(CLIP_JOINTS_PER_FRAME, 811);
+        assert_eq!(run_clip_crossfade_frames(&mut bench, 1, 0), 811);
+    }
+
+    #[test]
+    fn the_clip_bench_stores_every_track_sampled_not_constant() {
+        // The bench exists to price the worst case (ADR-0017: the authored clips vary only 5 to
+        // 11 of 93 tracks). A builder that silently emitted constant tracks would measure a
+        // fraction of the real cost and still look plausible, so check the clip's own shape:
+        // sampling two different times must move every joint.
+        let bench = build_figure_clip();
+        let mut sampler = ClipSampler::new();
+        sampler.sample(&bench.hero.idle, 0.0);
+        let first = sampler.pose().to_vec();
+        sampler.sample(&bench.hero.idle, 7.0 / CLIP_RATE_HZ);
+        for (joint, (a, b)) in first.iter().zip(sampler.pose()).enumerate() {
+            assert_ne!(a.translation, b.translation, "joint {joint} translation");
+            assert_ne!(a.rotation, b.rotation, "joint {joint} rotation");
+        }
+    }
+
+    #[test]
+    fn the_clip_bench_contains_the_sign_flips_it_is_meant_to_price() {
+        // The shorter-path branch must actually be taken in the measured loop, or the bench
+        // prices a cheaper sampler than the one that ships.
+        let bench = build_figure_clip();
+        let mut flips = 0;
+        let mut sampler = ClipSampler::new();
+        for frame in 0..CLIP_FRAMES {
+            sampler.sample(
+                &bench.hero.idle,
+                f32::from(u16::try_from(frame).unwrap()) / CLIP_RATE_HZ,
+            );
+            let here = sampler.pose().to_vec();
+            sampler.sample(
+                &bench.hero.idle,
+                f32::from(u16::try_from(frame + 1).unwrap()) / CLIP_RATE_HZ,
+            );
+            for (a, b) in here.iter().zip(sampler.pose()) {
+                let dot: f32 = (0..4).map(|i| a.rotation[i] * b.rotation[i]).sum();
+                if dot < 0.0 {
+                    flips += 1;
+                }
+            }
+        }
+        assert!(
+            flips > 0,
+            "the benchmark clips contain no quaternion sign flips, so the shorter-path rule is \
+             never exercised by the measured loop"
+        );
+    }
+
+    #[test]
+    fn the_clip_bench_allocates_nothing_after_its_first_frame() {
+        // The palette buffer and the sampler's pose buffers are the whole point of `ClipSampler`;
+        // a bench that reallocated every frame would measure the allocator instead.
+        let mut bench = build_figure_clip();
+        run_clip_sample_frames(&mut bench, 1, 0);
+        let capacity = bench.palette.capacity();
+        run_clip_sample_frames(&mut bench, 8, 0);
+        assert_eq!(bench.palette.capacity(), capacity);
+        assert_eq!(bench.palette.len(), CLIP_JOINTS_PER_FRAME as usize);
     }
 
     #[test]
