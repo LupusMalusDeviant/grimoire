@@ -23,8 +23,19 @@
 //! `1` and `2` hold `sine_offset`'s running `(s, c)`; index `3` is `0.0` until that oscillator has
 //! been seeded once, then `1.0` (distinguishing "never seeded" from the legitimate, reachable
 //! `(s, c) == (0.0, 0.0)` — impossible on the unit circle, but not worth relying on when a spare
-//! slot is available). Index `0` is unused by this work package, reserved for WP5.2+ or a future
-//! `BulletBehavior`.
+//! slot is available). Index `0` ([`DISTANCE_SLOT`], WP5.2) accumulates the distance travelled
+//! since the bullet took its current type, but only for a type that has a `distance` trigger;
+//! any other slot a behavior writes is its own business.
+//!
+//! **Behaviors and transforms (WP5.2).** After the program's motion, a bullet type's bound
+//! `BulletBehavior` runs (contract §11.5), then its transforms in authored order. Triggers read the
+//! type's own clock: `age` (reset to `0` by `change_type`) and [`DISTANCE_SLOT`], which adds the
+//! length of this tick's actual displacement (`position - previous_position`, so a `sine_offset`
+//! or a behavior that moves the bullet counts too). Neither needs trigonometry, only
+//! `Vec2::length` (a square root, bit-identical under IEEE 754) for a type that asks for it.
+//! `reverse` keeps evaluating the list; `change_type`, `burst` and `become_emitter` end it for
+//! this tick. `burst`/`become_emitter` volleys are generated here, in slot order from the block's
+//! own generator, and returned as sub-spawns for `sigil.resolve`.
 //!
 //! **Open point for the Product Owner (WP5.1 report):** `rotate` and `curve` are mechanically
 //! identical here (both apply a constant per-tick angular delta to `velocity`, from `rate`/`turn`
@@ -39,11 +50,21 @@
 
 use grimoire_core::Vec2;
 use grimoire_core::math::dmath;
-use grimoire_sim::ContentManifestHash;
+use grimoire_sim::{ContentManifestHash, SimRng, derive_block_rng};
 
+use crate::behavior::{BehaviorFn, BehaviorInput, BehaviorOutcome, BulletMotion};
+use crate::blocks::{self, Shot};
 use crate::content::SigilLibrary;
-use crate::pool::{PendingDespawn, PoolUpdateBlock};
-use crate::unit::{CurveRecord, ModifierDef, ModifierKind, ProgramRecord, SigilUnit};
+use crate::pool::{DespawnCause, PendingDespawn, PendingSpawn, PoolUpdateBlock};
+use crate::systems::stream;
+use crate::unit::{
+    CurveRecord, EmitterRecord, ModifierDef, ModifierKind, ProgramRecord, SigilUnit, TransformDef,
+    TransformKind, Trigger,
+};
+
+/// Index into a bullet's `state` that holds the distance travelled since it took its current
+/// type, for a type with a `distance` trigger (module docs).
+pub(crate) const DISTANCE_SLOT: usize = 0;
 
 /// Resolves a [`crate::BulletPool`] column's `program` value into the [`ProgramRecord`] it
 /// addresses, undoing the one-based shift `sigil.emit` applies (`crate::systems::EmitSystem`,
@@ -83,16 +104,34 @@ struct CompiledProgram {
     modifiers: Vec<CompiledModifier>,
 }
 
-/// Per-unit table of [`CompiledProgram`]s, rebuilt only when the loaded content's manifest hash
-/// changes (`install`/`replace_unit`, contract §11.8) — in WP5.1's scope (no hot-swap yet) that is
-/// exactly once, on the first `sigil.update` after `install`. Not simulation state: purely a
-/// derived, deterministic function of the loaded [`SigilLibrary`], recomputed identically by any
-/// two simulations that load the same content, so it is never hashed or snapshotted (contract
-/// §11.5 already treats the `BehaviorRegistry` the same way, for the same reason).
+/// The runtime script of one bullet type, resolved against the loaded registry: the behavior's
+/// function pointer and constant parameters, and the transform list.
+#[derive(Debug, Clone, Default)]
+struct CompiledScript {
+    behavior: Option<(BehaviorFn, Vec<f32>)>,
+    transforms: Vec<TransformDef>,
+    /// Whether any transform has a `distance` trigger, i.e. whether [`DISTANCE_SLOT`] is kept.
+    tracks_distance: bool,
+}
+
+impl CompiledScript {
+    fn is_empty(&self) -> bool {
+        self.behavior.is_none() && self.transforms.is_empty()
+    }
+}
+
+/// Per-unit table of [`CompiledProgram`]s and per-bullet-type [`CompiledScript`]s, rebuilt only
+/// when the loaded content's manifest hash changes (`install`/`replace_unit`, contract §11.8).
+/// Not simulation state: purely a derived, deterministic function of the loaded [`SigilLibrary`]
+/// and its registry, recomputed identically by any two simulations that load the same content,
+/// so it is never hashed or snapshotted (contract §11.5 already treats the `BehaviorRegistry` the
+/// same way, for the same reason).
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeCache {
     manifest_hash: Option<ContentManifestHash>,
     programs: Vec<Vec<CompiledProgram>>,
+    /// Per unit, one entry per bullet type (empty scripts for types without one).
+    scripts: Vec<Vec<CompiledScript>>,
 }
 
 impl RuntimeCache {
@@ -107,6 +146,32 @@ impl RuntimeCache {
             .iter()
             .map(|unit| unit.programs().iter().map(compile_program).collect())
             .collect();
+        let registry = library.registry();
+        self.scripts = library
+            .units()
+            .iter()
+            .map(|unit| {
+                let mut scripts = vec![CompiledScript::default(); unit.bullet_types().len()];
+                for script in unit.scripts() {
+                    let Some(slot) = scripts.get_mut(usize::from(script.bullet_type)) else {
+                        continue; // unreachable: the decoder range-checks `bullet_type`.
+                    };
+                    // `SigilLibrary::new` guarantees every referenced id is registered; a
+                    // missing one could only mean a registry mismatch `sigil.begin` rejects.
+                    slot.behavior = script.behavior.as_ref().and_then(|binding| {
+                        registry
+                            .get(binding.id)
+                            .map(|f| (f, binding.params.clone()))
+                    });
+                    slot.transforms.clone_from(&script.transforms);
+                    slot.tracks_distance = script
+                        .transforms
+                        .iter()
+                        .any(|t| matches!(t.trigger, Trigger::Distance(_)));
+                }
+                scripts
+            })
+            .collect();
         self.manifest_hash = Some(hash);
     }
 
@@ -115,6 +180,41 @@ impl RuntimeCache {
             .get(unit_index as usize)?
             .get(program_index as usize)
     }
+
+    /// The non-empty script of `bullet_type` in unit `unit_index`, if it has one.
+    fn script(&self, unit_index: u16, bullet_type: u16) -> Option<&CompiledScript> {
+        self.scripts
+            .get(usize::from(unit_index))?
+            .get(usize::from(bullet_type))
+            .filter(|script| !script.is_empty())
+    }
+
+    /// Whether `bullet_type` of unit `unit_index` keeps [`DISTANCE_SLOT`].
+    fn tracks_distance(&self, unit_index: u16, bullet_type: u16) -> bool {
+        self.script(unit_index, bullet_type)
+            .is_some_and(|script| script.tracks_distance)
+    }
+}
+
+/// Everything `sigil.update` reads besides the block itself, identical for every block of a tick.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpdateContext<'a> {
+    pub(crate) library: &'a SigilLibrary,
+    pub(crate) cache: &'a RuntimeCache,
+    pub(crate) bounds_min: Vec2,
+    pub(crate) bounds_max: Vec2,
+    pub(crate) tick: u64,
+    pub(crate) seed: u64,
+    pub(crate) aim: Option<Vec2>,
+    /// Event ids raised this tick, ascending and without duplicates.
+    pub(crate) events: &'a [u32],
+}
+
+/// What one `sigil.update` block decided: despawns and sub-spawns, each in slot order.
+#[derive(Debug, Default)]
+pub(crate) struct BlockOutcome {
+    pub(crate) despawns: Vec<PendingDespawn>,
+    pub(crate) spawns: Vec<PendingSpawn>,
 }
 
 fn compile_program(program: &ProgramRecord) -> CompiledProgram {
@@ -149,18 +249,19 @@ fn compile_modifier(modifier: &ModifierDef) -> CompiledModifier {
 
 /// Runs `sigil.update`'s per-slot work for one data-parallel block (contract §11.6/§11.7):
 /// `previous_position = position`, `age += 1`, the resolved program's block motion continues at
-/// its spawn-computed `velocity` while the modifier stack runs on top, then bounds/lifetime are
-/// checked. Dead slots are skipped. Returns every despawn this block decided, in slot order, for
+/// its spawn-computed `velocity` while the modifier stack runs on top, then the bullet type's
+/// behavior and transforms (module docs), then lifetime and bounds are checked. Dead slots are
+/// skipped. Returns every despawn and sub-spawn this block decided, in slot order, for
 /// `sigil.resolve` to apply.
 pub(crate) fn update_block(
     block: &mut PoolUpdateBlock<'_>,
-    library: &SigilLibrary,
-    cache: &RuntimeCache,
-    bounds_min: Vec2,
-    bounds_max: Vec2,
-) -> Vec<PendingDespawn> {
+    ctx: &UpdateContext<'_>,
+) -> BlockOutcome {
     let start = block.slots().start;
-    let mut despawns = Vec::new();
+    let mut outcome = BlockOutcome::default();
+    // Contract §11.7: the block's only generator, advanced in slot order by behaviors and by the
+    // `scatter` blocks of sub-spawn volleys. Deriving it draws nothing.
+    let mut rng = derive_block_rng(ctx.seed, ctx.tick, stream::UPDATE, block.index() as u64);
     for i in 0..block.alive.len() {
         if !block.alive[i] {
             continue;
@@ -169,7 +270,7 @@ pub(crate) fn update_block(
         block.age[i] = block.age[i].wrapping_add(1);
 
         let unit_index = block.unit[i];
-        let Some(sigil_unit) = library.units().get(unit_index as usize) else {
+        let Some(sigil_unit) = ctx.library.units().get(unit_index as usize) else {
             // An emitter/pool slot referencing a unit index the currently loaded library no
             // longer has (only reachable after hot-swap, WP5.5, out of scope here): skip the
             // program/bounds work rather than index out of range.
@@ -177,7 +278,7 @@ pub(crate) fn update_block(
         };
 
         if let Some((program, program_index)) = resolve_program(sigil_unit, block.program[i])
-            && let Some(compiled) = cache.program(unit_index, program_index)
+            && let Some(compiled) = ctx.cache.program(unit_index, program_index)
         {
             apply_modifiers(
                 program,
@@ -194,6 +295,20 @@ pub(crate) fn update_block(
 
         block.position[i] += block.velocity[i];
 
+        let script_cause = match ctx.cache.script(unit_index, block.bullet_type[i]) {
+            Some(script) => run_script(
+                block,
+                i,
+                sigil_unit,
+                unit_index,
+                script,
+                ctx,
+                &mut rng,
+                &mut outcome.spawns,
+            ),
+            None => None,
+        };
+
         debug_assert!(
             block.position[i].x.is_finite()
                 && block.position[i].y.is_finite()
@@ -202,32 +317,199 @@ pub(crate) fn update_block(
                 && block.speed[i].is_finite()
                 && block.angle[i].is_finite()
                 && block.state[i].iter().all(|value| value.is_finite()),
-            "non-finite bullet state at slot {} after sigil.update (unit {unit_index}, unit-index \
-             {unit_index})",
+            "non-finite bullet state at slot {} after sigil.update (unit-index {unit_index})",
             start + i,
         );
 
+        let index = (start + i) as u32;
+        if let Some(cause) = script_cause {
+            outcome.despawns.push(PendingDespawn { index, cause });
+            continue;
+        }
         let bullet_type = &sigil_unit.bullet_types()[block.bullet_type[i] as usize];
         if bullet_type.lifetime_ticks != 0 && block.age[i] >= bullet_type.lifetime_ticks {
-            despawns.push(PendingDespawn {
-                index: (start + i) as u32,
-                cause: crate::pool::DespawnCause::Lifetime,
+            outcome.despawns.push(PendingDespawn {
+                index,
+                cause: DespawnCause::Lifetime,
             });
             continue;
         }
         let position = block.position[i];
-        if position.x < bounds_min.x
-            || position.x > bounds_max.x
-            || position.y < bounds_min.y
-            || position.y > bounds_max.y
+        if position.x < ctx.bounds_min.x
+            || position.x > ctx.bounds_max.x
+            || position.y < ctx.bounds_min.y
+            || position.y > ctx.bounds_max.y
         {
-            despawns.push(PendingDespawn {
-                index: (start + i) as u32,
-                cause: crate::pool::DespawnCause::Bounds,
+            outcome.despawns.push(PendingDespawn {
+                index,
+                cause: DespawnCause::Bounds,
             });
         }
     }
-    despawns
+    outcome
+}
+
+/// Runs slot `i`'s bullet-type script: the behavior first, then the transforms (module docs).
+/// Returns the despawn cause if the bullet ends this tick (`Behavior` or `Transform`); sub-spawns
+/// of a `burst`/`become_emitter` are appended to `spawns` in the order their shots are generated.
+#[allow(clippy::too_many_arguments)]
+fn run_script(
+    block: &mut PoolUpdateBlock<'_>,
+    i: usize,
+    unit: &SigilUnit,
+    unit_index: u16,
+    script: &CompiledScript,
+    ctx: &UpdateContext<'_>,
+    rng: &mut SimRng,
+    spawns: &mut Vec<PendingSpawn>,
+) -> Option<DespawnCause> {
+    if let Some((behavior, params)) = &script.behavior {
+        let input = BehaviorInput {
+            tick: ctx.tick,
+            age: block.age[i],
+            params,
+            target: ctx.aim,
+        };
+        let mut motion = BulletMotion {
+            position: block.position[i],
+            velocity: block.velocity[i],
+            angle: block.angle[i],
+            speed: block.speed[i],
+            state: block.state[i],
+        };
+        let result = behavior(&input, &mut motion, rng);
+        block.position[i] = motion.position;
+        block.velocity[i] = motion.velocity;
+        block.angle[i] = motion.angle;
+        block.speed[i] = motion.speed;
+        block.state[i] = motion.state;
+        if result == BehaviorOutcome::Despawn {
+            return Some(DespawnCause::Behavior);
+        }
+    }
+    if script.transforms.is_empty() {
+        return None;
+    }
+
+    let (before, after) = if script.tracks_distance {
+        let before = block.state[i][DISTANCE_SLOT];
+        let after = before + (block.position[i] - block.previous_position[i]).length();
+        block.state[i][DISTANCE_SLOT] = after;
+        (before, after)
+    } else {
+        (0.0, 0.0)
+    };
+    let age = block.age[i];
+    for transform in &script.transforms {
+        let fired = match transform.trigger {
+            Trigger::Time(at_ticks) => age == at_ticks.max(1),
+            Trigger::Distance(distance) => after >= distance && (before < distance || age == 1),
+            Trigger::Event(event) => ctx.events.binary_search(&event).is_ok(),
+        };
+        if !fired {
+            continue;
+        }
+        match transform.kind {
+            TransformKind::REVERSE => {
+                block.velocity[i] = -block.velocity[i];
+                block.angle[i] += dmath::PI;
+            }
+            TransformKind::CHANGE_TYPE => {
+                let target = transform.target;
+                if let Some(new_type) = unit.bullet_types().get(usize::from(target)) {
+                    block.bullet_type[i] = target;
+                    block.flags[i] = new_type.flags;
+                    block.age[i] = 0;
+                    if ctx.cache.tracks_distance(unit_index, target) {
+                        block.state[i][DISTANCE_SLOT] = 0.0;
+                    }
+                }
+                return None;
+            }
+            TransformKind::BURST => {
+                if let Some(program) = unit.programs().get(usize::from(transform.program)) {
+                    let shots = blocks::program_shots(
+                        program,
+                        transform.speed,
+                        block.angle[i],
+                        ctx.aim,
+                        block.position[i],
+                        0,
+                        rng,
+                    );
+                    push_spawns(
+                        spawns,
+                        &shots,
+                        unit_index,
+                        transform.target,
+                        transform.program + 1,
+                        block.position[i],
+                        block.cascade[i],
+                    );
+                }
+                return Some(DespawnCause::Transform);
+            }
+            TransformKind::BECOME_EMITTER => {
+                if let Some(record) = unit.emitters().get(usize::from(transform.target)) {
+                    let origin = block.position[i] + Vec2::new(record.offset_x, record.offset_y);
+                    let pool_program = if record.program == EmitterRecord::NO_PROGRAM {
+                        0
+                    } else {
+                        record.program + 1
+                    };
+                    let shots = match resolve_program(unit, pool_program) {
+                        Some((program, _)) => blocks::program_shots(
+                            program,
+                            record.speed,
+                            block.angle[i],
+                            ctx.aim,
+                            origin,
+                            0,
+                            rng,
+                        ),
+                        None => vec![Shot {
+                            angle: block.angle[i],
+                            speed: record.speed,
+                            offset: Vec2::ZERO,
+                        }],
+                    };
+                    push_spawns(
+                        spawns,
+                        &shots,
+                        unit_index,
+                        record.bullet_type,
+                        pool_program,
+                        origin,
+                        block.cascade[i],
+                    );
+                }
+                return Some(DespawnCause::Transform);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Appends one [`PendingSpawn`] per shot, placed at `origin` plus the shot's offset.
+fn push_spawns(
+    spawns: &mut Vec<PendingSpawn>,
+    shots: &[Shot],
+    unit_index: u16,
+    bullet_type: u16,
+    program: u16,
+    origin: Vec2,
+    parent_cascade: u8,
+) {
+    spawns.extend(shots.iter().map(|shot| PendingSpawn {
+        unit_index,
+        bullet_type,
+        program,
+        position: origin + shot.offset,
+        angle: shot.angle,
+        speed: shot.speed,
+        parent_cascade,
+    }));
 }
 
 /// Runs one bullet's modifier stack, in authored order, over its `position`/`velocity`/`angle`/
@@ -583,6 +865,25 @@ mod tests {
         assert_eq!(angle, 0.3);
     }
 
+    /// An [`UpdateContext`] with no events, no aim target, tick `1` and seed `0`.
+    fn test_context<'a>(
+        library: &'a SigilLibrary,
+        cache: &'a RuntimeCache,
+        bounds_min: Vec2,
+        bounds_max: Vec2,
+    ) -> UpdateContext<'a> {
+        UpdateContext {
+            library,
+            cache,
+            bounds_min,
+            bounds_max,
+            tick: 1,
+            seed: 0,
+            aim: None,
+            events: &[],
+        }
+    }
+
     /// The debug-only guard against NaN entering the pool (contract §11.3: "NaN darf nicht in
     /// den Pool"). Injects a `NaN` directly into a block's velocity — standing in for any future
     /// bug (a behavior, WP5.2's transforms) that might otherwise let one slip through, since no
@@ -606,10 +907,12 @@ mod tests {
         let cache = RuntimeCache::default();
         let _ = update_block(
             block,
-            content.library(),
-            &cache,
-            Vec2::new(-1.0e6, -1.0e6),
-            Vec2::new(1.0e6, 1.0e6),
+            &test_context(
+                content.library(),
+                &cache,
+                Vec2::new(-1.0e6, -1.0e6),
+                Vec2::new(1.0e6, 1.0e6),
+            ),
         );
     }
 
@@ -627,11 +930,14 @@ mod tests {
         let cache = RuntimeCache::default();
         let despawns = update_block(
             &mut blocks[0],
-            content.library(),
-            &cache,
-            Vec2::new(-1.0e6, -1.0e6),
-            Vec2::new(1.0e6, 1.0e6),
-        );
+            &test_context(
+                content.library(),
+                &cache,
+                Vec2::new(-1.0e6, -1.0e6),
+                Vec2::new(1.0e6, 1.0e6),
+            ),
+        )
+        .despawns;
         // `build_content_with_program`'s bullet type has `lifetime_ticks == 1`.
         assert_eq!(despawns.len(), 1);
         assert_eq!(despawns[0].cause, DespawnCause::Lifetime);
@@ -652,11 +958,14 @@ mod tests {
         let cache = RuntimeCache::default();
         let despawns = update_block(
             &mut blocks[0],
-            content.library(),
-            &cache,
-            Vec2::new(-1.0, -1.0),
-            Vec2::new(1.0, 1.0),
-        );
+            &test_context(
+                content.library(),
+                &cache,
+                Vec2::new(-1.0, -1.0),
+                Vec2::new(1.0, 1.0),
+            ),
+        )
+        .despawns;
         assert!(
             despawns
                 .iter()

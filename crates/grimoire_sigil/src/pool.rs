@@ -131,11 +131,9 @@ impl BulletSpawn {
 /// Why a bullet was despawned.
 ///
 /// `#[non_exhaustive]`: `Lifetime` and `Bounds` are produced by `sigil.update`/`sigil.resolve`
-/// since WP5.1. `Transform` and `Behavior` stay unproduced until a bullet type can name a
-/// transform/behavior at all (`docs/formats/sigil.md` §11.4 open point 4: the `Transforms`
-/// section is still opaque, WP5.2) and `Swap` until hot-swap (§11.8, WP5.5); all three are listed
-/// here regardless because [`BulletEvent`]/the golden pool hash already need a stable, complete
-/// set of tags.
+/// since WP5.1, `Transform` (`burst`, `become_emitter`) and `Behavior` since WP5.2. `Swap` stays
+/// unproduced until hot-swap (§11.8, WP5.5); it is listed regardless because [`BulletEvent`] and
+/// the golden pool hash already need a stable, complete set of tags.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -193,6 +191,21 @@ impl_stable_hash!(BulletEvent {
 pub(crate) struct PendingDespawn {
     pub(crate) index: u32,
     pub(crate) cause: DespawnCause,
+}
+
+/// One sub-spawn decided by a `sigil.update` block (a `burst` or `become_emitter` transform,
+/// contract §11.6), applied by `sigil.resolve` after every despawn of the tick. `parent_cascade`
+/// is the transforming bullet's own depth; `sigil.resolve` adds the one level with `checked_add`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PendingSpawn {
+    pub(crate) unit_index: u16,
+    pub(crate) bullet_type: u16,
+    /// Pool program numbering (one-based, `0` = none; see [`BulletPool::spawn`]).
+    pub(crate) program: u16,
+    pub(crate) position: Vec2,
+    pub(crate) angle: f32,
+    pub(crate) speed: f32,
+    pub(crate) parent_cascade: u8,
 }
 
 /// Read-only view of one live or dead bullet slot, only ever constructed by [`BulletPool`].
@@ -328,17 +341,18 @@ impl<'p> PoolBlock<'p> {
 ///
 /// Every column is a disjoint sub-slice of the pool's own `Vec`s, split with `split_at_mut` (no
 /// `unsafe`, matching the contract's "ohne unsafe" requirement), so blocks can run through
-/// [`grimoire_ecs::run_blocks`] without aliasing. Read-only columns not needed by `sigil.update`
-/// (generation, flags, cascade, program) are intentionally omitted; `program` and `unit`/
-/// `bullet_type` are read-only here because WP5.1's interpreter never changes which program or
-/// bullet type a live bullet uses mid-flight (that is `Transforms`/WP5.2 territory).
+/// [`grimoire_ecs::run_blocks`] without aliasing. The generation column is intentionally omitted;
+/// `unit`, `program` and `cascade` are read-only because no transform changes them in place, while
+/// `bullet_type` and `flags` are writable for `change_type` (WP5.2).
 pub(crate) struct PoolUpdateBlock<'p> {
     index: usize,
     slots: Range<usize>,
     pub(crate) alive: &'p [bool],
     pub(crate) unit: &'p [u16],
-    pub(crate) bullet_type: &'p [u16],
+    pub(crate) bullet_type: &'p mut [u16],
     pub(crate) program: &'p [u16],
+    pub(crate) flags: &'p mut [BulletFlags],
+    pub(crate) cascade: &'p [u8],
     pub(crate) position: &'p mut [Vec2],
     pub(crate) previous_position: &'p mut [Vec2],
     pub(crate) velocity: &'p mut [Vec2],
@@ -349,10 +363,9 @@ pub(crate) struct PoolUpdateBlock<'p> {
 }
 
 impl PoolUpdateBlock<'_> {
-    /// Block index (`slots().start / grimoire_ecs::QUERY_BLOCK_SIZE`); the key into
-    /// `derive_block_rng`/random streams (contract §11.7) — unused by `sigil.update` itself in
-    /// WP5.1 (no per-tick randomness), kept for parity with [`PoolBlock::index`] and for WP5.2+.
-    #[allow(dead_code)]
+    /// Block index (`slots().start / grimoire_ecs::QUERY_BLOCK_SIZE`); the key of the block's
+    /// `derive_block_rng` stream (contract §11.7), drawn from by behaviors and by `scatter` blocks
+    /// of sub-spawns.
     pub(crate) const fn index(&self) -> usize {
         self.index
     }
@@ -592,8 +605,10 @@ impl BulletPool {
 
         let mut alive = split_ref_blocks(&self.alive[..slot_count]).into_iter();
         let mut unit = split_ref_blocks(&self.unit[..slot_count]).into_iter();
-        let mut bullet_type = split_ref_blocks(&self.bullet_type[..slot_count]).into_iter();
+        let mut bullet_type = split_mut_blocks(&mut self.bullet_type[..slot_count]).into_iter();
         let mut program = split_ref_blocks(&self.program[..slot_count]).into_iter();
+        let mut flags = split_mut_blocks(&mut self.flags[..slot_count]).into_iter();
+        let mut cascade = split_ref_blocks(&self.cascade[..slot_count]).into_iter();
         let mut position = split_mut_blocks(&mut self.position[..slot_count]).into_iter();
         let mut previous_position =
             split_mut_blocks(&mut self.previous_position[..slot_count]).into_iter();
@@ -613,6 +628,8 @@ impl BulletPool {
                 unit: unit.next().expect("column block count must match"),
                 bullet_type: bullet_type.next().expect("column block count must match"),
                 program: program.next().expect("column block count must match"),
+                flags: flags.next().expect("column block count must match"),
+                cascade: cascade.next().expect("column block count must match"),
                 position: position.next().expect("column block count must match"),
                 previous_position: previous_position
                     .next()
