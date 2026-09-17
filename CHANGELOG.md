@@ -19,7 +19,11 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 - `grimoire_bench`: Benchmark-Szene „Vollvorhang“ (Plan 0002 WP6.6, PRD-0004), nur im Wanduhr-Trend.
   - Drei mit `sigilc` übersetzte Units unter `fixtures/` (Quellen daneben, von `grimoire_sigilc/tests/unit_fixtures.rs` aktuell gehalten und im Plattform-Identitäts-Gate WP4.4 als Gruppe `bench`). Sie nutzen jeden Modifikator-Typ, die Bausteine ring, spiral, fan, wave, line und scatter und die Transformationen burst, reverse und change_type. Drei Units, weil eine Unit jede gezeichnete Silhouette nur einmal verwenden darf (PRD-0003 Regel 3).
   - Jeder Emitter feuert endlos von drei Ursprüngen; der Bestand bleibt nach 600 Ticks bei etwa 10.000 lebenden Bullets (per Test geprüft), dazu die 100 Gegner der Kollisions-Benches.
-  - `wallclock` misst je Tick vier Phasen: Simulation, Extraktion, Kollision (so, wie der Adapter aus Vertrag §9.6 das Gitter aufbauen wird) und Render-CPU (`render_stage` offscreen, in der CI auf dem Software-Adapter). Jede Phase wird gegen ihr Budget aus dem P1-Stresstest gedruckt (1,0 / 0,5 / 1,5 / 3 ms).
+  - `wallclock` misst je Tick diese Phasen:
+    - Simulation, Extraktion und Kollision (so, wie der Adapter aus Vertrag §9.6 das Gitter aufbauen wird);
+    - die Render-Vorbereitung ohne GPU (Bullet-Upload und Clustering über `grimoire_render::measurement`);
+    - `render_stage` offscreen (in der CI auf dem Software-Adapter) samt der GPU-Zeit aus den Timestamp-Queries.
+  - Die ersten vier Phasen werden gegen ihr Budget aus dem P1-Stresstest gedruckt (1,0 / 0,5 / 1,5 / 1,5 ms). `render_stage` und GPU-Zeit bekommen kein Urteil, weil auf dem Software-Adapter der Rasterizer in diesem Aufruf auf der CPU läuft.
   - Der Job `gate` installiert dafür lavapipe; fehlt der Adapter, scheitert der Schritt, statt die Render-Phase still wegzulassen.
   - Kein neues Gate-Szenario, keine Basis nötig. Vertrag unverändert.
 

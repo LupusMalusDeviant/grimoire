@@ -7,8 +7,9 @@
 # `wallclock` also prints it and the worst case `collide_cluster` on 1 and N threads against the
 # 1.5 ms budget) under Callgrind on every push to main and every pull request. Since WP6.6
 # `wallclock` also times the full curtain (PRD-0004 "Vollvorhang": about 10,000 bullets from every
-# modifier type) in four phases, simulation, extraction, collision and render CPU on an offscreen
-# software renderer, as trend lines only. The gate
+# modifier type) per phase: simulation, extraction, collision, render preparation without a GPU,
+# and `render_stage` on an offscreen software renderer with its GPU time, as trend lines only. The
+# gate
 # compares the Callgrind `Ir` result against the accepted basis on the `bench-trends` branch
 # (P-12), and — on push to main only — appends the measurement to that same branch. Wall-clock
 # samples are measured too, but only as a trend (engine ADR-0010: measured 95-129% job-to-job
@@ -86,8 +87,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      # Lavapipe gives the wall-clock step a software Vulkan adapter for the render CPU phase of the
-      # full curtain (plan 0002 WP6.6); Callgrind never touches the GPU.
+      # Lavapipe gives the wall-clock step a software Vulkan adapter for the full curtain's offscreen
+      # `render_stage` phase (plan 0002 WP6.6); Callgrind never touches the GPU.
       - name: Install Valgrind and software Vulkan (lavapipe)
         run: |
           sudo apt-get update
@@ -112,7 +113,7 @@ jobs:
           else
             echo "GIT_DIRTY=0" >>"$GITHUB_ENV"
           fi
-      # The full curtain's render CPU phase renders offscreen on the software adapter; a missing
+      # The full curtain's `render_stage` phase renders offscreen on the software adapter; a missing
       # adapter fails this step rather than silently dropping that phase from the trend.
       - name: Wall-clock trend measurement (trend only, never gated)
         env:

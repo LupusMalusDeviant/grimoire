@@ -1,7 +1,7 @@
 //! The benchmark scene "Vollvorhang" (PRD-0004 acceptance, plan 0002 WP6.6): about 10,000 live
-//! bullets from a mix of every Sigil modifier type, measured tick by tick in the four phases a
-//! frame spends on them — simulation, extraction, collision and render CPU — for the wall-clock
-//! trend (engine ADR-0010: trend only, never a gate).
+//! bullets from a mix of every Sigil modifier type, measured tick by tick in the phases a frame
+//! spends on them — simulation, extraction, collision, render preparation and the offscreen
+//! `render_stage` call — for the wall-clock trend (engine ADR-0010: trend only, never a gate).
 //!
 //! # The scene
 //!
@@ -26,17 +26,26 @@
 //! - [`FullCurtain::collide`]: what the Sigil → collision adapter of contract §9.6 will do — every
 //!   live bullet in slot order with its unit's collision radius, then every enemy entity, through
 //!   `rebuild_par`, one `overlapping_batch` query per enemy and the player's `graze_ring`.
+//! - [`FullCurtain::prepare_render`]: the render CPU work of the engine without a GPU — the bullet
+//!   pass's upload preparation and the clustered lighting's light assignment for the stage frame,
+//!   through `grimoire_render::measurement` (the functions the renderer itself calls).
 //! - [`FullCurtain::render`]: `render_stage` of the extracted bullets over a lit floor on an
 //!   offscreen `WgpuRenderer` (the adapter `GRIMOIRE_GPU_ADAPTER` selects, `software` in CI) — the
-//!   same call the facade's profiler times as the render scope. [`FullCurtain::sync_gpu`] then
-//!   waits for the GPU outside the timed region, so queued work never piles up across frames.
+//!   same call the facade's profiler times as the render scope — plus the GPU time the renderer's
+//!   timestamp queries report. On a software adapter the rasterizer runs on the CPU inside that
+//!   call, so its wall time is a trend of the whole software frame, not of the engine's render CPU
+//!   work; [`FullCurtain::prepare_render`] is that. [`FullCurtain::sync_gpu`] waits for the GPU
+//!   outside the timed region, so queued work never piles up across frames.
 
 use grimoire::adapters::sigil_render::extract_bullets;
+use std::time::Duration;
+
+use grimoire::render::measurement::CpuFramePreparation;
 use grimoire::render::procedural::floor_tile_grid;
 use grimoire::render::{
-    AmbientLight, Camera25D, DirectionalLight, MaterialHandle, MeshInstance, PbrMaterial,
-    PointLight, RenderError, Renderer, RendererConfig, StageFrame, StageRendererConfig,
-    WgpuRenderer,
+    AmbientLight, Camera25D, DirectionalLight, LightBudget, MaterialHandle, MeshInstance,
+    PbrMaterial, PointLight, RenderError, Renderer, RendererConfig, StageFrame,
+    StageRendererConfig, WgpuRenderer,
 };
 use grimoire_collide::{
     BatchHits, Circle, Collider, ColliderKey, CollisionQuery, GridItem, Hit, Shape, ShapeQuery,
@@ -61,8 +70,12 @@ pub const CURTAIN_SIM_SCENARIO: &str = "curtain_sim_10k";
 pub const CURTAIN_EXTRACT_SCENARIO: &str = "curtain_extract_10k";
 /// Scenario name of the collision phase.
 pub const CURTAIN_COLLIDE_SCENARIO: &str = "curtain_collide_10k";
-/// Scenario name of the render CPU phase.
-pub const CURTAIN_RENDER_CPU_SCENARIO: &str = "curtain_render_cpu_10k";
+/// Scenario name of the render CPU preparation (bullet upload and light clustering, no GPU).
+pub const CURTAIN_RENDER_PREP_SCENARIO: &str = "curtain_render_prep_10k";
+/// Scenario name of the `render_stage` call on the offscreen renderer.
+pub const CURTAIN_RENDER_STAGE_SCENARIO: &str = "curtain_render_stage_10k";
+/// Scenario name of the GPU time the renderer's timestamp queries report for that call.
+pub const CURTAIN_RENDER_GPU_SCENARIO: &str = "curtain_render_gpu_10k";
 
 /// Budget of the simulation phase per tick in milliseconds: the bullets' share of the P1 stress
 /// test (plan 0002 success criteria, PRD-0004). Like every budget here printed next to the median
@@ -73,8 +86,9 @@ pub const CURTAIN_SIM_BUDGET_MS: f64 = 1.0;
 pub const CURTAIN_EXTRACT_BUDGET_MS: f64 = 0.5;
 /// Budget of the collision phase per tick in milliseconds (collision ≤ 1.5 ms).
 pub const CURTAIN_COLLIDE_BUDGET_MS: f64 = 1.5;
-/// Budget of the render CPU phase per frame in milliseconds (render CPU ≤ 3 ms).
-pub const CURTAIN_RENDER_CPU_BUDGET_MS: f64 = 3.0;
+/// Budget of the render CPU preparation per frame in milliseconds: bullet upload plus clustering
+/// (plan 0002 WP3.3, the share of the 3 ms render CPU budget those two steps may take).
+pub const CURTAIN_RENDER_PREP_BUDGET_MS: f64 = 1.5;
 
 /// The population the scene is tuned for.
 pub const CURTAIN_BULLETS: u32 = 10_000;
@@ -119,7 +133,18 @@ pub struct FullCurtain {
     batch: BatchHits,
     graze: Vec<Hit>,
     stage: StageFrame,
+    preparation: CpuFramePreparation,
     renderer: Option<WgpuRenderer>,
+}
+
+/// What one [`FullCurtain::render`] call reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CurtainFrame {
+    /// Bullets the bullet pass drew.
+    pub bullets_drawn: u32,
+    /// GPU time of the frame from the renderer's timestamp queries, when the adapter has them and
+    /// a measurement has completed.
+    pub gpu_time: Option<Duration>,
 }
 
 impl FullCurtain {
@@ -195,7 +220,8 @@ impl FullCurtain {
             queries: Vec::with_capacity(COLLIDE_ENEMIES as usize),
             batch: BatchHits::default(),
             graze: Vec::new(),
-            stage: StageFrame::new(),
+            stage: lit_stage(),
+            preparation: CpuFramePreparation::new(),
             renderer: None,
         };
         if with_renderer {
@@ -224,45 +250,23 @@ impl FullCurtain {
         let floor = renderer
             .register_mesh(floor_tile_grid(24, 2.0))
             .expect("procedural floor mesh is valid");
-
-        let stage = &mut self.stage;
-        let mut camera = Camera25D::default();
-        camera.target = [0.0, 0.0];
-        camera.tilt_degrees = 62.0;
-        camera.fov_y_degrees = 50.0;
-        camera.distance = 48.0;
-        stage.camera_25d = Some(camera);
-        let mut key_light = DirectionalLight::default();
-        key_light.direction = [0.3, 0.45, -0.85];
-        key_light.intensity = 0.8;
-        stage.key_light = Some(key_light);
-        stage.ambient = AmbientLight::Hemisphere {
-            sky_color: [0.1, 0.1, 0.14],
-            ground_color: [0.03, 0.03, 0.03],
-            intensity: 0.5,
-        };
-        let mut material = PbrMaterial::default();
-        material.base_color_factor = [0.4, 0.38, 0.36, 1.0];
-        material.roughness_factor = 0.6;
-        stage.materials.push(material);
         let mut floor_instance = MeshInstance::default();
         floor_instance.mesh = floor;
         floor_instance.material = MaterialHandle(0);
-        stage.meshes.push(floor_instance);
-        for index in 0..16u8 {
-            let mut light = PointLight::default();
-            light.position = [
-                f32::from(index % 4) * 12.0 - 18.0,
-                f32::from(index / 4) * 12.0 - 18.0,
-                1.5,
-            ];
-            light.color = [1.0, 0.6, 0.3];
-            light.intensity = 4.0;
-            light.range = 8.0;
-            stage.point_lights.push(light);
-        }
+        self.stage.meshes.push(floor_instance);
         self.renderer = Some(renderer);
         Ok(())
+    }
+
+    /// Render CPU preparation of the stage frame without a GPU: the bullet pass's upload
+    /// preparation and the light clustering at the renderer's default budget. Returns the bytes
+    /// the bullet upload would write.
+    pub fn prepare_render(&mut self) -> usize {
+        let (_, bytes) = self.preparation.bullet_upload(&self.stage);
+        let aspect = CURTAIN_RENDER_WIDTH as f32 / CURTAIN_RENDER_HEIGHT as f32;
+        self.preparation
+            .light_clustering(&self.stage, LightBudget::default(), aspect);
+        bytes
     }
 
     /// Whether [`Self::build`] created an offscreen renderer.
@@ -375,14 +379,17 @@ impl FullCurtain {
         self.grid.len()
     }
 
-    /// Phase 4: renders the stage frame offscreen and returns the bullets the bullet pass drew,
-    /// or `None` without a renderer. Does not wait for the GPU; see [`Self::sync_gpu`].
-    pub fn render(&mut self) -> Option<Result<u32, RenderError>> {
+    /// Renders the stage frame offscreen, or returns `None` without a renderer. Does not wait for
+    /// the GPU; see [`Self::sync_gpu`].
+    pub fn render(&mut self) -> Option<Result<CurtainFrame, RenderError>> {
         let renderer = self.renderer.as_mut()?;
         Some(
             renderer
                 .render_stage(&self.stage)
-                .map(|stats| stats.bullets_drawn),
+                .map(|stats| CurtainFrame {
+                    bullets_drawn: stats.bullets_drawn,
+                    gpu_time: stats.gpu_time,
+                }),
         )
     }
 
@@ -397,6 +404,45 @@ impl FullCurtain {
         }
         Ok(())
     }
+}
+
+/// The stage frame without its floor mesh: camera, key light, ambient light, the floor material
+/// and 16 point lights. The floor mesh instance joins once a renderer registered the mesh; the CPU
+/// preparation needs no mesh.
+fn lit_stage() -> StageFrame {
+    let mut stage = StageFrame::new();
+    let mut camera = Camera25D::default();
+    camera.target = [0.0, 0.0];
+    camera.tilt_degrees = 62.0;
+    camera.fov_y_degrees = 50.0;
+    camera.distance = 48.0;
+    stage.camera_25d = Some(camera);
+    let mut key_light = DirectionalLight::default();
+    key_light.direction = [0.3, 0.45, -0.85];
+    key_light.intensity = 0.8;
+    stage.key_light = Some(key_light);
+    stage.ambient = AmbientLight::Hemisphere {
+        sky_color: [0.1, 0.1, 0.14],
+        ground_color: [0.03, 0.03, 0.03],
+        intensity: 0.5,
+    };
+    let mut material = PbrMaterial::default();
+    material.base_color_factor = [0.4, 0.38, 0.36, 1.0];
+    material.roughness_factor = 0.6;
+    stage.materials.push(material);
+    for index in 0..16u8 {
+        let mut light = PointLight::default();
+        light.position = [
+            f32::from(index % 4) * 12.0 - 18.0,
+            f32::from(index / 4) * 12.0 - 18.0,
+            1.5,
+        ];
+        light.color = [1.0, 0.6, 0.3];
+        light.intensity = 4.0;
+        light.range = 8.0;
+        stage.point_lights.push(light);
+    }
+    stage
 }
 
 #[cfg(test)]
@@ -419,6 +465,11 @@ mod tests {
                 "{live} live bullets, expected about {CURTAIN_BULLETS}"
             );
             assert_eq!(curtain.extract(), live, "every visual maps");
+            assert_eq!(
+                curtain.prepare_render(),
+                live as usize * std::mem::size_of::<grimoire::render::BulletInstance>(),
+                "every extracted bullet is prepared for upload"
+            );
             assert!(curtain.collide(&SequentialExecutor) > 0);
             assert_eq!(curtain.grid_len(), live as usize + COLLIDE_ENEMIES as usize);
         }
@@ -481,8 +532,8 @@ mod tests {
         }
         curtain.step_sim();
         let extracted = curtain.extract();
-        let drawn = curtain.render().expect("a renderer").expect("render_stage");
-        assert_eq!(drawn, extracted);
+        let frame = curtain.render().expect("a renderer").expect("render_stage");
+        assert_eq!(frame.bullets_drawn, extracted);
         curtain.sync_gpu().expect("readback");
     }
 }
