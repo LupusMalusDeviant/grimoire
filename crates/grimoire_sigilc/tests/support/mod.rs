@@ -62,10 +62,10 @@ pub fn expected_json_path(display_name: &str) -> PathBuf {
     corpus_root().join(display_name.replace(".sigil", ".expected.json"))
 }
 
-/// Every `.sigil` source that parses cleanly and is meant to: the `valid/` corpus plus the
-/// compiled-unit fixtures of the facade (`crates/grimoire/tests/fixtures/*.sigil`), as
-/// `(display_name, source)` pairs sorted by display name. Plan 0002 WP4.3's `set`/`fmt` gates run
-/// over this set.
+/// Every `.sigil` source that parses cleanly and is meant to: the `valid/` corpus, the
+/// compiled-unit fixtures of the facade (`crates/grimoire/tests/fixtures/*.sigil`) and the reference
+/// patterns (`tests/reference/*.sigil`, Plan 0002 WP4.5), as `(display_name, source)` pairs, each
+/// group sorted by name. Plan 0002 WP4.3's `set`/`fmt` gates run over this set.
 #[allow(dead_code)]
 pub fn clean_sigil_sources() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = corpus_sigil_files()
@@ -88,9 +88,40 @@ pub fn clean_sigil_sources() -> Vec<(String, String)> {
             fs::read_to_string(&path).unwrap_or_else(|error| panic!("reading {path:?}: {error}"));
         out.push((name, source));
     }
+    for (name, source) in reference_sigil_files() {
+        out.push((format!("reference/{name}"), source));
+    }
     assert!(
-        out.len() >= 7,
-        "expected the valid corpus and the facade fixtures"
+        out.len() >= 19,
+        "expected the valid corpus, the facade fixtures and the reference patterns"
     );
     out
+}
+
+/// The reference pattern directory, `crates/grimoire_sigilc/tests/reference` (Plan 0002 WP4.5,
+/// `docs/formats/sigil.md` §14). It is also the content root its patterns import from.
+#[allow(dead_code)]
+pub fn reference_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/reference")
+}
+
+/// Every reference pattern as `(file_name, source)`, sorted by file name.
+#[allow(dead_code)]
+pub fn reference_sigil_files() -> Vec<(String, String)> {
+    let dir = reference_root();
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap_or_else(|error| panic!("reading {dir:?}: {error}"))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sigil"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("reading {path:?}: {error}"));
+            (name, source)
+        })
+        .collect()
 }

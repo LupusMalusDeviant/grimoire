@@ -1,0 +1,41 @@
+sigil 1
+// 06-seeded-scatter: a cone of randomly spread grains that start slow and surge. Spread and speed
+// jitter come from a named random stream, so every replay of the pattern is identical.
+// Covers: block scatter (seeded, speed_jitter), modifier speed_curve (smooth interpolation).
+
+meta {
+  name = "Seeded Scatter"
+  difficulty = [hard, chaos]
+  density = 240
+}
+
+// Grain of the storm.
+bullet grain {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.6
+  radius = 0.13u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter storm {
+  bullet = grain
+  repeat = forever
+  interval = 8t
+  speed = 0.1u/t
+  block scatter {
+    count = 6
+    cone = 70deg
+    direction = 270deg
+    speed_jitter = 0.35 // +-35 % speed per bullet
+    seed = storm_main // named random stream, deterministic per pattern instance
+  }
+  modifier speed_curve {
+    keys = [
+      (at = 0t, mul = 0.4),
+      (at = 25t, mul = 1.3),
+    ]
+    interp = smooth
+  }
+}

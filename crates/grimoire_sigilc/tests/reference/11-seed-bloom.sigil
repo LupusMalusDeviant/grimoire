@@ -1,0 +1,74 @@
+sigil 1
+// 11-seed-bloom: slow seeds that each become a small fan emitter after a second; the shards they
+// fire turn into sparks once they have travelled two units.
+// Covers: transform become_emitter on a time trigger, emitter role sub, transform change_type on
+//         a distance trigger, a cascade one level deep.
+
+meta {
+  name = "Seed Bloom"
+  difficulty = [hard, cascade]
+  density = 40 // 8 seeds, each a volley of 5 shards
+}
+
+// Seed; becomes the `bloom` emitter at its position after 60 ticks.
+bullet seed {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.8
+  radius = 0.3u
+  damage = 2
+  flags = [smashable]
+  transform become_emitter {
+    when = time 60t
+    emitter = bloom
+  }
+}
+
+// Shard fired by a bloom; changes type after two units.
+bullet shard {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.5
+  radius = 0.13u
+  damage = 1
+  flags = [grazeable]
+  transform change_type {
+    when = distance 2u
+    to = spark
+  }
+}
+
+// What a shard turns into.
+bullet spark {
+  silhouette = diamond
+  palette = enemy.poison_lime
+  glow = 0.9
+  radius = 0.13u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter seeds {
+  bullet = seed
+  repeat = 2
+  interval = 90t
+  speed = 0.03u/t
+  block ring {
+    count = 4
+    start = 45deg
+  }
+}
+
+// Sub-emitter spawned by each seed; never runs on its own.
+emitter bloom {
+  role = sub
+  bullet = shard
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block fan {
+    count = 5
+    spread = 80deg
+    center = 0deg // relative to the seed's heading
+  }
+}

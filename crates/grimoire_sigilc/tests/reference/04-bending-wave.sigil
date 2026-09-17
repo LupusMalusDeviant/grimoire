@@ -1,0 +1,37 @@
+sigil 1
+// 04-bending-wave: a wave front of bullets that bends into an arc as it travels, so its gaps sweep
+// sideways across the arena.
+// Covers: block wave, modifier curve, flag env_active (stored and hashed; the level reacts to it
+//         from P2 on).
+
+meta {
+  name = "Bending Wave"
+  difficulty = [normal, sweep]
+  density = 150
+}
+
+// Crest of the wave; env_active, so terrain can later bounce or ignite it.
+bullet crest {
+  silhouette = orb
+  palette = enemy.poison_lime
+  glow = 0.4
+  radius = 0.25u
+  damage = 1
+  flags = [env_active, grazeable]
+}
+
+emitter tide {
+  bullet = crest
+  repeat = 6
+  interval = 25t
+  speed = 0.06u/t
+  block wave {
+    count = 11
+    amplitude = 1.2u
+    wavelength = 5u
+    direction = 270deg
+  }
+  modifier curve {
+    turn = 0.6deg/t // bends the front into an arc
+  }
+}

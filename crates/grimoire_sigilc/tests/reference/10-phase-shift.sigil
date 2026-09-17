@@ -1,0 +1,70 @@
+sigil 1
+// 10-phase-shift: when the boss phase ends, the game raises the event `phase_end`: every calm orb
+// turns into a bright diamond and every drifting grain reverses. The screen changes character in
+// one tick.
+// Covers: transform change_type on an event trigger, transform reverse on an event trigger.
+
+meta {
+  name = "Phase Shift"
+  difficulty = [hard, phase]
+  density = 260
+}
+
+// Calm orb; becomes `angry` when the phase ends.
+bullet calm {
+  silhouette = orb
+  palette = enemy.poison_lime
+  glow = 0.3
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+  transform change_type {
+    when = event phase_end
+    to = angry
+  }
+}
+
+// What a calm orb turns into: a new silhouette, so the change stays readable.
+bullet angry {
+  silhouette = diamond
+  palette = enemy.hex_magenta
+  glow = 1.0
+  radius = 0.2u
+  damage = 2
+  flags = [grazeable]
+}
+
+// Drifting grain; turns around when the phase ends.
+bullet drifter {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.5
+  radius = 0.14u
+  damage = 1
+  flags = [grazeable]
+  transform reverse {
+    when = event phase_end
+  }
+}
+
+emitter calm_ring {
+  bullet = calm
+  repeat = forever
+  interval = 45t
+  speed = 0.05u/t
+  block ring {
+    count = 12
+  }
+}
+
+emitter drift {
+  bullet = drifter
+  delay = 20t
+  repeat = forever
+  interval = 6t
+  speed = 0.06u/t
+  block spiral {
+    arms = 2
+    step = 13deg
+  }
+}
