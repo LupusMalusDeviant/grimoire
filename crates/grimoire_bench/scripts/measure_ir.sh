@@ -135,5 +135,9 @@ measure_one sigil_churn sigil_churn_2k
 # (`grimoire_render::measurement`).
 measure_one bullet_upload render_bullet_upload_10k
 measure_one light_cluster render_light_cluster_256
+# Plan 0002 WP6.5 (contract §14): the representative collision bench, 10,000 bullets and 100
+# enemies per tick through `rebuild_par`, `overlapping_batch` and `graze_ring` on one thread. The
+# worst-case `collide_cluster` stays a wall-clock trend and is not measured here.
+measure_one collide_uniform collide_uniform
 
 cat "$OUT"

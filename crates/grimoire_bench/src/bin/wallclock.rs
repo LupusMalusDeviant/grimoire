@@ -24,20 +24,24 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use grimoire_bench::scenarios::{
-    BULLET_UPLOAD_SCENARIO, ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS,
-    EXTRACT_SCENARIO, EXTRACT_WALLCLOCK_ROUNDS, LIGHT_CLUSTER_SCENARIO, RENDER_BULLETS,
-    RENDER_POINT_LIGHTS, RENDER_UPLOAD_BUDGET_MS, RENDER_WALLCLOCK_FRAMES, SIGIL_CHURN_BULLETS,
-    SIGIL_CHURN_PER_TICK, SIGIL_CHURN_SCENARIO, SIGIL_CHURN_WALLCLOCK_TICKS, SIGIL_ENTITIES,
-    SIGIL_SCENARIO, SIGIL_TICK_BUDGET_MS, SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_SCENARIO,
+    BULLET_UPLOAD_SCENARIO, COLLIDE_BULLETS, COLLIDE_CLUSTER_SCENARIO, COLLIDE_ENEMIES,
+    COLLIDE_TICK_BUDGET_MS, COLLIDE_UNIFORM_SCENARIO, COLLIDE_WALLCLOCK_TICKS, CollideLayout,
+    ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS, EXTRACT_SCENARIO,
+    EXTRACT_WALLCLOCK_ROUNDS, LIGHT_CLUSTER_SCENARIO, RENDER_BULLETS, RENDER_POINT_LIGHTS,
+    RENDER_UPLOAD_BUDGET_MS, RENDER_WALLCLOCK_FRAMES, SIGIL_CHURN_BULLETS, SIGIL_CHURN_PER_TICK,
+    SIGIL_CHURN_SCENARIO, SIGIL_CHURN_WALLCLOCK_TICKS, SIGIL_ENTITIES, SIGIL_SCENARIO,
+    SIGIL_TICK_BUDGET_MS, SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_SCENARIO,
     SIGIL_UPDATE_10K_WALLCLOCK_TICKS, SIGIL_WALLCLOCK_TICKS, SIM_ENTITIES, SIM_SCENARIO,
-    SIM_WALLCLOCK_TICKS, build_ecs_world, build_render_cpu, build_sigil_churn, build_sigil_extract,
-    build_sigil_update, build_sigil_update_10k, build_sim, run_bullet_upload_frames,
-    run_ecs_rounds, run_light_cluster_frames, run_sigil_extract_rounds, run_sigil_update_ticks,
-    run_sim_ticks, sigil_update_fill_ticks,
+    SIM_WALLCLOCK_TICKS, build_collide, build_ecs_world, build_render_cpu, build_sigil_churn,
+    build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
+    run_bullet_upload_frames, run_collide_ticks, run_ecs_rounds, run_light_cluster_frames,
+    run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks, sigil_update_fill_ticks,
 };
 use grimoire_bench::schema::{
     BenchResult, CommitRef, ExecutorInfo, ParamValue, RunKey, RunnerInfo, ValueOrigin, median,
 };
+use grimoire_ecs::{Executor, SequentialExecutor};
+use grimoire_exec::ThreadPoolExecutor;
 use grimoire_sim::Simulation;
 
 /// Unmeasured samples discarded before recording (matches the WP6.1 spike's trimmed warmup).
@@ -183,6 +187,20 @@ fn measure_render(
 }
 
 /// Samples `ticks` simulation steps of an already built, steady `sim`, after the usual warm-up.
+fn measure_collide(layout: CollideLayout, executor: &dyn Executor) -> Vec<f64> {
+    let mut bench = build_collide(layout);
+    for _ in 0..WARMUP_SAMPLES {
+        run_collide_ticks(&mut bench, executor, COLLIDE_WALLCLOCK_TICKS, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run_collide_ticks(&mut bench, executor, COLLIDE_WALLCLOCK_TICKS, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
 fn measure_sigil_ticks(mut sim: Simulation, ticks: u32) -> Vec<f64> {
     for _ in 0..WARMUP_SAMPLES {
         run_sigil_update_ticks(&mut sim, ticks, 0);
@@ -202,6 +220,19 @@ fn result_for(
     samples: Vec<f64>,
     params: BTreeMap<String, ParamValue>,
 ) -> BenchResult {
+    result_on(meta, scenario, samples, params, &SequentialExecutor)
+}
+
+/// Like [`result_for`], recording `executor`: `sequential` for one thread, `thread_pool` with its
+/// thread count otherwise (contract §15.1).
+fn result_on(
+    meta: &Meta,
+    scenario: &str,
+    samples: Vec<f64>,
+    params: BTreeMap<String, ParamValue>,
+    executor: &dyn Executor,
+) -> BenchResult {
+    let threads = executor.threads();
     let computed_median = median(&samples).unwrap_or(0.0);
     BenchResult {
         scenario: scenario.to_string(),
@@ -222,8 +253,13 @@ fn result_for(
             fingerprint: meta.fingerprint.clone(),
         },
         executor: ExecutorInfo {
-            kind: "sequential".to_string(),
-            threads: 1,
+            kind: if threads == 1 {
+                "sequential"
+            } else {
+                "thread_pool"
+            }
+            .to_string(),
+            threads: threads as u32,
         },
         params,
         value_origin: ValueOrigin::Runner,
@@ -377,7 +413,51 @@ fn main() -> ExitCode {
         "{BULLET_UPLOAD_SCENARIO} + {LIGHT_CLUSTER_SCENARIO}: median {upload_ms:.4} + {cluster_ms:.4} = {render_ms:.4} ms per frame, {RENDER_BULLETS} bullets and {RENDER_POINT_LIGHTS} lights (budget {RENDER_UPLOAD_BUDGET_MS:.1} ms: {verdict}; wall clock, trend only)"
     );
 
-    for result in &results {
+    // Plan 0002 WP6.5 (contract §14): both collision benches on one thread and on N threads, against
+    // the collision budget of 1.5 ms per tick.
+    let pool_threads = std::thread::available_parallelism()
+        .map_or(2, std::num::NonZeroUsize::get)
+        .max(2);
+    let pool = match ThreadPoolExecutor::new(pool_threads) {
+        Ok(pool) => pool,
+        Err(err) => {
+            eprintln!("wallclock: thread pool with {pool_threads} threads: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let collide_params = BTreeMap::from([
+        ("bullets".to_string(), int(COLLIDE_BULLETS)),
+        ("enemies".to_string(), int(COLLIDE_ENEMIES)),
+        ("ticks".to_string(), int(COLLIDE_WALLCLOCK_TICKS)),
+    ]);
+    let mut collide_results = Vec::new();
+    for (scenario, layout) in [
+        (COLLIDE_UNIFORM_SCENARIO, CollideLayout::Uniform),
+        (COLLIDE_CLUSTER_SCENARIO, CollideLayout::Cluster),
+    ] {
+        for executor in [&SequentialExecutor as &dyn Executor, &pool] {
+            let result = result_on(
+                &meta,
+                scenario,
+                measure_collide(layout, executor),
+                collide_params.clone(),
+                executor,
+            );
+            let per_tick_ms = result.median / f64::from(COLLIDE_WALLCLOCK_TICKS) / 1.0e6;
+            let verdict = if per_tick_ms <= COLLIDE_TICK_BUDGET_MS {
+                "within"
+            } else {
+                "OVER"
+            };
+            eprintln!(
+                "{scenario}: median {per_tick_ms:.4} ms per tick, {COLLIDE_BULLETS} bullets and {COLLIDE_ENEMIES} enemies, {} thread(s) (budget {COLLIDE_TICK_BUDGET_MS:.1} ms: {verdict}; wall clock, trend only)",
+                executor.threads()
+            );
+            collide_results.push(result);
+        }
+    }
+
+    for result in results.iter().chain(&collide_results) {
         match result.to_json_line() {
             Ok(line) => println!("{line}"),
             Err(err) => {
