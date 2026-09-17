@@ -124,12 +124,13 @@ mod gpu_types {
 
 use gpu_types::{BulletCameraGpu, BulletStyleGpu};
 
-/// How the bullet pass projects the ground plane this frame.
+/// How the bullet pass projects the ground plane this frame. The sprite pass draws the player
+/// marker through the same projection under the 2.5D camera (plan 0002 WP3.6).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BulletView {
-    view_proj: [[f32; 4]; 4],
-    axis_x: [f32; 3],
-    axis_y: [f32; 3],
+    pub(crate) view_proj: [[f32; 4]; 4],
+    pub(crate) axis_x: [f32; 3],
+    pub(crate) axis_y: [f32; 3],
 }
 
 /// The projection of `frame`'s bullets for a target of the given `aspect` ratio: the frame's
