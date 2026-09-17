@@ -18,10 +18,11 @@ the schema pass (field names, kinds, units and ranges per construct, name resolu
 encoding, implemented in `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/src/compiler/`).
 [§13](#13-command-line-interface-sigilc) is WP4.3: the command-line interface `sigilc` (`check`,
 `build`, `parse --json`, `set`, `fmt`), its JSON documents, the behaviour manifest, value paths and
-the canonical layout. [§14](#14-reference-patterns) is WP4.5: the reference patterns and their
-coverage table. [§15](#15-platform-identity-of-compiled-units) is WP4.4: the gate that compiles
-them on Windows, Linux and macOS and compares the bytes. Not covered here: `sigilc simulate` (Plan 0002 WP5.6), a `sigilc migrate`
-(there is no second source version yet) and the runtime interpreter (Plan 0002 WP5). A file that
+the canonical layout; [§13.8](#138-simulate---json) adds `simulate` (WP5.6).
+[§14](#14-reference-patterns) is WP4.5: the reference patterns and their coverage table.
+[§15](#15-platform-identity-of-compiled-units) is WP4.4: the gate that compiles them on Windows,
+Linux and macOS and compares the bytes. Not covered here: a `sigilc migrate` (there is no second
+source version yet) and the runtime interpreter itself (Plan 0002 WP5, engine contract §11). A file that
 is syntactically valid by [§1](#1-overview)–[§4](#4-syntactic-grammar)'s rules can still be
 rejected by the schema pass.
 
@@ -826,6 +827,7 @@ existing sidecar stay byte-for-byte as they were.
 | `sigilc parse --json [--values] <file>` | Parses one file (no schema pass). Without `--values` it prints the [§6.2](#62-json-form) diagnostics document, with `--values` the [§13.5](#135-parse---json---values) values document. There is no text form; use `check`. |
 | `sigilc set [--json] <file> <node-path>=<value>` | Replaces one existing value in place ([§13.6](#136-set)). |
 | `sigilc fmt [--check] <file>...` | Rewrites files in the canonical layout ([§13.7](#137-fmt-and-the-canonical-layout)); `--check` writes nothing and prints `<file>: not in canonical layout` per file that would change. |
+| `sigilc simulate --json --ticks <n> [--target <x>,<y> \| --target-path <file>] [--events <name>@<tick>,...] [--seed <n>] [--capacity <n>] [--bounds <min x>,<min y>,<max x>,<max y>] [--root <dir>] [--behaviors <file>] <file>` | Compiles one file like `check`, runs it through the runtime interpreter and prints every tick ([§13.8](#138-simulate---json)). |
 | `sigilc --version` / `sigilc --help` | Prints `sigilc <engine version>` / the usage text. |
 
 Options may stand anywhere after the command, as `--name value` or `--name=value`; `--` ends option
@@ -839,7 +841,7 @@ Every command ends with one of three exit codes:
 |---|---|
 | `0` | Success, no problem in any file. |
 | `1` | The command ran and found problems: a diagnostic in any file (`check`, `build`, `parse`, or `fmt` on a file that does not parse), a refused `set`, or a file `fmt --check` would change. With `--json`, the document on stdout still describes every file. |
-| `2` | The command could not run as asked: a usage error, a file `parse`/`set`/`fmt` cannot read, an unreadable or invalid behaviour manifest, or output `build`/`set`/`fmt` cannot write. A message goes to stderr and no JSON document is printed. |
+| `2` | The command could not run as asked: a usage error, a file `parse`/`set`/`fmt` cannot read, an unreadable or invalid behaviour manifest or target path, or output `build`/`set`/`fmt` cannot write. A message goes to stderr and no JSON document is printed. |
 
 Text-mode diagnostics use [§6.1](#61-text-form) and go to stdout. A JSON document goes to stdout,
 one per invocation, pretty-printed UTF-8 without BOM, with keys in the order shown below and
@@ -1043,6 +1045,77 @@ diagnostics are printed, the file stays untouched and the exit code is `1`. The 
 idempotent, and formatting never changes the compiled unit; `tests/fmt_canonical.rs` checks both
 with whitespace-perturbed variants of every corpus file and fixture, all of which are already in
 the canonical layout.
+
+### 13.8 `simulate --json`
+
+Plan 0002 WP5.6, implemented in `grimoire_sigilc::simulate`. *Stufe A, PO-Freigabe offen:* the
+command, the `grimoire.sigilc.simulate` and `grimoire.sigilc.target_path` documents and their
+limits are new, additive surface. It is the preview source of the Sigil editor (WP10.4) and of
+agents (project ADR-0010, building block 5): the positions come from the runtime interpreter
+itself, `grimoire_sigil::install` on a `grimoire_sim::Simulation`, not from a second implementation.
+
+**Run.** The file is compiled exactly like `check` (content root, behaviour manifest,
+diagnostics). If it compiles, a simulation with seed `--seed` (decimal, default `0`), pool capacity
+`--capacity` (default 65,536, at most 2^20) and bounds `--bounds` (default `-1000,-1000,1000,1000`)
+installs the unit, and every primary emitter (not `role = sub`) starts at tick `0` at the origin
+with rotation `0`; sub-emitters fire only through `become_emitter`. Then `--ticks` ticks (1 to
+36,000) run. Before tick `t`:
+
+- the aim target of `aimed` blocks is set: absent without an option, fixed with `--target <x>,<y>`,
+  or scripted with `--target-path` (below);
+- every `--events` entry `<name>@<tick>` with that tick raises the event `<name>` once
+  (`EventRequest` with `EventId::from_name(<name>)`, [§10.9](#109-transforms-kind-4)); names use
+  letters, digits, `_` and `.` (at most 64 bytes), ticks lie below `--ticks`.
+
+Behaviours are game code the compiler cannot run: every behaviour the unit binds is registered with
+a stand-in that keeps the bullet as its program moved it, and `stubbed_behaviors` lists them. The run
+uses one thread and no clock (contract §3); the document depends only on the inputs, and
+`tests/simulate.rs` compares three reference-pattern runs byte for byte with checked-in documents
+on Windows, Linux and macOS.
+
+**Output.** One JSON document on one line (unlike the other documents, not pretty-printed: it holds
+one row per bullet per tick). Exit code `0` with frames, `1` with diagnostics (`ok` is `false`, no
+frames), `2` for a usage error, an unreadable or invalid target path or behaviour manifest.
+
+```json
+{"schema":"grimoire.sigilc.simulate","schema_version":1,"source":"tests/reference/02-spiral-curtain.sigil","unit_path":"02-spiral-curtain.sigil","unit_id":"5bcbf0a79c11f14b","content_hash":"71bacb17f56880a4","ok":true,"diagnostics":[],"settings":{"ticks":4,"seed":"0000000000000000","capacity":65536,"bounds":[-1000.0,-1000.0,1000.0,1000.0],"target":{"kind":"fixed","position":[0.0,-4.0],"path":null},"events":[]},"emitters":[0],"bullet_types":[{"silhouette":1,"palette":1,"palette_space":1,"glow":255,"radius":0.14,"collision_radius":0.14,"lifetime_ticks":0,"flags":["grazeable"]}],"stubbed_behaviors":[],"bullet_fields":["slot","generation","type","x","y","vx","vy","age","cascade"],"despawn_fields":["slot","generation","type","x","y","cause"],"frames":[{"tick":0,"state_hash":"4e37b4d802f8d6c6","target":[0.0,-4.0],"events":[],"live":5,"dropped_spawns":0,"bullets":[[0,0,0,0.0,0.0,-3.496911e-9,0.08,0,0],"…"],"despawned":[]},"…"],"final_state_hash":"…"}
+```
+
+(Shortened with `"…"`; the hashes are this pattern's at the time of writing.)
+
+| Key | Meaning |
+|---|---|
+| `source`, `unit_path`, `unit_id`, `content_hash`, `diagnostics` | As in [§13.4](#134-check---json-and-build---json). |
+| `ok` | `true` iff the file compiled and was simulated. |
+| `settings` | The run's inputs: `ticks`; `seed` as 16 hex digits; `capacity`; `bounds` as `[min x, min y, max x, max y]`; `target` with `kind` `none`, `fixed` (`position`) or `path` (`path` as given); `events` as `{tick, name}` in the order given. |
+| `emitters` | Indices of the emitters that ran (the primary ones), ascending. Emitters are numbered by name ([§11.1](#111-imports-and-the-compiled-units-contents)). |
+| `bullet_types` | Per bullet-type index: visual catalogue rows `silhouette`, `palette`, `palette_space`, `glow`, the radii, `lifetime_ticks` and the flag names. |
+| `stubbed_behaviors` | `{name, id}` per behaviour replaced by the stand-in, ascending by id; `name` from the manifest, `null` if it does not name the id. |
+| `bullet_fields`, `despawn_fields` | Column names of the rows below. |
+| `frames` | One object per tick: `tick` (the simulated tick, from `0`), `state_hash` after it (16 hex digits), `target` during it (`[x, y]` or `null`), `events` raised in it, `live` bullets after it, `dropped_spawns` since the start, `bullets` (every live bullet ascending by slot: `[slot, generation, type, x, y, vx, vy, age, cascade]`) and `despawned` (every bullet despawned in the tick, in despawn order: `[slot, generation, type, x, y, cause]` with cause `0` lifetime, `1` bounds, `2` transform, `3` behaviour, `4` clear, `5` swap, `6` external). |
+| `final_state_hash` | `state_hash` after the last tick, `null` unless `ok`. |
+
+Numbers follow contract §2 rule 11: integers are exact, floats are the shortest decimal form that
+reads back as the same 32-bit float (possibly with an exponent), never NaN.
+
+**Target path** (`--target-path <file>`, at most 1 MiB, decoder
+`grimoire_sigilc::simulate::parse_target_path`, errors instead of panics):
+
+```json
+{
+  "schema": "grimoire.sigilc.target_path",
+  "schema_version": 1,
+  "points": [
+    { "tick": 0, "x": 0.0, "y": -4.0 },
+    { "tick": 20, "x": 3.0, "y": -4.0 }
+  ]
+}
+```
+
+1 to 65,536 points with strictly ascending ticks (at most 2^53 − 1) and coordinates that are finite
+as 32-bit floats; unknown or missing keys, another `schema` or `schema_version` are errors. During a
+tick before the first point the target is the first point, after the last point the last point, in
+between `a + (b − a) · (t − t_a) / (t_b − t_a)` in 32-bit floats.
 
 ## 14. Reference patterns
 
