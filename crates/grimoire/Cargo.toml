@@ -49,12 +49,22 @@ grimoire_ecs = { workspace = true, features = ["conformance"] }
 name = "player_proxy"
 required-features = ["fixtures"]
 
+# Contract §9.1: tests of the debug link run only with the `debug-link` feature (CI step
+# "Test (grimoire, feature debug-link)").
+[[test]]
+name = "debug_link"
+required-features = ["debug-link"]
+
 # `fixtures` (contract §9.2): the minimal, spawn-once player proxy (§9.5), used by tests,
 # benches, examples and prototypes. Additive only: with no `PlayerProxyPlugin` registered,
 # neither the system list, the stage plan nor any state hash of a game changes (contract §2
 # rule 14).
 [features]
 fixtures = []
+# `debug-link` (contract §9.1, §9.7, §13): the engine side of the debug link in the main loop,
+# `adapters::debug::link` and `AppBuilder::debug_link`; enables grimoire_debug's TCP transport.
+# Distribution builds of a game never enable it. Without it the facade holds no transport code.
+debug-link = ["grimoire_debug/tcp"]
 
 [lints]
 workspace = true

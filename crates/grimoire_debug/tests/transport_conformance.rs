@@ -39,8 +39,8 @@ fn in_process_pair_is_conformant_across_chunk_sizes() {
 mod tcp_conformance {
     use super::*;
     use grimoire_debug::{
-        Frame, FrameDecoder, TcpConfig, TcpServerTransport, TransportError, encode_frame,
-        socket_tests_enabled,
+        Frame, FrameDecoder, MessageId, TcpConfig, TcpServerTransport, TransportError, catalogue,
+        encode_frame, socket_tests_enabled,
     };
     use std::io::{Read, Write};
     use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -48,11 +48,11 @@ mod tcp_conformance {
 
     /// A minimal [`DebugTransport`] around a raw client socket, so this test can drive
     /// [`TcpServerTransport`] through the same generic `conformance` functions used for the
-    /// other transports. This is test-only scaffolding, not part of the crate's public API: a
-    /// real client implementation (with the `Hello` handshake) is WP8.2's job.
+    /// other transports. This is test-only scaffolding, not part of the crate's public API.
     struct RawTcpClient {
         stream: TcpStream,
         decoder: FrameDecoder,
+        connected: bool,
     }
 
     impl RawTcpClient {
@@ -62,6 +62,7 @@ mod tcp_conformance {
             Self {
                 stream,
                 decoder: FrameDecoder::new(),
+                connected: true,
             }
         }
     }
@@ -118,27 +119,88 @@ mod tcp_conformance {
         }
 
         fn is_connected(&self) -> bool {
-            true
+            self.connected
         }
 
         fn disconnect(&mut self) {
+            self.connected = false;
             let _ = self.stream.shutdown(std::net::Shutdown::Both);
         }
     }
 
-    #[test]
-    fn tcp_server_transport_preserves_order() {
-        if !socket_tests_enabled() {
-            eprintln!("skipping: set GRIMOIRE_SOCKET_TESTS=1");
-            return;
+    fn skip_without_sockets() -> bool {
+        if socket_tests_enabled() {
+            return false;
         }
+        eprintln!("skipping: set GRIMOIRE_SOCKET_TESTS=1");
+        true
+    }
 
+    /// Binds a server, connects a raw client and completes the transport's pre-handshake gate the
+    /// way the engine does (contract §13 "TCP"): the server receives the client's first frame and
+    /// sends a `Hello` frame, after which it reads every frame. The conformance properties are
+    /// about an established connection.
+    fn established_pair() -> (TcpServerTransport, RawTcpClient) {
         let config = TcpConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0), [0x22; 32]);
         let mut server = TcpServerTransport::bind(config).expect("bind");
         let mut client = RawTcpClient::connect(server.local_addr());
-        // Give the IO thread a moment to accept the connection before exercising the pair.
-        std::thread::sleep(Duration::from_millis(50));
+        let first = Frame {
+            id: MessageId(catalogue::HELLO),
+            seq: 1,
+            payload: vec![1, 0],
+        };
+        client.send(&first).expect("send the first frame");
 
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut inbox = Vec::new();
+        while inbox.is_empty() && Instant::now() < deadline {
+            server.poll(&mut inbox).expect("poll the first frame");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(inbox, vec![first]);
+        let reply = Frame {
+            id: MessageId(catalogue::HELLO),
+            seq: 1,
+            payload: Vec::new(),
+        };
+        server.send(&reply).expect("send the engine Hello");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut replies = Vec::new();
+        while replies.is_empty() && Instant::now() < deadline {
+            client.poll(&mut replies).expect("poll the engine Hello");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(replies, vec![reply]);
+        (server, client)
+    }
+
+    #[test]
+    fn tcp_server_transport_preserves_order() {
+        if skip_without_sockets() {
+            return;
+        }
+        let (mut server, mut client) = established_pair();
         conformance::order_preserved_no_duplicates(&mut client, &mut server);
+    }
+
+    #[test]
+    fn tcp_server_transport_survives_a_disconnect() {
+        if skip_without_sockets() {
+            return;
+        }
+        let (mut server, mut client) = established_pair();
+        conformance::disconnect_does_not_panic(&mut client, &mut server);
+        let (mut server, mut client) = established_pair();
+        conformance::disconnect_does_not_panic(&mut server, &mut client);
+    }
+
+    #[test]
+    fn tcp_server_transport_rejects_an_oversized_frame() {
+        if skip_without_sockets() {
+            return;
+        }
+        let (mut server, mut client) = established_pair();
+        conformance::oversized_frame_rejected_or_disconnects(&mut client, &mut server);
     }
 }

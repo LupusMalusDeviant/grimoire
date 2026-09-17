@@ -37,7 +37,8 @@ pub enum Message {
     /// (Plan-0002 WP6.3, not this crate's job); this crate only encodes/decodes the payload.
     Stats(Stats),
     /// Hot-swap request (id `0x0020`, `T→E`). Decoding one here does not apply it: queueing at
-    /// the next tick boundary and calling `replace_unit` is the facade's job (Plan-0002 WP8.4).
+    /// the next tick boundary and calling `replace_unit` is the facade's job (`grimoire`, feature
+    /// `debug-link`).
     SwapSigilUnit(SwapSigilUnit),
     /// Hot-swap acknowledgement (id `0x0021`, `E→T`).
     SwapAck(SwapAck),
