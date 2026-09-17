@@ -645,16 +645,23 @@ mod tests {
 
     #[test]
     fn style_uniform_carries_the_stylebook_palette() {
+        // Compared with a tolerance, not bit for bit: the table is evaluated through a different
+        // path than this direct call, and an optimised build rounded the last digit differently
+        // on one runner (0.4564111 against 0.45641106). This is render colour, not simulation
+        // state, so no determinism rule asks for bit equality here.
+        fn assert_close(actual: &[f32], expected: [f32; 3]) {
+            for (a, e) in actual.iter().zip(expected) {
+                assert!((a - e).abs() < 1e-6, "{actual:?} != {expected:?}");
+            }
+        }
         let style = style_uniform();
-        let magenta = srgb_hex_to_linear(0xFF_2F_B4);
-        assert_eq!(
-            style.body[usize::from(bullet_palette::HEX_MAGENTA)][..3],
-            magenta
+        assert_close(
+            &style.body[usize::from(bullet_palette::HEX_MAGENTA)][..3],
+            srgb_hex_to_linear(0xFF_2F_B4),
         );
-        let lime_core = srgb_hex_to_linear(0xF6_FF_E0);
-        assert_eq!(
-            style.core[usize::from(bullet_palette::POISON_LIME)][..3],
-            lime_core
+        assert_close(
+            &style.core[usize::from(bullet_palette::POISON_LIME)][..3],
+            srgb_hex_to_linear(0xF6_FF_E0),
         );
         assert_eq!(style.rim[3], RIM_ALPHA);
     }

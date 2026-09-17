@@ -567,6 +567,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "the shape validation is a debug assertion; release builds do not panic here"
+    )]
     #[should_panic(expected = "invalid shape for collider")]
     fn rebuild_panics_in_debug_on_invalid_shape() {
         let mut grid = SpatialGrid::new(small_config()).unwrap();
@@ -581,6 +585,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "the duplicate-key check is a debug assertion; release builds do not panic here"
+    )]
     #[should_panic(expected = "duplicate collider key")]
     fn rebuild_panics_in_debug_on_duplicate_key() {
         let mut grid = SpatialGrid::new(small_config()).unwrap();
