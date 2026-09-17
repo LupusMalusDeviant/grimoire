@@ -5,7 +5,8 @@
 //! module adds what needs the other crates: clock access through [`Clock`], the schedule observer
 //! ([`ProfilerObserver`], contract §7.2), the subsystem scopes from system names, budgets per
 //! subsystem ([`ProfilerBudgets`]) and the renderer's GPU time and bullet counters
-//! ([`Profiler::record_stage_stats`]).
+//! ([`Profiler::record_stage_stats`]). [`overlay`] draws the profile as the stats overlay (WP6.4)
+//! with the 5×7 bitmap font of [`glyphs`].
 //!
 //! The main loop of [`crate::AppBuilder::run`] uses a [`Profiler`] on every frame unless
 //! [`crate::AppBuilder::profiler`] turned it off, and hands the result to
@@ -38,7 +39,12 @@
 //! assert_eq!(profiler.budget("sigil"), Some(Duration::from_millis(1)));
 //! ```
 
+pub mod glyphs;
+pub mod overlay;
+
 use std::time::Duration;
+
+pub use overlay::{DEFAULT_OVERLAY_KEY, OVERLAY_WINDOW_FRAMES, StatsOverlay, overlay_scale};
 
 use grimoire_debug::{FrameProfile, ScopeId, ScopeRegistry, StatsFrame};
 use grimoire_ecs::{StageInfo, SystemInfo, SystemObserver, World};
