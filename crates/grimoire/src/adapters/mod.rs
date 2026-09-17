@@ -10,8 +10,9 @@
 //! | [`sigil_render`] | Sigil → Render | WP5.3: [`sigil_render::extract_bullets`] turns the live `BulletPool` into interpolated `BulletInstance`s for the WP3.5 bullet pass; [`sigil_render::SigilRenderPlugin`] runs it every frame |
 //! | `assets` | Assets → Sigil | §11.2, §12, once `grimoire_sigil::install` lands |
 //! | [`figure_assets`] | Assets → Render | P1 "Figuren in der Engine" package: [`figure_assets::load_figure`] decodes a figure's pack payloads and registers them with a `WgpuRenderer`; posing/animation stays out of scope |
-//! | `debug` | Debug ↔ Sim/Render | §9.7, §13, WP8.2 |
+//! | [`debug`] | Debug ↔ Sim/Render | WP6.3: [`debug::Profiler`] measures the main loop and, through [`debug::ProfilerObserver`], every system under its subsystem scope, with budgets and the renderer's GPU time; the debug link (swap queue, `Stats` messages) follows with WP8.4 |
 
+pub mod debug;
 pub mod figure_assets;
 pub mod sigil_collide;
 pub mod sigil_render;

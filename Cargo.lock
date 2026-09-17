@@ -756,6 +756,7 @@ dependencies = [
  "grimoire_assets",
  "grimoire_collide",
  "grimoire_core",
+ "grimoire_debug",
  "grimoire_ecs",
  "grimoire_platform",
  "grimoire_render",

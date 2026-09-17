@@ -12,6 +12,7 @@ use grimoire_platform::{
 use grimoire_render::{Camera25D, NullRenderer, RendererConfig, WgpuRenderer};
 use grimoire_sim::{Simulation, TickInput};
 
+use crate::adapters::debug::ProfilerBudgets;
 use crate::error::GrimoireError;
 use crate::input::InputMap;
 use crate::main_loop::{
@@ -58,6 +59,8 @@ impl App {
             exit_key: None,
             executor: None,
             camera_25d: None,
+            profiler: true,
+            profiler_budgets: ProfilerBudgets::default(),
         }
     }
 }
@@ -91,6 +94,10 @@ pub struct AppBuilder {
     /// `None` disables the WP2.4 render-side camera follow entirely: `extract_stage` implementations
     /// are free to set `StageFrame::camera_25d` themselves, and the main loop leaves it untouched.
     camera_25d: Option<Camera25D>,
+    /// Whether the frame loop profiles (WP6.3, contract §9.2; default `true`).
+    profiler: bool,
+    /// Budgets per profiler scope (default [`ProfilerBudgets::default`]).
+    profiler_budgets: ProfilerBudgets,
 }
 
 impl fmt::Debug for AppBuilder {
@@ -108,6 +115,8 @@ impl fmt::Debug for AppBuilder {
             .field("max_frames", &self.max_frames)
             .field("exit_key", &self.exit_key)
             .field("camera_25d", &self.camera_25d)
+            .field("profiler", &self.profiler)
+            .field("profiler_budgets", &self.profiler_budgets)
             .field(
                 "executor_threads",
                 &self
@@ -208,6 +217,31 @@ impl AppBuilder {
     #[must_use]
     pub fn camera25d(mut self, camera: Camera25D) -> Self {
         self.camera_25d = Some(camera);
+        self
+    }
+
+    /// Whether the frame loops of [`AppBuilder::run`] and [`AppBuilder::run_headless_frames`]
+    /// profile every frame (default `true`, contract §9.2, plan 0002 WP6.3, PRD-0002 FR-12:
+    /// available in every build).
+    ///
+    /// When on, the loop measures the scopes of [`crate::adapters::debug::LOOP_SCOPES`] with the
+    /// platform clock, steps the simulation through the profiler's schedule observer (which
+    /// records every system under its subsystem scope and never changes a state hash) and calls
+    /// [`GamePlugin::on_profile`] after [`GamePlugin::on_frame`]. When off, the loop uses plain
+    /// `Simulation::step` and never calls `on_profile`. [`AppBuilder::run_headless`] has no clock
+    /// and never profiles.
+    #[must_use]
+    pub fn profiler(mut self, enabled: bool) -> Self {
+        self.profiler = enabled;
+        self
+    }
+
+    /// Budgets per profiler scope (default [`ProfilerBudgets::default`], the PRD-0002/PRD-0004
+    /// budgets of [`crate::adapters::debug::DEFAULT_BUDGETS`]). A scope over its budget reports
+    /// [`grimoire_debug::ScopeTotal::over_budget`].
+    #[must_use]
+    pub fn profiler_budgets(mut self, budgets: ProfilerBudgets) -> Self {
+        self.profiler_budgets = budgets;
         self
     }
 
@@ -358,6 +392,7 @@ impl AppBuilder {
             record_hashes,
             executor: self.executor,
             camera_25d: self.camera_25d,
+            profiler: self.profiler.then_some(self.profiler_budgets),
             // Physical pixels; a real `Resized` event overwrites this once the window exists
             // (contract §9.3), but `run_headless_frames*` never resizes, so the configured
             // `WindowConfig` size is what mouse-aim sampling sees throughout those runs.
