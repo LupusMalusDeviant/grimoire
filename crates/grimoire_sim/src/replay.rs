@@ -761,10 +761,26 @@ mod tests {
     }
 
     #[test]
-    fn engine_build_without_the_env_var_is_unknown() {
-        // GRIMOIRE_BUILD_HASH is not set for this local test build (engine CI sets it in a
-        // separate step this crate does not depend on).
-        assert_eq!(ENGINE_BUILD, BuildHash::UNKNOWN);
+    fn engine_build_follows_grimoire_build_hash() {
+        // Without GRIMOIRE_BUILD_HASH at compile time (local builds, cargo git checkouts) the
+        // build is unknown; engine CI, the nightly and the release workflow set it to the built
+        // commit (contract §8.1).
+        match option_env!("GRIMOIRE_BUILD_HASH") {
+            None => assert_eq!(ENGINE_BUILD, BuildHash::UNKNOWN),
+            Some(hex) => {
+                assert!(ENGINE_BUILD.is_known());
+                assert_eq!(ENGINE_BUILD.to_hex(), hex);
+            }
+        }
+        // Those workflows set the variable for the whole job, so it is also visible at run time:
+        // a build that missed it at compile time fails here instead of passing silently.
+        if let Ok(hex) = std::env::var("GRIMOIRE_BUILD_HASH") {
+            assert_eq!(
+                ENGINE_BUILD.to_hex(),
+                hex,
+                "GRIMOIRE_BUILD_HASH is set at run time but was not compiled into ENGINE_BUILD"
+            );
+        }
     }
 
     #[test]

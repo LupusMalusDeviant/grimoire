@@ -20,6 +20,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # Contract §8.1: the engine build hash of every replay v2 this build records (ENGINE_BUILD, read
+  # at compile time). Local builds and cargo git checkouts leave it unset and record UNKNOWN.
+  GRIMOIRE_BUILD_HASH: ${{ github.sha }}
 
 defaults:
   run:
