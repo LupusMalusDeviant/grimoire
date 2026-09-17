@@ -5,8 +5,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Grimoire.Formats;
 using Grimoire.Formats.Debug;
+using Grimoire.LiveLink;
 
-namespace Grimoire.LiveLink.Tests;
+namespace Grimoire.Tools.Tests;
 
 /// <summary>
 /// The engine side of one debug-link connection, following contract §13 "Handshake" steps 1 to 8, for
