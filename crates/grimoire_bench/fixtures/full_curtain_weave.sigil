@@ -1,0 +1,96 @@
+sigil 1
+// full_curtain_weave: second of the three units of the benchmark scene "Vollvorhang" (PRD-0004,
+// plan 0002 WP6.6); see full_curtain_flow.sigil for how the benches use them.
+// Compiled by sigilc into full_curtain_weave_unit_v1.bin; grimoire_sigilc's tests/unit_fixtures.rs
+// checks the compiled bytes stay current.
+// Covers: blocks fan, wave; modifiers sine_offset, curve, mirror (folds) stacked with rotate;
+//         transform reverse on a time trigger.
+
+meta {
+  name = "Full Curtain: Weave"
+  difficulty = [hard, benchmark]
+  density = 3000
+}
+
+// Comes back once, so the fan folds over the curtain.
+bullet needle {
+  silhouette = rice
+  palette = enemy.hex_magenta
+  glow = 0.5
+  radius = 0.12u
+  damage = 1
+  flags = [grazeable]
+  transform reverse {
+    when = time 90t
+  }
+}
+
+bullet crest {
+  silhouette = orb
+  palette = enemy.poison_lime
+  glow = 0.4
+  radius = 0.25u
+  damage = 1
+  flags = [env_active, grazeable]
+}
+
+bullet petal {
+  silhouette = diamond
+  palette = enemy.hex_magenta
+  glow = 0.7
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter weave {
+  bullet = needle
+  repeat = forever
+  interval = 6t
+  speed = 0.12u/t
+  block fan {
+    count = 7
+    spread = 60deg
+    center = 270deg
+  }
+  modifier sine_offset {
+    amplitude = 0.5u
+    period = 45t
+    phase = 90deg
+  }
+}
+
+emitter tide {
+  bullet = crest
+  repeat = forever
+  interval = 15t
+  speed = 0.07u/t
+  block wave {
+    count = 11
+    amplitude = 1.2u
+    wavelength = 5u
+    direction = 270deg
+  }
+  modifier curve {
+    turn = 0.1deg/t // circles wider than the arena, so crests still leave it
+  }
+}
+
+emitter bloom {
+  bullet = petal
+  repeat = forever
+  interval = 8t
+  speed = 0.07u/t
+  block fan {
+    count = 3
+    spread = 24deg
+    center = 45deg
+  }
+  modifier mirror {
+    axis = 90deg
+    folds = 4
+  }
+  modifier rotate {
+    rate = 0.05deg/t // turns wider than the arena, so petals still leave it
+  }
+}

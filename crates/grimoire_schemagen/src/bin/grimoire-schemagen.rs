@@ -26,6 +26,11 @@ struct Target {
     rust_output: &'static str,
     /// Path to the generated `docs/formats/*.md` page, relative to the repository root.
     docs_output: &'static str,
+    /// Path to the generated C# source of the tooling suite (Plan-0002 WP9.1), relative to the
+    /// repository root.
+    csharp_output: &'static str,
+    /// C# namespace of that source.
+    csharp_namespace: &'static str,
 }
 
 /// Every schema this tool knows about (contract §12 pack manifest, §13 debug protocol payloads).
@@ -36,11 +41,15 @@ const TARGETS: &[Target] = &[
         schema_path: "schema/debug_protocol_v1.gschema",
         rust_output: "crates/grimoire_debug/src/generated/debug_protocol.rs",
         docs_output: "docs/formats/debug-protocol.md",
+        csharp_output: "tools/src/Grimoire.Formats/Generated/DebugProtocolV1.g.cs",
+        csharp_namespace: "Grimoire.Formats.Debug",
     },
     Target {
         schema_path: "schema/pack_manifest_v1.gschema",
         rust_output: "crates/grimoire_assets/src/generated/pack_manifest.rs",
         docs_output: "docs/formats/pack-manifest.md",
+        csharp_output: "tools/src/Grimoire.Formats/Generated/PackManifestV1.g.cs",
+        csharp_namespace: "Grimoire.Formats.Pack",
     },
 ];
 
@@ -77,9 +86,11 @@ fn generate_one(target: &Target) -> Result<(), String> {
     let schema = grimoire_schemagen::load_schema_file(Path::new(target.schema_path))?;
     let rust_code = grimoire_schemagen::emit_rust::emit(&schema)?;
     let docs = grimoire_schemagen::emit_docs::emit(&schema);
+    let csharp = grimoire_schemagen::emit_csharp::emit(&schema, target.csharp_namespace)?;
 
     write_creating_parent(Path::new(target.rust_output), &rust_code)?;
     write_creating_parent(Path::new(target.docs_output), &docs)?;
+    write_creating_parent(Path::new(target.csharp_output), &csharp)?;
     Ok(())
 }
 

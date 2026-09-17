@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Project ADR-0011 "Schema-Codegen aus einer Quelle" (accepted, option 2e); Plan-0002 WP8.1.
 #
-# Regenerates the Rust payload/manifest types and codecs, and the docs/formats/*.md field tables,
-# that `grimoire_schemagen` derives from schema/*.gschema, then fails if that changes anything
-# against the checked-in files. This is the "generated code is current" gate ADR-0011 requires: a
+# Regenerates the Rust payload/manifest types and codecs, the docs/formats/*.md field tables and
+# the C# codecs of the tooling suite (tools/src/Grimoire.Formats/Generated, Plan-0002 WP9.1) that
+# `grimoire_schemagen` derives from schema/*.gschema, then fails if that changes anything against
+# the checked-in files. `git status --porcelain` also reports a generated file that is not checked
+# in yet. This is the "generated code is current" gate ADR-0011 requires: a
 # schema edit that lands without regenerated output turns this red instead of drifting silently
 # until someone notices the contract and the generated code disagree.
 #
@@ -19,6 +21,7 @@ GENERATED_PATHS=(
   crates/grimoire_debug/src/generated
   crates/grimoire_assets/src/generated
   docs/formats
+  tools/src/Grimoire.Formats/Generated
 )
 
 cargo run -p grimoire_schemagen --locked --quiet -- generate

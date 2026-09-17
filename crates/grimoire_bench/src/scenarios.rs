@@ -986,8 +986,8 @@ const COLLIDE_CLUSTER_HALF: f32 = 3.69;
 /// Collision radius of every bullet.
 const COLLIDE_BULLET_RADIUS: f32 = 0.3;
 /// Layers of the bench: bullets on one, enemies on another (the game owns the real meaning).
-const COLLIDE_BULLET_LAYERS: LayerMask = LayerMask::layer(0);
-const COLLIDE_ENEMY_LAYERS: LayerMask = LayerMask::layer(1);
+pub(crate) const COLLIDE_BULLET_LAYERS: LayerMask = LayerMask::layer(0);
+pub(crate) const COLLIDE_ENEMY_LAYERS: LayerMask = LayerMask::layer(1);
 
 /// Where the bullets of a collision bench fly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1044,6 +1044,37 @@ fn wrap(value: f32, half: f32) -> f32 {
     (value + half).rem_euclid(2.0 * half) - half
 }
 
+/// The [`COLLIDE_ENEMIES`] dummy enemies of the collision benches: a 10 × 10 lattice over the
+/// arena, every fifth a capsule, on their own layer. Shared with the full-curtain collision phase
+/// (`crate::curtain`).
+#[must_use]
+pub fn collide_enemies() -> Vec<Collider> {
+    (0..COLLIDE_ENEMIES)
+        .map(|index| {
+            let center = Vec2::new(
+                (index % 10) as f32 * 6.4 - 28.8,
+                (index / 10) as f32 * 6.4 - 28.8,
+            );
+            let shape = if index % 5 == 0 {
+                Shape::Capsule(Capsule {
+                    a: center - Vec2::new(1.0, 0.0),
+                    b: center + Vec2::new(1.0, 0.0),
+                    radius: 0.9,
+                })
+            } else {
+                Shape::Circle(Circle {
+                    center,
+                    radius: 1.2,
+                })
+            };
+            Collider {
+                shape,
+                layers: COLLIDE_ENEMY_LAYERS,
+            }
+        })
+        .collect()
+}
+
 /// Builds a collision bench: [`COLLIDE_BULLETS`] bullets on hashed positions with hashed
 /// velocities inside the layout's square, and [`COLLIDE_ENEMIES`] enemy entities on a 10 × 10
 /// lattice over the arena (every fifth a capsule), identical in both layouts.
@@ -1070,27 +1101,8 @@ pub fn build_collide(layout: CollideLayout) -> CollideBench {
         })
         .collect();
     let mut world = World::new();
-    for index in 0..COLLIDE_ENEMIES {
-        let center = Vec2::new(
-            (index % 10) as f32 * 6.4 - 28.8,
-            (index / 10) as f32 * 6.4 - 28.8,
-        );
-        let shape = if index % 5 == 0 {
-            Shape::Capsule(Capsule {
-                a: center - Vec2::new(1.0, 0.0),
-                b: center + Vec2::new(1.0, 0.0),
-                radius: 0.9,
-            })
-        } else {
-            Shape::Circle(Circle {
-                center,
-                radius: 1.2,
-            })
-        };
-        world.spawn((Collider {
-            shape,
-            layers: COLLIDE_ENEMY_LAYERS,
-        },));
+    for collider in collide_enemies() {
+        world.spawn((collider,));
     }
     CollideBench {
         half,

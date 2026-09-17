@@ -1,0 +1,13 @@
+<Project>
+  <!-- Central package management: every third-party package of the tooling suite is pinned to an
+       exact version here (PO decision P-13, like [workspace.dependencies] in the engine), and every
+       project's packages.lock.json records the resolved graph for locked-mode restores in CI.
+       The libraries have no third-party dependencies; xunit.v3 runs the tests on
+       Microsoft.Testing.Platform, which global.json selects for dotnet test. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="xunit.v3" Version="4.0.0" />
+  </ItemGroup>
+</Project>

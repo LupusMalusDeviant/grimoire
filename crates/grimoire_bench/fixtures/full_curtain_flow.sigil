@@ -1,0 +1,96 @@
+sigil 1
+// full_curtain_flow: first of the three units of the benchmark scene "Vollvorhang" (PRD-0004,
+// plan 0002 WP6.6), with full_curtain_weave.sigil and full_curtain_shatter.sigil next to it. The
+// benches in crates/grimoire_bench/src/curtain.rs spawn every emitter of the three units at three
+// origins and hold about 10,000 live bullets in a steady state.
+// Compiled by sigilc into full_curtain_flow_unit_v1.bin; grimoire_sigilc's tests/unit_fixtures.rs
+// checks the compiled bytes stay current.
+// Covers: blocks ring, spiral, line; modifiers accelerate, rotate, speed_curve (smooth);
+//         transform change_type on a time trigger.
+
+meta {
+  name = "Full Curtain: Flow"
+  difficulty = [hard, benchmark]
+  density = 3000
+}
+
+bullet ember {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.8
+  radius = 0.22u
+  damage = 1
+  flags = [grazeable]
+}
+
+// Turns into an ember after four seconds, so change_type fires somewhere every tick.
+bullet grain {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 1.0
+  radius = 0.14u
+  damage = 1
+  flags = [grazeable]
+  transform change_type {
+    when = time 240t
+    to = ember
+  }
+}
+
+bullet spike {
+  silhouette = diamond
+  palette = enemy.hex_magenta
+  glow = 0.7
+  radius = 0.16u
+  damage = 1
+  flags = [grazeable, reflectable]
+}
+
+emitter rings {
+  bullet = ember
+  repeat = forever
+  interval = 20t
+  speed = 0.06u/t
+  block ring {
+    count = 24
+  }
+  modifier accelerate {
+    rate = 0.001u/t2
+    max_speed = 0.2u/t
+  }
+}
+
+emitter spirals {
+  bullet = grain
+  repeat = forever
+  interval = 2t
+  speed = 0.1u/t
+  block spiral {
+    arms = 5
+    step = 7deg
+    start = 90deg
+  }
+  modifier rotate {
+    rate = 0.2deg/t
+  }
+}
+
+emitter rail {
+  bullet = spike
+  repeat = forever
+  interval = 12t
+  speed = 0.12u/t
+  block line {
+    count = 9
+    spacing = 0.6u
+    direction = 0deg
+  }
+  modifier speed_curve {
+    keys = [
+      (at = 0t, mul = 1.0),
+      (at = 40t, mul = 0.3),
+      (at = 90t, mul = 1.5),
+    ]
+    interp = smooth
+  }
+}

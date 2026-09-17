@@ -24,6 +24,7 @@
 //! [`u64_from_hex16`] are that one rule as a small, reusable primitive; [`schema::hash_to_json`]
 //! and [`schema::hash_from_json`] wrap them with a [`schema::SchemaError`] for the schema types.
 
+pub mod curtain;
 pub mod gate;
 pub mod scenarios;
 pub mod schema;

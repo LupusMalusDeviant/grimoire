@@ -120,12 +120,26 @@ Cargo-Kante) sowie nach `docs/formats/` (Projekt-ADR-0011, Engine-ADR-0008 Nacht
   Handshake liest es `ENGINE_VERSION` und `ENGINE_BUILD` aus `grimoire_sim` (§13 „Handshake“ Schritt 7).
 - **`grimoire_schemagen`** (additiv, *Nachtrag WP8.1 zu Engine-ADR-0008 — vom PO freigegeben am 2026-09-16, V-20*):
   Build-Zeit-Schema-Compiler (Projekt-ADR-0011, Option 2e), der `schema/*.gschema` liest und Rust-Codec
-  sowie `docs/formats/*.md`-Feldtabellen für `grimoire_debug` und `grimoire_assets` erzeugt. Er ist
+  sowie `docs/formats/*.md`-Feldtabellen für `grimoire_debug` und `grimoire_assets` erzeugt, seit WP9.1 außerdem
+  die C#-Codecs der Werkzeug-Suite (`tools/src/Grimoire.Formats/Generated/`, Emitter `emit_csharp` aus derselben
+  Zwischendarstellung, wie Projekt-ADR-0011 es vorsieht). Er ist
   bewusst dependency-frei (keine `grimoire_*`-Kante, auch keine Dev-Kante) und trägt keine `clippy.toml`,
   weil nichts, was er erzeugt, zur Laufzeit läuft. Sein Ausgang landet als eingecheckter, generierter
   Quelltext in den besitzenden Crates, nicht über eine Cargo-Kante.
 - **`tools/`** (C#-Suite, P-1): kein Cargo-Mitglied und keine Cargo-Kante. Die Suite hängt nur über
   Formatdokumente (`docs/formats/`), Golden-Fixtures und die JSON-Ausgaben von `sigilc` an der Engine.
+  *Umsetzung (WP9.1), Klarstellung:* Solution `tools/Grimoire.Tools.slnx` mit `Grimoire.Formats` (Codecs aus
+  `grimoire_schemagen`, Debug-Protokoll-Frames, Pack-v1-Leser und -Schreiber) und `Grimoire.LiveLink`
+  (Werkzeugseite von §13). Dort gelten sinngemäß die Regeln aus §2: Code und Kommentare auf Englisch (Regel 1),
+  jede öffentliche Einheit dokumentiert und Warnungen als Fehler (Regel 2), Drittpakete nur zentral und exakt
+  gepinnt in `tools/Directory.Packages.props` mit Lock-Dateien (Regel 4), Fehleingaben werfen nur die
+  Format-Ausnahme der Bibliothek (`WireFormatException`, `PackFormatException`) und prüfen Längen vor der
+  Allokation (Regel 9), Konformanz nur gegen die eingecheckten Rust-Fixtures, die die Testprojekte beim Bauen aus
+  `crates/` kopieren (Regel 10). Das .NET-SDK pinnt `tools/global.json` (P-13). Die Engine-Version für den
+  Handshake liest der Build aus der Workspace-Version in `Cargo.toml`, den Build-Hash aus `GRIMOIRE_BUILD_HASH`.
+  CI: Workflow `tools.yml` (`dotnet build/test` auf Windows, Linux und macOS mit Pfadfiltern und NuGet-Cache,
+  Socket-Tests mit `GRIMOIRE_SOCKET_TESTS=1`); der Drift-Check von `grimoire_schemagen` umfasst die C#-Codecs,
+  das Standalone-Gate `tools/**` (siehe oben).
 - Abbildungen zwischen `grimoire_sigil`, `grimoire_collide`, `grimoire_render`, `grimoire_assets` und
   `grimoire_debug` liegen ausschließlich in der Fassade (Adapter-Tabelle in §9.1).
 - Neue Kanten nur per Crate-Map-ADR und gleichzeitiger Änderung dieser Tabelle (§2 Regel 15). Ein Kanten-Check
@@ -3606,7 +3620,8 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
     stammen aus unabhängigen Nachbildungen, nicht aus `grimoire_assets`. Ein Test prüft Datei gleich Herleitung, die
     gelesenen Felder und die byte-gleiche Rundreise mit `PackWriter`.
   - Grenzfälle je `PackError`-Variante
-  - die Fixture dient auch den C#-Konformanztests (Ort nach P-1)
+  - die Fixture dient auch den C#-Konformanztests (`tools/tests/Grimoire.Formats.Tests`, WP9.1: Leser, Rundreise
+    mit dem C#-`PackWriter` byte-gleich, beide Pack-Fixtures)
 - Neue Drittabhängigkeit `sha2` über `[workspace.dependencies]` (§2 Regel 4), ohne Default-Features außer `std`;
   sie dient der Prüfsumme je Eintrag und `content_hash`.
 
@@ -3855,7 +3870,9 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
   - Überlänge schließt die Verbindung
   - Müll-Bytes führen zu keinem Panic
 - **Weitere Prüfungen:** Proptest über `FrameDecoder::push` und `Message::from_frame` mit beliebigen Bytes.
-  Byteweise Golden-Fixtures je Nachricht unter `tests/fixtures/debug_v1/` (auch für C#-Konformanz).
+  Byteweise Golden-Fixtures je Nachricht unter `tests/fixtures/debug_v1/` (auch für C#-Konformanz; WP9.1 prüft
+  in `tools/tests` zusätzlich die Frame-Literale aus `tests/handshake_golden.rs`, und der `Hello` des C#-Clients
+  ist byte-gleich mit `HELLO_REQUEST_FRAME_BYTES`).
   - Anfrage/Antwort-Fixtures zum Handshake: `Hello` mit `protocol_version = 2` und zusätzlichen Bytes ergibt
     `VersionMismatch`; v1-`Hello` mit Rest-Bytes ergibt `Malformed` und Schließen; abweichende Engine-Version und
     verschiedene bekannte Build-Hashes ergeben `VersionMismatch` (Versionskonflikt, WP8.4); `unknown` wird

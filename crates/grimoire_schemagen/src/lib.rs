@@ -9,8 +9,9 @@
 //! an [`ir::Schema`] into their own output — a checked-in Rust module with `encode`/`decode`
 //! functions that follow contract §2 rule 9, and a Markdown field-table page for `docs/formats/`
 //! — without looking at the source text again. The [`ir`] module is deliberately the only thing
-//! either emitter depends on, so a third emitter (a C# one, Plan-0002 WP9.1) can be added next to
-//! these two without changing the parser or either existing emitter.
+//! either emitter depends on, so a third emitter can be added next to these two without changing
+//! the parser or either existing emitter; [`emit_csharp`] (Plan-0002 WP9.1) is that third emitter,
+//! writing the codecs of the C# tooling suite under `tools/`.
 //!
 //! # Where this fits
 //!
@@ -38,6 +39,7 @@
 //! debug protocol's `Message` enum, its `to_frame`/`from_frame` dispatch and the handshake state
 //! machine on top of the types this crate generates is Plan-0002 WP8.2, not this crate.
 
+pub mod emit_csharp;
 pub mod emit_docs;
 pub mod emit_rust;
 pub mod ir;

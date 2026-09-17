@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Conformance of Grimoire.Formats against the engine's own golden fixtures (Plan 0002 WP9.1):
+       the debug protocol payload and frame fixtures of grimoire_debug and the pack v1 fixtures of
+       grimoire_assets, copied from the Rust crates at build time. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <RootNamespace>Grimoire.Formats.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Grimoire.Formats/Grimoire.Formats.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/RustFixtures.cs" Link="Shared/RustFixtures.cs" />
+    <None Include="../../../Cargo.toml" Link="fixtures/Cargo.toml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_debug/tests/fixtures/debug_v1/*.bin" LinkBase="fixtures/debug_v1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_debug/tests/handshake_golden.rs" Link="fixtures/handshake_golden.rs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_assets/tests/fixtures/*.grimpack" LinkBase="fixtures/pack" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_assets/tests/fixtures/*.hex" LinkBase="fixtures/pack" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
