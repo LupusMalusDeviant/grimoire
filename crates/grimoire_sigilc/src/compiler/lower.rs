@@ -17,19 +17,30 @@
 //! other angle stored by this module is a plain, IEEE-754-exact degrees-to-radians conversion
 //! (`grimoire_core::math`'s own docs: basic arithmetic is already bit-identical across platforms
 //! without `dmath`), so no other call site needs it.
+//!
+//! Plan 0002 WP5.2: bullets with a `behaviour` field or `transform` members are lowered into the
+//! `Transforms` section (kind 4, `docs/formats/sigil.md` §10.9). A `burst` transform's nested
+//! `block` becomes one more `Programs` record, appended after every emitter's own program; an
+//! `event <name>` trigger stores `grimoire_sigil::EventId::from_name(name)`, the same id a game
+//! raises with an `EventRequest`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use grimoire_core::StableHasher;
 use grimoire_core::math::dmath;
 
+use grimoire_sigil::EventId;
+
 use crate::DeriveUnitIdError;
-use crate::compiler::model::{EmitterView, FieldValue, Located};
+use crate::compiler::model::{
+    BlockView, BulletView, EmitterView, FieldValue, Located, ModifierView, TransformView,
+};
 use crate::compiler::resolve::ResolvedUnit;
 
 const SECTION_BULLET_TYPES: u32 = 1;
 const SECTION_PROGRAMS: u32 = 2;
 const SECTION_EMITTERS: u32 = 3;
+const SECTION_TRANSFORMS: u32 = 4;
 const SECTION_CURVES: u32 = 5;
 const SECTION_BEHAVIOR_REFS: u32 = 6;
 const SECTION_ENTRY_LEN: u64 = 24;
@@ -62,6 +73,15 @@ const MODIFIER_ROTATE: u8 = 3;
 const MODIFIER_MIRROR: u8 = 4;
 const MODIFIER_SPEED_CURVE: u8 = 5;
 const MODIFIER_CURVE: u8 = 6;
+
+const TRANSFORM_REVERSE: u8 = 1;
+const TRANSFORM_CHANGE_TYPE: u8 = 2;
+const TRANSFORM_BURST: u8 = 3;
+const TRANSFORM_BECOME_EMITTER: u8 = 4;
+
+const TRIGGER_TIME: u8 = 1;
+const TRIGGER_DISTANCE: u8 = 2;
+const TRIGGER_EVENT: u8 = 3;
 
 /// Lowers an already-validated [`ResolvedUnit`] to canonical v1 bytes.
 ///
@@ -101,8 +121,12 @@ pub(crate) fn lower(
     let mut programs = Vec::new();
     let mut emitters = Vec::new();
     for emitter in &resolved.emitters {
-        let program_index = if emitter.block.is_some() {
-            programs.push(encode_program(emitter, &mut curve_records));
+        let program_index = if let Some(block) = &emitter.block {
+            programs.push(encode_program(
+                block,
+                &emitter.modifiers,
+                &mut curve_records,
+            ));
             Some((programs.len() - 1) as u16)
         } else {
             None
@@ -110,6 +134,31 @@ pub(crate) fn lower(
         emitters.push(encode_emitter(emitter, &bullet_index, program_index));
     }
     let _ = &mut curves; // kept for readability of the two-step curve collection above.
+
+    let emitter_index: BTreeMap<&str, u16> = resolved
+        .emitters
+        .iter()
+        .enumerate()
+        .map(|(i, view)| (view.name.as_str(), i as u16))
+        .collect();
+    let mut scripts = Vec::new();
+    for (index, (file, bullet)) in resolved.bullets.iter().enumerate() {
+        let targets = Targets {
+            file,
+            bullet_index: &bullet_index,
+            emitter_index: &emitter_index,
+        };
+        if let Some(script) = encode_script(
+            index as u16,
+            bullet,
+            behavior_ids,
+            &targets,
+            &mut programs,
+            &mut curve_records,
+        ) {
+            scripts.push(script);
+        }
+    }
 
     let behavior_refs: BTreeSet<u32> = resolved
         .bullets
@@ -125,6 +174,9 @@ pub(crate) fn lower(
         sections.push((SECTION_PROGRAMS, encode_programs_section(&programs)));
     }
     sections.push((SECTION_EMITTERS, encode_emitters_section(&emitters)));
+    if !scripts.is_empty() {
+        sections.push((SECTION_TRANSFORMS, encode_transforms_section(&scripts)));
+    }
     if !curve_records.is_empty() {
         sections.push((SECTION_CURVES, encode_curves_section(&curve_records)));
     }
@@ -234,12 +286,12 @@ fn count_of(located: Option<&Located<FieldValue>>) -> u16 {
 /// `seed_hash`) followed by its modifier stack. `curve_records` accumulates every `speed_curve`
 /// modifier's keyframes so `lower` can build the `Curves` section afterwards and patch each such
 /// modifier's `extra` field to the resulting curve index.
-fn encode_program(emitter: &EmitterView, curve_records: &mut Vec<Vec<(u32, f32)>>) -> Vec<u8> {
+fn encode_program(
+    block: &BlockView,
+    modifiers: &[ModifierView],
+    curve_records: &mut Vec<Vec<(u32, f32)>>,
+) -> Vec<u8> {
     let mut out = Vec::new();
-    let block = emitter
-        .block
-        .as_ref()
-        .expect("caller only calls this when a block is present");
     let fields = &block.fields;
     let (kind, count, mut params, seed_hash): (u8, u16, [f32; 6], u32) = match block.kind.as_str() {
         "ring" => (
@@ -354,11 +406,153 @@ fn encode_program(emitter: &EmitterView, curve_records: &mut Vec<Vec<(u32, f32)>
     }
     out.extend_from_slice(&seed_hash.to_le_bytes());
 
-    out.extend_from_slice(&(emitter.modifiers.len() as u16).to_le_bytes());
-    for modifier in &emitter.modifiers {
+    out.extend_from_slice(&(modifiers.len() as u16).to_le_bytes());
+    for modifier in modifiers {
         encode_modifier(modifier, curve_records, &mut out);
     }
     out
+}
+
+/// Where a transform's names resolve: bullets of the transforming bullet's own `file`, emitters of
+/// the compiled entry file.
+struct Targets<'a> {
+    file: &'a str,
+    bullet_index: &'a BTreeMap<(String, String), u16>,
+    emitter_index: &'a BTreeMap<&'a str, u16>,
+}
+
+/// One `Transforms`-section record's bytes (`docs/formats/sigil.md` §10.9) for the bullet type at
+/// `bullet_type`, or `None` if it has neither a resolvable `behaviour` nor any transform. A
+/// `burst`'s block is appended to `programs`.
+fn encode_script(
+    bullet_type: u16,
+    bullet: &BulletView,
+    behavior_ids: &BTreeMap<String, u32>,
+    targets: &Targets<'_>,
+    programs: &mut Vec<Vec<u8>>,
+    curve_records: &mut Vec<Vec<(u32, f32)>>,
+) -> Option<Vec<u8>> {
+    let behavior = match bullet.fields.get("behaviour").map(|l| &l.value) {
+        Some(FieldValue::Ident(name)) => behavior_ids.get(name).copied(),
+        _ => None,
+    };
+    let transforms: Vec<Vec<u8>> = bullet
+        .transforms
+        .iter()
+        .map(|transform| encode_transform(transform, targets, programs, curve_records))
+        .collect();
+    if behavior.is_none() && transforms.is_empty() {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&bullet_type.to_le_bytes());
+    out.push(u8::from(behavior.is_some()));
+    out.push(0); // reserved
+    out.extend_from_slice(&behavior.unwrap_or(0).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // param_count: no source syntax for parameters yet
+    out.extend_from_slice(&(transforms.len() as u16).to_le_bytes());
+    for transform in &transforms {
+        out.extend_from_slice(transform);
+    }
+    Some(out)
+}
+
+/// One 24-byte transform record (`docs/formats/sigil.md` §10.9). Every field the kind and trigger
+/// do not use is written as zero (`program` as `0xFFFF`), the canonical form the decoder demands.
+fn encode_transform(
+    transform: &TransformView,
+    targets: &Targets<'_>,
+    programs: &mut Vec<Vec<u8>>,
+    curve_records: &mut Vec<Vec<(u32, f32)>>,
+) -> Vec<u8> {
+    let (trigger, at_ticks, distance, event) = match transform.fields.get("when").map(|l| &l.value)
+    {
+        Some(FieldValue::Trigger(keyword, argument)) => match (keyword.as_str(), argument.as_ref())
+        {
+            ("time", FieldValue::Quantity(value, _)) => {
+                (TRIGGER_TIME, value.round() as u32, 0.0, 0)
+            }
+            ("distance", FieldValue::Quantity(value, _)) => {
+                (TRIGGER_DISTANCE, 0, canonical_zero(*value as f32), 0)
+            }
+            ("event", FieldValue::Ident(name)) => {
+                (TRIGGER_EVENT, 0, 0.0, EventId::from_name(name).0)
+            }
+            ("event", FieldValue::Ref(segments)) => (
+                TRIGGER_EVENT,
+                0,
+                0.0,
+                EventId::from_name(&segments.join(".")).0,
+            ),
+            // Unreachable once `validate` has run; encoded as an inert time trigger.
+            _ => (TRIGGER_TIME, 0, 0.0, 0),
+        },
+        _ => (TRIGGER_TIME, 0, 0.0, 0),
+    };
+    let ident = |field: &str| match transform.fields.get(field).map(|l| &l.value) {
+        Some(FieldValue::Ident(name)) => Some(name.clone()),
+        _ => None,
+    };
+    let bullet_target = |name: Option<String>| {
+        name.and_then(|name| {
+            targets
+                .bullet_index
+                .get(&(targets.file.to_string(), name))
+                .copied()
+        })
+        .unwrap_or(0)
+    };
+    let (kind, target, program, speed) = match transform.kind.as_str() {
+        "change_type" => (
+            TRANSFORM_CHANGE_TYPE,
+            bullet_target(ident("to")),
+            NO_PROGRAM,
+            0.0,
+        ),
+        "burst" => {
+            let program = match &transform.block {
+                Some(block) => {
+                    programs.push(encode_program(block, &[], curve_records));
+                    (programs.len() - 1) as u16
+                }
+                None => NO_PROGRAM, // unreachable once `validate` has run.
+            };
+            (
+                TRANSFORM_BURST,
+                bullet_target(ident("bullet")),
+                program,
+                canonical_zero(unit_of(transform.fields.get("speed"))),
+            )
+        }
+        "become_emitter" => (
+            TRANSFORM_BECOME_EMITTER,
+            ident("emitter")
+                .and_then(|name| targets.emitter_index.get(name.as_str()).copied())
+                .unwrap_or(0),
+            NO_PROGRAM,
+            0.0,
+        ),
+        // `reverse`, and every other kind (unreachable once `validate` has run).
+        _ => (TRANSFORM_REVERSE, 0, NO_PROGRAM, 0.0),
+    };
+
+    let mut out = Vec::with_capacity(24);
+    out.push(kind);
+    out.push(trigger);
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    out.extend_from_slice(&at_ticks.to_le_bytes());
+    out.extend_from_slice(&distance.to_le_bytes());
+    out.extend_from_slice(&event.to_le_bytes());
+    out.extend_from_slice(&target.to_le_bytes());
+    out.extend_from_slice(&program.to_le_bytes());
+    out.extend_from_slice(&speed.to_le_bytes());
+    out
+}
+
+/// Maps `-0.0` to `+0.0` (contract §11.1: the decoder rejects the non-canonical encoding).
+fn canonical_zero(value: f32) -> f32 {
+    if value == 0.0 { 0.0 } else { value }
 }
 
 fn encode_modifier(
@@ -541,6 +735,15 @@ fn encode_programs_section(programs: &[Vec<u8>]) -> Vec<u8> {
     out.extend_from_slice(&(programs.len() as u16).to_le_bytes());
     for program in programs {
         out.extend_from_slice(program);
+    }
+    out
+}
+
+fn encode_transforms_section(scripts: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(scripts.len() as u16).to_le_bytes());
+    for script in scripts {
+        out.extend_from_slice(script);
     }
     out
 }
