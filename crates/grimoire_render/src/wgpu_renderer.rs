@@ -10,6 +10,7 @@ use grimoire_platform::PlatformWindow;
 
 use crate::bullet_lights::derive_bullet_lights;
 use crate::bullet_pass::{BulletPass, BulletView, bullet_view};
+use crate::gpu_timer::GpuTimer;
 use crate::mesh_pass::MeshPass;
 use crate::pass_graph::{self, PassLog};
 use crate::sprite_pass::SpritePass;
@@ -64,6 +65,9 @@ pub struct WgpuRenderer {
     /// threaded into [`crate::StageStats::point_lights_over_budget`] on every `render_stage` call,
     /// including the zero-size-skip paths (see `render_stage_impl`).
     light_budget: LightBudget,
+    /// GPU pass timing through timestamp queries (plan 0002 WP6.3); disabled when the device has
+    /// none. Feeds [`StageStats::gpu_time`].
+    gpu_timer: GpuTimer,
 }
 
 impl std::fmt::Debug for WgpuRenderer {
@@ -185,6 +189,7 @@ impl WgpuRenderer {
         .map_err(map_gpu_error)?;
         let bullet_pass =
             BulletPass::new(&context, surface.view_format()).map_err(map_gpu_error)?;
+        let gpu_timer = GpuTimer::new(&context);
         Ok(Self {
             context,
             target: Target::Window(surface),
@@ -197,6 +202,7 @@ impl WgpuRenderer {
             height,
             resize_error: None,
             light_budget: config.light_budget,
+            gpu_timer,
         })
     }
 
@@ -254,6 +260,7 @@ impl WgpuRenderer {
         )
         .map_err(map_gpu_error)?;
         let bullet_pass = BulletPass::new(&context, target.format()).map_err(map_gpu_error)?;
+        let gpu_timer = GpuTimer::new(&context);
         Ok(Self {
             context,
             target: Target::Offscreen(target),
@@ -266,6 +273,7 @@ impl WgpuRenderer {
             height,
             resize_error: None,
             light_budget: config.light_budget,
+            gpu_timer,
         })
     }
 
@@ -295,6 +303,12 @@ impl WgpuRenderer {
     #[must_use]
     pub fn last_stage_pass_order(&self) -> &[RenderLayer] {
         self.last_pass_order.layers()
+    }
+
+    /// Whether this renderer measures GPU pass time (its device has timestamp queries).
+    #[cfg(test)]
+    pub(crate) fn gpu_timer_enabled(&self) -> bool {
+        self.gpu_timer.is_enabled()
     }
 
     /// Single greppable line identifying the selected adapter for CI logs; see
@@ -404,6 +418,8 @@ impl WgpuRenderer {
 
         let context = &self.context;
         let sprite_pass = &mut self.sprites;
+        // `None` outside a measured `render_stage` frame, including the P0 `render` path.
+        let timestamps = self.gpu_timer.next_pass();
         context
             .capture_errors(|device| {
                 let count =
@@ -425,7 +441,7 @@ impl WgpuRenderer {
                             },
                         })],
                         depth_stencil_attachment: None,
-                        timestamp_writes: None,
+                        timestamp_writes: timestamps.as_ref().map(|stamps| stamps.render()),
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
@@ -451,6 +467,7 @@ impl WgpuRenderer {
         }
         let context = &self.context;
         let bullet_pass = &mut self.bullet_pass;
+        let gpu_timer = &mut self.gpu_timer;
         let viewport = (self.width, self.height);
         context
             .capture_errors(|device| {
@@ -458,6 +475,9 @@ impl WgpuRenderer {
                 if count == 0 {
                     return Ok::<_, GpuError>(0);
                 }
+                // Taken only once the pass is certain to be recorded: every handed-out pair is
+                // resolved at the end of the frame.
+                let timestamps = gpu_timer.next_pass();
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("grimoire bullet encoder"),
                 });
@@ -474,7 +494,7 @@ impl WgpuRenderer {
                             },
                         })],
                         depth_stencil_attachment: None,
-                        timestamp_writes: None,
+                        timestamp_writes: timestamps.as_ref().map(|stamps| stamps.render()),
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
@@ -668,6 +688,9 @@ impl WgpuRenderer {
         let mut cluster_stats = None;
         let mut sprite_count = 0;
         let mut draw_calls = 0;
+        // Plan 0002 WP6.3: picks up an earlier frame's completed GPU time without waiting, then
+        // times this frame's passes if no readback is pending.
+        self.gpu_timer.begin_frame(&self.context);
         let pass_order = pass_graph::run(|layer| -> Result<(), GpuError> {
             match layer {
                 RenderLayer::World => {
@@ -688,6 +711,7 @@ impl WgpuRenderer {
                         &frame.shadow_config,
                         &frame.blob_shadows,
                         &frame.joint_matrices,
+                        &mut self.gpu_timer,
                     )?;
                     cluster_stats = Some(mesh_pass_stats.cluster);
                     draw_calls += mesh_pass_stats.draw_calls;
@@ -736,6 +760,7 @@ impl WgpuRenderer {
         })
         .map_err(map_gpu_error)?;
         self.last_pass_order = pass_order;
+        self.gpu_timer.end_frame(&self.context);
 
         if let Some(acquired) = surface_frame {
             acquired.present(self.context.queue());
@@ -746,14 +771,16 @@ impl WgpuRenderer {
             draw_calls,
             cpu_time: start.elapsed(),
         };
-        Ok(stage::stage_stats_from_base(
+        let mut stats = stage::stage_stats_from_base(
             base_stats,
             frame,
             Some(&|handle: MeshHandle| self.mesh_pass.is_registered(handle)),
             Some(self.light_budget.light_count()),
             cluster_stats,
             bullet_lights.as_slice(),
-        ))
+        );
+        stats.gpu_time = self.gpu_timer.last();
+        Ok(stats)
     }
 
     /// Measurement hook for plan 0002 OF-3.5 (WP2.5): renders exactly like

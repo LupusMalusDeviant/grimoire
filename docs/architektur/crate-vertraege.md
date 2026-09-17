@@ -1225,6 +1225,36 @@ impl WgpuRenderer {
   sind vorläufig (P-11); bindend ist nur der Weg über `point_light_from_bullet`. Ein Test belegt am Quelltext, dass
   außerhalb von Testmodulen nur diese Funktion `is_bullet_light` setzt.
 
+**GPU-Zeit über Timestamp-Queries (Ergänzung P1, Plan 0002 WP6.3)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Additiv: ein neues Feld in `StageStats` (bereits
+`#[non_exhaustive]`), keine neue Pflichtmethode, kein geändertes `repr(C)`-Layout, kein Referenzbild ändert sich.
+
+```rust
+// StageStats (§6 oben) wächst additiv um:
+pub gpu_time: Option<Duration>,   // Summe der Pass-Dauern eines kürzlich gezeichneten Frames; None ohne Messung
+// grimoire_gpu (frei gestaltbar, §6 oben): GpuContext::supports_timestamp_queries() -> bool
+```
+
+- **Messung:** `WgpuRenderer::render_stage` lässt jeden Pass des Frames (Schattenkarte, Cluster-Compute, Mesh-Pass,
+  Welt-, Marker- und Debug-Sprites, Bullets; höchstens 8 je Frame) Zeitstempel an seinem Anfang und Ende schreiben.
+  Nach dem letzten Pass löst ein zusätzlicher Befehlspuffer die Abfragen auf und kopiert sie in einen abbildbaren
+  Puffer. Das Ergebnis holt ein späterer `render_stage`-Aufruf ohne Warten ab (`PollType::Poll`, dieselbe Regel wie
+  für die Cluster-Zähler nach Engine-ADR-0015). `gpu_time` ist deshalb die Summe der Pass-Dauern der zuletzt
+  abgeschlossenen Messung, in der Regel ein bis drei Frames alt. Solange eine Abfrage aussteht, schreiben die
+  folgenden Frames keine Zeitstempel; der letzte Wert bleibt gemeldet.
+- **Umfang:** nur die Ausführung der Render- und Compute-Pässe. Uploads (`write_buffer`), Leerlauf zwischen zwei
+  Einreichungen, die Auflösung selbst und die Präsentation zählen nicht.
+- **`None`:** Gerät ohne `wgpu::Features::TIMESTAMP_QUERY`, vor der ersten abgeschlossenen Messung, bei einem wegen
+  Nullgröße übersprungenen Frame und immer bei `NullRenderer` sowie beim bereitgestellten `Renderer::render_stage`.
+  Die Fassade verbucht dann einen gekennzeichneten Schätzwert statt einer gemessenen Null (§9.7).
+- **`grimoire_gpu`:** Jeder `GpuContext` fordert `TIMESTAMP_QUERY` zusätzlich zu seinen Pflicht-Features an, wenn
+  der Adapter es anbietet. Laut Adapter-Bericht der CI bieten Windows/WARP und Linux/lavapipe es an, der macOS-Runner
+  (Apple Paravirtual device) nicht; dort läuft der Fall `None`. Kein bildgebender Pfad hängt von dem Feature ab.
+- **Test:** `gpu_timer.rs` rendert offscreen, bis eine Messung vorliegt (höchstens 2.000 Frames), prüft die
+  Plausibilität und den Fall `None` bei Nullgröße; auf einem Adapter ohne Timestamp-Queries prüft er, dass
+  `gpu_time` `None` bleibt. Die Referenzszenen (WP2.8) bleiben bitgleich.
+
 ## 7. `grimoire_ecs`
 
 ```rust
@@ -2268,6 +2298,71 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 - **Determinismus:** Ohne angewendeten Swap sind die Hashes mit und ohne Link identisch (Test mit
   `InProcessTransport`). Der Swap wirkt ab dem angegebenen Tick (Headless-E2E, WP8.4/WP8.5).
 
+**Profiler-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP6.3)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe). Die mit „Klarstellung“ markierten Punkte präzisieren den
+freigegebenen Text oben und sind Stufe K.* `AppBuilder::profiler(bool)` und `GamePlugin::on_profile` (§9.2) sind
+wie festgelegt umgesetzt; `overlay_key` und das Zeichnen des Overlays folgen mit WP6.4.
+
+```rust
+// grimoire::adapters::debug (§9.1, Zeile „debug“)
+pub const SCOPE_FRAME: &str = "frame";     pub const SCOPE_SIM: &str = "sim";       pub const SCOPE_EXTRACT: &str = "extract";
+pub const SCOPE_RENDER: &str = "render";   pub const SCOPE_GPU: &str = "gpu";       pub const SCOPE_APP: &str = "app";
+pub const LOOP_SCOPES: [&str; 5];          // frame, sim, extract, render, gpu: ScopeIds 0 bis 4
+pub const DEFAULT_BUDGETS: [(&str, Duration); 8];
+                                           // frame 16,67 ms, sim 4 ms, sigil 1 ms, collide 1,5 ms, extract 0,5 ms,
+                                           // render 3 ms, gpu 8 ms, audio 1 ms (PRD-0002, PRD-0004)
+pub fn subsystem_scope(system_name: &str) -> &str;
+pub struct ProfilerBudgets;                // Default (= DEFAULT_BUDGETS), none(), set(&str, Option<Duration>) -> &mut Self,
+                                           // with(&str, Option<Duration>) -> Self, get(&str) -> Option<Duration>,
+                                           // iter() -> impl Iterator<Item = (&str, Duration)>; Clone, Eq, Debug
+pub struct Profiler;                       // Default, new(ProfilerBudgets), begin_frame(u64), scope_id(&str) -> Option<ScopeId>,
+                                           // record(&str, Duration), record_estimate(&str, Duration),
+                                           // measure<T>(&dyn Clock, &str, impl FnOnce() -> T) -> T,
+                                           // observer<'a>(&'a mut self, &'a dyn Clock) -> ProfilerObserver<'a>,
+                                           // add_counter(&'static str, u64), record_stage_stats(&StageStats, render_time: Duration),
+                                           // set_budget(&str, Option<Duration>), budget(&str) -> Option<Duration>,
+                                           // profile() -> &FrameProfile, registry() -> &ScopeRegistry; Clone, Debug
+pub struct ProfilerObserver<'a>;           // impl SystemObserver; Debug; nur von Profiler::observer erzeugt
+pub fn stats_frame(stats: &FrameStats, content: Option<ContentEpoch>) -> StatsFrame;
+// AppBuilder zusätzlich: profiler_budgets(ProfilerBudgets) -> Self (Default ProfilerBudgets::default())
+```
+
+- **Scopes der Hauptschleife:** `sim` ist die Summe aller `step_observed`-Aufrufe des Frames. `extract` umfasst
+  `StageFrame::clear`, alle `extract` und alle `extract_stage`. `render` misst den `render_stage`-Aufruf einschließlich
+  Einreichung und Präsentation. `frame` misst vom Uhrzugriff am Frame-Anfang bis nach dem letzten `on_frame`. Jeder
+  dieser Scopes wird genau einmal je Frame verbucht, auch mit 0 Ticks (dann `sim` = 0), damit Balken und Export in
+  jedem Frame vollständig sind. Ein Frame, dessen Rendern mit einem Fehler endet, liefert kein `on_profile`.
+- **Klarstellung — feste Scope-IDs:** „in Reihenfolge des ersten Auftretens“ gilt für die Subsystem-Scopes.
+  `Profiler::new` registriert die fünf Scopes aus `LOOP_SCOPES` vorab in dieser Reihenfolge; sie tragen dadurch in
+  jedem Lauf die `ScopeId`s 0 bis 4, unabhängig davon, ob der erste Frame Ticks hat. `FrameProfile::scopes` bleibt in
+  Reihenfolge der ersten Aufzeichnung im Frame (Subsystem-Scopes eines Ticks also vor `sim`).
+- **Klarstellung — Systemnamen:** Ein leeres Präfix (`.x`) und ein Präfix gleich einem der `LOOP_SCOPES` (`sim.x`)
+  zählen zu `app`. Sonst könnte ein System einen Scope aufblähen, den die Schleife selbst misst.
+- **Parallele Stufen:** Die Anwendung jedes Puffers wird unter dem Scope ihres Systems verbucht (echte Messung). Die
+  Aufgabenphase (`stage_started` bis `tasks_finished`) geht an den gemeinsamen Scope, wenn alle Systeme der Stufe
+  denselben haben. Sonst wird sie im Verhältnis der Systemzahl auf die Scopes der Stufe verteilt und als Schätzwert
+  verbucht (`estimate = true`); der Rundungsrest geht an den letzten Scope. Die Zeit einzelner paralleler Systeme ist
+  nach §7.2 nicht messbar, die Verteilung ist deshalb gekennzeichnet statt als Messung ausgegeben.
+- **GPU (§6 „GPU-Zeit über Timestamp-Queries“):** `record_stage_stats` verbucht `gpu` mit `StageStats::gpu_time`,
+  wenn der Renderer gemessen hat. Sonst verbucht es die gemessene `render`-Zeit als Schätzwert (`estimate = true`),
+  nie eine Null: Ohne Timestamp-Queries ist die einzige sichtbare GPU-Last die Zeit, die die CPU mit Einreichen und
+  Präsentieren verbringt. Sie enthält Wartezeit auf die GPU, aber auch Präsentation (etwa vertikale
+  Synchronisation). Dazu die drei Zähler aus §9.7 oben.
+- **Budgets:** je Scope-Name; ein Scope erhält sein Budget bei der ersten Registrierung, `set_budget` ändert es auch
+  für schon registrierte Scopes. Überschreitung zeigt `ScopeTotal::over_budget` (§13). Das Overlay (WP6.4) färbt
+  danach.
+- **Nur lesend:** `ProfilerObserver` liest Uhr und Systemnamen, nie die Welt. Die Schleife mit und ohne Profiler und
+  `run_headless` ergeben identische Hashes (`tests/profiler.rs`); die Konformanz-Suite `SystemObserver` läuft gegen
+  den Beobachter (`adapters::debug`).
+- **`FrameStats` bleibt unverändert (§9.2).** Die im Plan genannte „erweiterte `FrameStats`“ ist über die
+  Nachbartypen umgesetzt: `FrameProfile` (Scopes, Budgets, Zähler), `StageStats::gpu_time` und `stats_frame`, das
+  `FrameStats` und Content-Epoche in das `StatsFrame` für `Stats` oder den Export übersetzt.
+- **Tests:** `main_loop.rs` (Uhr, die je Ablesung weiterläuft: jeder Scope gemessen, `on_profile` nach `on_frame`,
+  ohne Profiler kein `on_profile`), `adapters/debug.rs` (Präfixe, feste IDs, Budgets, exklusive und parallele Stufen
+  über echte `Schedule`s, GPU-Schätzwert, Konformanz), `tests/profiler.rs` (Hash-Neutralität, Scope-Reihenfolge,
+  Budgets aus dem Builder, Export). Beispiel `profiler_dump` (Konsole, in der CI nur gebaut).
+
 ### 9.8 InputMap-Preset: Zielachsen 2/3 (Ergänzung P1)
 
 *Freigegeben (WP1.2).* Gilt ab P1 statt des Satzes „Die Zielachsen 2 und 3 bleiben in P0 0
@@ -3263,6 +3358,53 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
     keine Kante zu `grimoire` oder `grimoire_sim` hat (§1). `frame_time_ns` und `dropped_time_ns` sind die
     Nanosekunden der `Duration`, bei Überlauf `u64::MAX`. `fps` ist wie im Katalog `f32`; die Fassade übernimmt
     `FrameStats::fps` (`f64`, §9) mit `as f32`.
+
+**Profiler: Budgets, Scope-API und Export (Ergänzung P1, Plan 0002 WP6.3)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe); die mit „Klarstellung“ markierten Punkte sind Stufe K.*
+Additiv zum Profiler-Datenmodell oben; das Byte-Layout von `Stats` ändert sich nicht (`budget_ns` und `estimate`
+stehen schon im Katalog), `PROTOCOL_VERSION` bleibt 1.
+
+```rust
+#[non_exhaustive]
+pub struct ScopeTotal { pub scope: ScopeId, pub total: Duration, pub calls: u32,
+                        pub budget: Option<Duration>, pub estimate: bool }   // Copy, Eq, Debug; zusätzlich over_budget() -> bool
+// FrameProfile zusätzlich: frame() -> u64, record_estimate(ScopeId, &str, Duration),
+//                          set_budget(ScopeId, Option<Duration>), budget(ScopeId) -> Option<Duration>,
+//                          scope(ScopeId) -> Option<&ScopeTotal>
+pub struct ScopeRegistry;     // new()/Default, register(&str) -> Option<ScopeId>, get(&str) -> Option<ScopeId>,
+                              // name(ScopeId) -> Option<&str>, len(), is_empty(); Clone, Debug
+#[must_use] pub struct ScopeTimer;   // start(ScopeId, now: Duration) -> Self, scope(), started_at(), elapsed(now) -> Duration,
+                                     // stop(self, &mut FrameProfile, name: &str, now: Duration) -> Duration; Copy, Eq, Debug
+pub const PROFILE_EXPORT_SCHEMA: &str = "grimoire.profiler.export";
+pub const PROFILE_EXPORT_SCHEMA_VERSION: u32 = 1;
+pub struct ProfileLog;        // new()/Default, push(Stats), frames() -> &[Stats], len(), is_empty(), clear(),
+                              // write_csv(&mut dyn io::Write) -> Result<(), ExportError>,
+                              // write_json(&mut dyn io::Write) -> Result<(), ExportError>; Clone, PartialEq, Debug
+pub enum ExportError;         // #[non_exhaustive], thiserror: Io { kind: io::ErrorKind, message: String },
+                              // IntegerTooLarge { frame: u64, field: &'static str, value: u64 },
+                              // NonFinite { frame: u64, field: &'static str }; Clone, Eq, Debug
+```
+
+- **Budgets:** `set_budget` gilt je `ScopeId` über `begin` hinweg und auch für eine im laufenden Frame schon
+  verbuchte Summe. `ScopeTotal::budget` übernimmt es; `to_stats` schreibt `budget_ns` (kein Budget und ein Budget von
+  0 ergeben beide 0 = „keins“).
+- **Schätzwerte:** `record_estimate` verbucht wie `record` und setzt `estimate` für die Summe dieses Frames; eine
+  einzige Schätzung genügt. `begin` setzt es zurück.
+- **Klarstellung — Zähler:** `add_counter` mit einem im Frame schon verwendeten Namen addiert sättigend auf den
+  bestehenden Eintrag an dessen Position; `counters()` enthält jeden Namen einmal.
+- **Scope-API (uhrfrei):** `ScopeRegistry` vergibt `ScopeId`s in Reihenfolge der ersten Registrierung und liefert
+  `None`, wenn alle 65.536 IDs vergeben sind; bekannte Namen bleiben erreichbar. Allokiert wird nur bei der ersten
+  Registrierung eines Namens. `ScopeTimer` nimmt Beginn und Ende als Uhrablesung des Aufrufers entgegen
+  (`Duration`); liegt das Ende vor dem Beginn, ergibt das 0. `grimoire_debug` liest weiterhin keine Uhr.
+- **Export:** `ProfileLog` hält `Stats`-Werte (also die Kürzungsregeln von `to_stats`). Format, Spalten, Schlüssel
+  und Fehlerfälle stehen in `docs/formats/profiler-export.md` (handgeschrieben wie `bench-result.md`). JSON folgt §2
+  Regel 11 (feste Schlüsselreihenfolge, `content_manifest` als 16 Hexziffern, Ganzzahlen ≤ 2^53 − 1, keine
+  nicht endlichen Zahlen); bei einem Verstoß schreibt `write_json` nichts. CSV kennt keine Zahlgrenzen und scheitert
+  nur an I/O.
+- **Tests:** Einheitstests in `profile.rs` und `export.rs`, darunter die Stats-Kürzung mit 65 Scopes, 65 Zählern und
+  einem 65-Byte-Namen samt Rundreise über `Message::from_frame` (Pflichtfall oben) sowie das Parsen der JSON-Ausgabe
+  mit `serde_json` (nur Dev-Abhängigkeit, schon im Workspace gepinnt).
 
 ## 14. `grimoire_collide` — Kollision v0
 

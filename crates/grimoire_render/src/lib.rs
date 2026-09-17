@@ -42,6 +42,7 @@ mod bullet_pass;
 pub mod cluster_layout;
 mod cluster_pass;
 pub mod figure_format;
+mod gpu_timer;
 mod mesh;
 mod mesh_pass;
 mod pass_graph;

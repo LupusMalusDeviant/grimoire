@@ -17,6 +17,7 @@
 
 use grimoire_gpu::{GpuContext, GpuError, wgpu};
 
+use crate::gpu_timer::PassTimestamps;
 use crate::mesh::MeshVertex;
 use crate::stage3d::ShadowConfig;
 
@@ -325,6 +326,7 @@ impl ShadowPass {
         context: &GpuContext,
         light_view_proj: [[f32; 4]; 4],
         casters: &[ShadowCaster<'_>],
+        timestamps: Option<PassTimestamps>,
     ) -> Result<u32, GpuError> {
         let uniform = ShadowUniformGpu { light_view_proj };
         context
@@ -383,7 +385,7 @@ impl ShadowPass {
                         }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: None,
+                    timestamp_writes: timestamps.as_ref().map(PassTimestamps::render),
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
