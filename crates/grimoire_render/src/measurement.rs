@@ -4,7 +4,8 @@
 //!
 //! **Not part of the render contract (§6)** — a measurement hook in the spirit of
 //! [`crate::WgpuRenderer::render_stage_with_specular_aa`]: it runs exactly the CPU steps
-//! [`crate::WgpuRenderer::render_stage`] runs before it hands bullets and lights to the GPU, through
+//! [`crate::WgpuRenderer`]'s [`crate::Renderer::render_stage`] runs before it hands bullets and
+//! lights to the GPU, through
 //! the same functions, so `grimoire_bench` can count their instructions on a runner without a GPU.
 //! It may change or disappear with the passes it mirrors.
 //!
