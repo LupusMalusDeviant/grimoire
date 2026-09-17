@@ -1840,9 +1840,9 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   Tausch vor dem ersten `step` hat `tick = 0`. Den Stand direkt nach der Installation des Contents beschreibt
   `content_manifest`. Unit-Bytes stehen nicht im Replay (§11.8). Ein Replay mit mindestens einem Eintrag ist nie
   golden (`is_golden_eligible() == false`); Golden-Master-Werkzeuge weisen es ab (§15.2).
-  *Umsetzung (WP7.1); freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe),
-  einschließlich der entschiedenen Empfehlung, sie freizugeben, weil sie die hier schon festgelegte Regel als
-  API führt und WP8.4 genau diese Stelle braucht:* `ReplayHeader::record_swap` hängt einen Eintrag in
+  *Umsetzung (WP7.1); freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe)
+  mit der Begründung der Empfehlung: Die API führt die hier schon festgelegte Regel, und WP8.4 braucht genau
+  diese Stelle.* `ReplayHeader::record_swap` hängt einen Eintrag in
   Tick-Reihenfolge an. Hat er den Tick des letzten Eintrags, ersetzt er dessen `content_manifest` (mehrere Tausche an
   einer Grenze ergeben so den Endstand). Ein früherer Tick liefert `SwapOrder { index: swaps.len() }`, ein neuer
   Eintrag über `MAX_SWAP_RECORDS` hinaus `TooManyEntries`; bei einem Fehler ändert sich nichts. `tick ≤ frames.len()`
