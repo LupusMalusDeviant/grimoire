@@ -480,7 +480,8 @@ einen Selbsttest-Job, der den Bruch belegt. Umgesetzt ist das so:
   größte Abweichung betrug 0,01 %. Die Anzahl der Läufe ist erreicht, die Anzahl der Läufe mit
   Urteil (14) und der Zeitraum (drei statt 14 Tage) sind es nicht. Die Frist des Plans
   („spätestens M2“) geht hier vor; die Abweichung vom Beobachtungszeitraum ist ausdrücklich
-  festgehalten. **PO-Bestätigung offen.**
+  festgehalten. **PO-Bestätigung 2026-09-17: jetzt scharf, trotz nicht erreichtem
+  14-Tage-Fenster.**
 - **Selbsttest-Job `regression-proof`.** Läuft bei jedem Pull Request, jedem Push auf `main`,
   nachts und manuell. Er kalibriert die Einspeisung frisch, misst alle Benches zweimal ohne
   Einspeisung (Basis und Wiederholung) und zweimal mit `GRIMOIRE_BENCH_INJECT_REGRESSION=1`
@@ -495,10 +496,10 @@ einen Selbsttest-Job, der den Bruch belegt. Umgesetzt ist das so:
   `gate` erfolgreich war oder nur am roten Urteil scheiterte. Sonst könnte eine bewusst gemergte
   Regression nie als neue Basis angenommen werden, denn `bench-accept-baseline` braucht den Commit
   in `trend/results.jsonl`. Eine kaputte Messung gelangt weiter nicht in den Trend.
-- **Basis.** Die vor der Umstellung akzeptierte Basis (Commit `0c6e5e9`) deckt sechs der acht
-  Szenarien ab. `render_bullet_upload_10k` und `render_light_cluster_256` bekommen ein Urteil,
-  sobald `bench-accept-baseline` einen Commit mit allen acht Szenarien annimmt; ihre Werte liegen
-  seit `a919d91` unverändert auf `bench-trends`.
+- **Basis.** Die bis dahin akzeptierte Basis (Commit `0c6e5e9`) deckte sechs der acht Szenarien
+  ab. Vor der Umstellung hat `bench-accept-baseline` (Lauf 35229660318) Commit `e1d9b77` als neue
+  Basis angenommen; sie enthält alle acht Szenarien, darunter `render_bullet_upload_10k` und
+  `render_light_cluster_256`, deren Werte seit `a919d91` unverändert sind.
 
 ### Referenzen (M2)
 
