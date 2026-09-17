@@ -15,7 +15,8 @@
 //! module [`schema`]) and the engine-ADR-0010 regression gate (module [`gate`]). `GoldenMaster`
 //! (contract §15.2) is not part of this work package — no golden-master benches exist yet — and
 //! is left for whichever WP first needs it; the size-limit constants below cover only the
-//! bench-result half of §15.
+//! bench-result half of §15. Plan-0002 WP5.3 and WP5.4 add the Sigil benches (extraction, tick
+//! with 6,000 and 10,000 active bullets, 2,000 spawns and despawns per tick).
 //!
 //! Contract §2 rule 11 requires every `u64` hash, id or seed that crosses a JSON interface to be
 //! encoded as exactly 16 lowercase hex digits, never as a JSON number (a JSON number can only

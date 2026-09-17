@@ -9,7 +9,7 @@ use std::fmt;
 use std::ops::Range;
 
 use grimoire_core::{StableHash, StableHasher, Vec2, impl_stable_hash};
-use grimoire_ecs::{QUERY_BLOCK_SIZE, slice_block_ranges};
+use grimoire_ecs::slice_block_ranges;
 
 use crate::content::{BulletFlags, SigilContent};
 use crate::emitter::ClearFilter;
@@ -376,31 +376,18 @@ impl PoolUpdateBlock<'_> {
     }
 }
 
-/// Splits `slice` into consecutive immutable sub-slices of at most [`QUERY_BLOCK_SIZE`] elements
-/// each, matching [`slice_block_ranges`] exactly.
-fn split_ref_blocks<T>(slice: &[T]) -> Vec<&[T]> {
-    let mut rest = slice;
-    let mut out = Vec::new();
-    while !rest.is_empty() {
-        let take = QUERY_BLOCK_SIZE.min(rest.len());
-        let (head, tail) = rest.split_at(take);
-        out.push(head);
-        rest = tail;
-    }
-    out
+/// Splits the first `len` elements off `rest`, leaving the remainder in `rest`.
+fn take_head<'p, T>(rest: &mut &'p [T], len: usize) -> &'p [T] {
+    let (head, tail) = rest.split_at(len);
+    *rest = tail;
+    head
 }
 
-/// Mutable counterpart of [`split_ref_blocks`], built with `split_at_mut` only.
-fn split_mut_blocks<T>(slice: &mut [T]) -> Vec<&mut [T]> {
-    let mut rest = slice;
-    let mut out = Vec::new();
-    while !rest.is_empty() {
-        let take = QUERY_BLOCK_SIZE.min(rest.len());
-        let (head, tail) = rest.split_at_mut(take);
-        out.push(head);
-        rest = tail;
-    }
-    out
+/// Mutable counterpart of [`take_head`], built with `split_at_mut` only (no `unsafe`).
+fn take_head_mut<'p, T>(rest: &mut &'p mut [T], len: usize) -> &'p mut [T] {
+    let (head, tail) = std::mem::take(rest).split_at_mut(len);
+    *rest = tail;
+    head
 }
 
 /// Structure-of-arrays store of bullets with a stable-handle, generational free list, exactly like
@@ -595,52 +582,46 @@ impl BulletPool {
     /// exactly the [`slice_block_ranges`] boundaries, so the result matches [`BulletPool::blocks`]
     /// block-for-block but grants each block write access to its own slots only.
     ///
-    /// # Panics
-    ///
-    /// Only on an internal invariant violation (every split below must yield the same number of
-    /// blocks, since every column has the same `slot_count`); never on caller input.
     pub(crate) fn update_blocks_mut(&mut self) -> Vec<PoolUpdateBlock<'_>> {
         let slot_count = self.slot_count as usize;
-        let ranges: Vec<Range<usize>> = slice_block_ranges(slot_count).collect();
-
-        let mut alive = split_ref_blocks(&self.alive[..slot_count]).into_iter();
-        let mut unit = split_ref_blocks(&self.unit[..slot_count]).into_iter();
-        let mut bullet_type = split_mut_blocks(&mut self.bullet_type[..slot_count]).into_iter();
-        let mut program = split_ref_blocks(&self.program[..slot_count]).into_iter();
-        let mut flags = split_mut_blocks(&mut self.flags[..slot_count]).into_iter();
-        let mut cascade = split_ref_blocks(&self.cascade[..slot_count]).into_iter();
-        let mut position = split_mut_blocks(&mut self.position[..slot_count]).into_iter();
-        let mut previous_position =
-            split_mut_blocks(&mut self.previous_position[..slot_count]).into_iter();
-        let mut velocity = split_mut_blocks(&mut self.velocity[..slot_count]).into_iter();
-        let mut angle = split_mut_blocks(&mut self.angle[..slot_count]).into_iter();
-        let mut speed = split_mut_blocks(&mut self.speed[..slot_count]).into_iter();
-        let mut age = split_mut_blocks(&mut self.age[..slot_count]).into_iter();
-        let mut state = split_mut_blocks(&mut self.state[..slot_count]).into_iter();
-
-        ranges
-            .into_iter()
-            .enumerate()
-            .map(|(index, slots)| PoolUpdateBlock {
+        let ranges = slice_block_ranges(slot_count);
+        // One allocation per call for the block list; the columns are split in lockstep at the
+        // same boundaries, so every block gets exactly its own slots of every column.
+        let mut blocks = Vec::with_capacity(ranges.len());
+        let mut alive = &self.alive[..slot_count];
+        let mut unit = &self.unit[..slot_count];
+        let mut bullet_type = &mut self.bullet_type[..slot_count];
+        let mut program = &self.program[..slot_count];
+        let mut flags = &mut self.flags[..slot_count];
+        let mut cascade = &self.cascade[..slot_count];
+        let mut position = &mut self.position[..slot_count];
+        let mut previous_position = &mut self.previous_position[..slot_count];
+        let mut velocity = &mut self.velocity[..slot_count];
+        let mut angle = &mut self.angle[..slot_count];
+        let mut speed = &mut self.speed[..slot_count];
+        let mut age = &mut self.age[..slot_count];
+        let mut state = &mut self.state[..slot_count];
+        for (index, slots) in ranges.enumerate() {
+            let len = slots.len();
+            blocks.push(PoolUpdateBlock {
                 index,
                 slots,
-                alive: alive.next().expect("column block count must match"),
-                unit: unit.next().expect("column block count must match"),
-                bullet_type: bullet_type.next().expect("column block count must match"),
-                program: program.next().expect("column block count must match"),
-                flags: flags.next().expect("column block count must match"),
-                cascade: cascade.next().expect("column block count must match"),
-                position: position.next().expect("column block count must match"),
-                previous_position: previous_position
-                    .next()
-                    .expect("column block count must match"),
-                velocity: velocity.next().expect("column block count must match"),
-                angle: angle.next().expect("column block count must match"),
-                speed: speed.next().expect("column block count must match"),
-                age: age.next().expect("column block count must match"),
-                state: state.next().expect("column block count must match"),
-            })
-            .collect()
+                alive: take_head(&mut alive, len),
+                unit: take_head(&mut unit, len),
+                bullet_type: take_head_mut(&mut bullet_type, len),
+                program: take_head(&mut program, len),
+                flags: take_head_mut(&mut flags, len),
+                cascade: take_head(&mut cascade, len),
+                position: take_head_mut(&mut position, len),
+                previous_position: take_head_mut(&mut previous_position, len),
+                velocity: take_head_mut(&mut velocity, len),
+                angle: take_head_mut(&mut angle, len),
+                speed: take_head_mut(&mut speed, len),
+                age: take_head_mut(&mut age, len),
+                state: take_head_mut(&mut state, len),
+            });
+        }
+        blocks
     }
 
     /// Resets [`BulletPool::events`]/[`BulletPool::events_tick`] for the start of a new tick

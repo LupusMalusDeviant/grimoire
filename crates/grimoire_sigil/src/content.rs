@@ -138,6 +138,9 @@ fn manifest_hash(registry_fingerprint: u64, units: &[SigilUnit]) -> ContentManif
 pub struct SigilLibrary {
     units: Vec<SigilUnit>,
     registry: Arc<BehaviorRegistry>,
+    /// `registry.fingerprint()`, computed once: the registry is immutable (contract §11.5) and
+    /// `sigil.begin` compares the fingerprint every tick.
+    registry_fingerprint: u64,
     epoch: ContentEpoch,
 }
 
@@ -180,6 +183,7 @@ impl SigilLibrary {
         Ok(Self {
             units,
             registry,
+            registry_fingerprint,
             epoch,
         })
     }
@@ -214,8 +218,8 @@ impl SigilLibrary {
 
     /// Fingerprint of the behavior registry this library was built against.
     #[must_use]
-    pub fn registry_fingerprint(&self) -> u64 {
-        self.registry.fingerprint()
+    pub const fn registry_fingerprint(&self) -> u64 {
+        self.registry_fingerprint
     }
 
     /// Behavior registry this library was built against.
