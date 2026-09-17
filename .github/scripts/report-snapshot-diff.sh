@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Plan 0002 WP2.8: meldet je Runner das Ergebnis der drei deterministischen Render-Testszenen
-# (`pbr_materials`, `shadows`, `camera_tilt`) in den GitHub-Job-Summary — im Warnmodus: eine
+# Plan 0002 WP2.8: meldet je Runner das Ergebnis der deterministischen Render-Testszenen
+# (`pbr_materials`, `shadows`, `camera_tilt`, seit WP6.4 auch `overlay` aus
+# crates/grimoire/tests/overlay_scene.rs) in den GitHub-Job-Summary — im Warnmodus: eine
 # Abweichung über der Toleranz oder eine fehlende Referenz lässt den Job nicht rot werden, steht
 # hier aber unübersehbar.
 #
