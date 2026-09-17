@@ -13,6 +13,10 @@
 #   units/bench/fixtures/*.unit
 #                            the full-curtain units of `grimoire_bench` (crates/grimoire_bench/fixtures,
 #                            plan 0002 WP6.6), likewise under their canonical paths
+#   units/link/patterns/*.unit
+#                            the patterns of the dev-link tests (crates/grimoire_link/tests/patterns,
+#                            WP8.5): they are compiled during those tests, so their bytes must match
+#                            across operating systems like every other compiled unit
 #   reports/<group>.json     `sigilc build --json` of each group (unit ids, content hashes, sizes)
 #   reports/corpus-invalid.json, reports/corpus-schema-invalid.json
 #                            `sigilc check --json` of the invalid corpora: their diagnostics must be
@@ -120,6 +124,7 @@ build corpus "$corpus/valid" "$corpus/valid" "$corpus/behaviors.json"
 build reference "$reference" "$reference" "$reference/behaviors.json"
 build facade crates/grimoire/tests crates/grimoire/tests/fixtures
 build bench crates/grimoire_bench crates/grimoire_bench/fixtures
+build link crates/grimoire_link/tests crates/grimoire_link/tests/patterns
 check_invalid corpus-invalid "$corpus/invalid"
 check_invalid corpus-schema-invalid "$corpus/schema-invalid" "$corpus/behaviors.json"
 

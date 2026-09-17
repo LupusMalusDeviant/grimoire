@@ -1,0 +1,35 @@
+sigil 1
+// The edited pattern of the hot-reload proof (Plan 0002 WP8.5): the same emitter, now three times
+// as often and with three times as many bolts per ring, so the swap is visible in the bullet count
+// and in every state hash after the tick it takes effect at. Same content path as `bolt.sigil`
+// when the test copies it over that file, hence the same `UnitId` — which is what makes it a swap
+// rather than a new unit (contract §11.8).
+
+meta {
+  name = "Dev Link Bolt"
+  difficulty = [normal]
+  density = 180
+}
+
+bullet bolt {
+  silhouette = orb
+  palette = enemy.poison_lime
+  glow = 0.8
+  radius = 0.26u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter ring {
+  bullet = bolt
+  repeat = forever
+  interval = 4t
+  speed = 0.09u/t
+  block ring {
+    count = 18
+    start = 10deg
+  }
+  modifier rotate {
+    rate = 0.5deg/t
+  }
+}
