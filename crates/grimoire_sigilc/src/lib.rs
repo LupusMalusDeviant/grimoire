@@ -6,10 +6,10 @@
 //! Sigil source is compiled **offline**; the simulation runtime never parses source text and no
 //! runtime crate ever depends on this crate, not even as a dev-dependency (engine ADR-0008,
 //! contract §1). This crate is the sole intended producer of binary Sigil units
-//! (`grimoire_sigil::SigilUnit`, contract §11.1); through the future `sigilc simulate`
-//! subcommand it is also the only tool that drives the runtime interpreter
-//! (`grimoire_sigil::install`) against a `grimoire_sim::Simulation` for offline verification
-//! (Plan 0002 WP5.6).
+//! (`grimoire_sigil::SigilUnit`, contract §11.1); through `sigilc simulate` ([`simulate`], Plan
+//! 0002 WP5.6) it is also the only tool that drives the runtime interpreter
+//! (`grimoire_sigil::install`) against a `grimoire_sim::Simulation` offline, as the preview source
+//! of the editor and of agents.
 //!
 //! It belongs to the determinism set (engine ADR-0008, contract §3) even though it is a compiler,
 //! not a runtime crate: its output enters content hashes, golden masters and replays, so it must
@@ -24,7 +24,7 @@
 //! [`edit`], the canonical layout in [`fmt::format_canonical`], content paths in
 //! [`content_path`] and the behaviour manifest in [`behaviors`]); silhouette and palette names
 //! compile to rows of the shared visual catalogue ([`catalog`], PO decision 2026-09-17);
-//! `sigilc simulate` remains Plan 0002 WP5.6.
+//! `sigilc simulate` runs a compiled unit and records every tick ([`simulate`], WP5.6).
 //! [`derive_unit_id`] predates WP4.1 (added in WP1.3, once `grimoire_sigil::UnitId`, contract
 //! §11.1, existed) and is unrelated to parsing.
 //!
@@ -53,6 +53,7 @@ pub mod edit;
 pub mod fmt;
 mod lexer;
 pub mod parser;
+pub mod simulate;
 pub mod span;
 pub mod syntax;
 

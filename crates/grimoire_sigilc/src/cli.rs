@@ -11,6 +11,8 @@
 //! - `set [--json] <file> <node-path>=<value>` rewrites one value losslessly
 //!   ([`crate::edit::set_value`]).
 //! - `fmt [--check] <file>...` applies the canonical layout ([`crate::fmt::format_canonical`]).
+//! - `simulate --json --ticks <n> [...] <file>` compiles one source and runs it through the runtime
+//!   interpreter, printing every tick ([`crate::simulate`], Plan 0002 WP5.6).
 //!
 //! Exit codes: [`EXIT_OK`] when the command succeeded with no problem in any file,
 //! [`EXIT_PROBLEMS`] when it ran but found problems (diagnostics, a refused `set`, a file `fmt
@@ -35,6 +37,11 @@ use crate::diagnostics::{Diagnostic, DiagnosticsDocument};
 use crate::edit::{SetError, list_values, set_value};
 use crate::fmt::{FormatError, format_canonical};
 use crate::parser::parse;
+use crate::simulate::{
+    BULLET_FIELDS, BulletTypeJson, DESPAWN_FIELDS, Frame, MAX_SIMULATE_TICKS,
+    MAX_TARGET_PATH_BYTES, ScheduledEvent, SimulateOptions, Simulated, StubbedBehavior, Target,
+    parse_target_path, simulate,
+};
 use crate::span::Position;
 
 /// The command succeeded and found no problem.
@@ -52,6 +59,7 @@ pub const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 const BUILD_SCHEMA: &str = "grimoire.sigilc.build";
 const VALUES_SCHEMA: &str = "grimoire.sigilc.values";
 const SET_SCHEMA: &str = "grimoire.sigilc.set";
+const SIMULATE_SCHEMA: &str = "grimoire.sigilc.simulate";
 const SCHEMA_VERSION: u32 = 1;
 
 /// Runs `sigilc` with `args` (without the program name), writing to `stdout` and `stderr`, and
@@ -128,6 +136,7 @@ fn dispatch(args: &[String], stdout: &mut dyn Write) -> CliResult {
         "parse" => run_parse(rest, stdout),
         "set" => run_set(rest, stdout),
         "fmt" => run_fmt(rest, stdout),
+        "simulate" => run_simulate(rest, stdout),
         other => Err(CliError::usage(format!("unknown command `{other}`"))),
     }
 }
@@ -146,6 +155,12 @@ USAGE:
       Replace one existing value in place; nothing else in the file changes.
   sigilc fmt [--check] <file>...
       Rewrite files in the canonical layout; with --check only report files that would change.
+  sigilc simulate --json --ticks <n> [--target <x>,<y> | --target-path <file>]
+                  [--events <name>@<tick>,...] [--seed <n>] [--capacity <n>]
+                  [--bounds <min x>,<min y>,<max x>,<max y>] [--root <dir>] [--behaviors <file>]
+                  <file>
+      Compile one source and run its primary emitters through the runtime interpreter for <n>
+      ticks; print every tick as one compact JSON document.
   sigilc --version | --help
 
 OPTIONS:
@@ -155,13 +170,20 @@ OPTIONS:
   --behaviors <file>  Behaviour manifest (schema grimoire.sigilc.behaviors) naming the
                       BehaviorId of every `behaviour = <name>` reference.
   --json              Print one JSON document instead of text.
+  --ticks <n>         Ticks to simulate, 1 to 36000.
+  --target <x>,<y>    Fixed aim target of `aimed` blocks.
+  --target-path <f>   Scripted aim target (schema grimoire.sigilc.target_path).
+  --events <list>     Events to raise, as <name>@<tick> separated by commas.
+  --seed <n>          Simulation seed (decimal, default 0).
+  --capacity <n>      Bullet pool capacity (default 65536).
+  --bounds <list>     Simulation bounds (default -1000,-1000,1000,1000).
 
 EXIT CODES:
   0  success, no problems
   1  the command ran and found problems (diagnostics, refused set, unformatted file)
   2  the command could not run (usage, unreadable input, invalid manifest, unwritable output)
 
-Not implemented here: `simulate` (Plan 0002 WP5.6), `migrate` (no second source version exists).
+Not implemented here: `migrate` (no second source version exists).
 ";
 
 /// Parsed command-line arguments of one command.
@@ -340,24 +362,11 @@ fn run_compile(mode: Mode, args: &[String], stdout: &mut dyn Write) -> CliResult
             "sigilc build: `--root <dir>` and `--out <dir>` are required (the unit id derives from the path relative to the root)",
         ));
     }
-    let behaviors = match args.option("--behaviors") {
-        Some(path) => {
-            let text = read_text(Path::new(path), MAX_BEHAVIOR_MANIFEST_BYTES as u64).map_err(
-                |reason| {
-                    CliError::failed(format!(
-                        "sigilc {command}: cannot read behaviour manifest `{path}`: {reason}"
-                    ))
-                },
-            )?;
-            parse_behavior_manifest(&text)
-                .map_err(|error| CliError::failed(format!("sigilc {command}: `{path}`: {error}")))?
-        }
-        None => BTreeMap::new(),
-    };
+    let behaviors = load_behaviors(command, args.option("--behaviors"))?;
 
     let mut reports = Vec::with_capacity(args.positionals.len());
     for file in &args.positionals {
-        reports.push(compile_one(file, root, out, &behaviors)?);
+        reports.push(compile_one(file, root, out, &behaviors)?.0);
     }
     let ok = reports.iter().all(|report| report.diagnostics.is_empty());
 
@@ -392,12 +401,29 @@ fn run_compile(mode: Mode, args: &[String], stdout: &mut dyn Write) -> CliResult
     Ok(if ok { EXIT_OK } else { EXIT_PROBLEMS })
 }
 
+/// Reads the behaviour manifest given with `--behaviors`, or an empty table without one.
+fn load_behaviors(command: &str, path: Option<&str>) -> Result<BTreeMap<String, u32>, CliError> {
+    let Some(path) = path else {
+        return Ok(BTreeMap::new());
+    };
+    let text =
+        read_text(Path::new(path), MAX_BEHAVIOR_MANIFEST_BYTES as u64).map_err(|reason| {
+            CliError::failed(format!(
+                "sigilc {command}: cannot read behaviour manifest `{path}`: {reason}"
+            ))
+        })?;
+    parse_behavior_manifest(&text)
+        .map_err(|error| CliError::failed(format!("sigilc {command}: `{path}`: {error}")))
+}
+
+/// Compiles one source (writing the unit under `out` if given) and returns its report together
+/// with the unit bytes, which exist only if the report has no diagnostic.
 fn compile_one(
     file: &str,
     root: Option<&str>,
     out: Option<&str>,
     behaviors: &BTreeMap<String, u32>,
-) -> Result<UnitReport, CliError> {
+) -> Result<(UnitReport, Option<Vec<u8>>), CliError> {
     let file_path = Path::new(file);
     let (root_path, root_display) = match root {
         Some(root) => (PathBuf::from(root), trim_separators(root).to_string()),
@@ -434,7 +460,7 @@ fn compile_one(
                 format!("Cannot read the source file: {reason}."),
                 "Check that the file exists and is UTF-8 text of at most 1 MiB.",
             ));
-            return Ok(report);
+            return Ok((report, None));
         }
     };
 
@@ -471,10 +497,10 @@ fn compile_one(
         report.diagnostics.push(diagnostic);
     }
     if !report.diagnostics.is_empty() {
-        return Ok(report);
+        return Ok((report, None));
     }
     let (Some(bytes), Some(unit_path)) = (output.bytes, report.unit_path.clone()) else {
-        return Ok(report);
+        return Ok((report, None));
     };
     let unit = grimoire_sigil::SigilUnit::from_bytes(&bytes).map_err(|error| {
         CliError::failed(format!(
@@ -503,7 +529,7 @@ fn compile_one(
         })?;
         report.output = Some(format!("{}/{relative}", trim_separators(out)));
     }
-    Ok(report)
+    Ok((report, Some(bytes)))
 }
 
 /// `sigil/imp_volley.sigil` -> `sigil/imp_volley.unit`.
@@ -749,6 +775,273 @@ fn run_fmt(args: &[String], stdout: &mut dyn Write) -> CliResult {
         None if problems => Ok(EXIT_PROBLEMS),
         None => Ok(EXIT_OK),
     }
+}
+
+// ---- simulate -----------------------------------------------------------------------------------
+
+/// The `simulate --json` document (`docs/formats/sigil.md` §13.8).
+#[derive(Serialize)]
+struct SimulateDocument<'a> {
+    schema: &'static str,
+    schema_version: u32,
+    source: &'a str,
+    unit_path: Option<&'a str>,
+    unit_id: Option<&'a str>,
+    content_hash: Option<&'a str>,
+    ok: bool,
+    diagnostics: &'a [Diagnostic],
+    settings: SimulateSettings,
+    emitters: &'a [u16],
+    bullet_types: &'a [BulletTypeJson],
+    stubbed_behaviors: &'a [StubbedBehavior],
+    bullet_fields: [&'static str; 9],
+    despawn_fields: [&'static str; 6],
+    frames: &'a [Frame],
+    final_state_hash: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct SimulateSettings {
+    ticks: u32,
+    seed: String,
+    capacity: u32,
+    bounds: [f32; 4],
+    target: TargetJson,
+    events: Vec<EventJson>,
+}
+
+#[derive(Serialize)]
+struct TargetJson {
+    kind: &'static str,
+    position: Option<[f32; 2]>,
+    path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EventJson {
+    tick: u64,
+    name: String,
+}
+
+/// Longest event name `--events` accepts, in bytes.
+const MAX_EVENT_NAME_BYTES: usize = 64;
+
+fn run_simulate(args: &[String], stdout: &mut dyn Write) -> CliResult {
+    let args = Args::parse(
+        "simulate",
+        args,
+        &["--json"],
+        &[
+            "--ticks",
+            "--target",
+            "--target-path",
+            "--events",
+            "--seed",
+            "--capacity",
+            "--bounds",
+            "--root",
+            "--behaviors",
+        ],
+    )?;
+    let [file] = args.positionals.as_slice() else {
+        return Err(CliError::usage(
+            "sigilc simulate: expected exactly one source file",
+        ));
+    };
+    if !args.flag("--json") {
+        return Err(CliError::usage(
+            "sigilc simulate: only `--json` output exists",
+        ));
+    }
+    let ticks = match args.option("--ticks") {
+        Some(text) => match text.parse::<u32>() {
+            Ok(ticks) if (1..=MAX_SIMULATE_TICKS).contains(&ticks) => ticks,
+            _ => {
+                return Err(CliError::usage(format!(
+                    "sigilc simulate: `--ticks` must be a whole number from 1 to {MAX_SIMULATE_TICKS}, got `{text}`"
+                )));
+            }
+        },
+        None => {
+            return Err(CliError::usage(
+                "sigilc simulate: `--ticks <n>` is required",
+            ));
+        }
+    };
+    let mut options = SimulateOptions::new(ticks);
+    if let Some(text) = args.option("--seed") {
+        options.seed = text.parse::<u64>().map_err(|_| {
+            CliError::usage(format!(
+                "sigilc simulate: `--seed` must be a whole number from 0 to 18446744073709551615, got `{text}`"
+            ))
+        })?;
+    }
+    if let Some(text) = args.option("--capacity") {
+        options.capacity = match text.parse::<u32>() {
+            Ok(capacity) if (1..=grimoire_sigil::BulletPool::MAX_CAPACITY).contains(&capacity) => {
+                capacity
+            }
+            _ => {
+                return Err(CliError::usage(format!(
+                    "sigilc simulate: `--capacity` must be a whole number from 1 to {}, got `{text}`",
+                    grimoire_sigil::BulletPool::MAX_CAPACITY
+                )));
+            }
+        };
+    }
+    if let Some(text) = args.option("--bounds") {
+        match parse_floats(text).as_deref() {
+            Some(&[min_x, min_y, max_x, max_y]) if min_x < max_x && min_y < max_y => {
+                options.bounds_min = grimoire_core::Vec2::new(min_x, min_y);
+                options.bounds_max = grimoire_core::Vec2::new(max_x, max_y);
+            }
+            _ => {
+                return Err(CliError::usage(format!(
+                    "sigilc simulate: `--bounds` must be four finite numbers `<min x>,<min y>,<max x>,<max y>` with each minimum below its maximum, got `{text}`"
+                )));
+            }
+        }
+    }
+    let target_json = match (args.option("--target"), args.option("--target-path")) {
+        (Some(_), Some(_)) => {
+            return Err(CliError::usage(
+                "sigilc simulate: give either `--target` or `--target-path`, not both",
+            ));
+        }
+        (Some(text), None) => match parse_floats(text).as_deref() {
+            Some(&[x, y]) => {
+                options.target = Target::Fixed(grimoire_core::Vec2::new(x, y));
+                TargetJson {
+                    kind: "fixed",
+                    position: Some([x, y]),
+                    path: None,
+                }
+            }
+            _ => {
+                return Err(CliError::usage(format!(
+                    "sigilc simulate: `--target` must be two finite numbers `<x>,<y>`, got `{text}`"
+                )));
+            }
+        },
+        (None, Some(path)) => {
+            let text =
+                read_text(Path::new(path), MAX_TARGET_PATH_BYTES as u64).map_err(|reason| {
+                    CliError::failed(format!(
+                        "sigilc simulate: cannot read target path `{path}`: {reason}"
+                    ))
+                })?;
+            let target_path = parse_target_path(&text)
+                .map_err(|error| CliError::failed(format!("sigilc simulate: `{path}`: {error}")))?;
+            options.target = Target::Path(target_path);
+            TargetJson {
+                kind: "path",
+                position: None,
+                path: Some(path.to_string()),
+            }
+        }
+        (None, None) => TargetJson {
+            kind: "none",
+            position: None,
+            path: None,
+        },
+    };
+    if let Some(text) = args.option("--events") {
+        options.events = parse_events(text, ticks)?;
+    }
+    let behaviors = load_behaviors("simulate", args.option("--behaviors"))?;
+
+    let (report, bytes) = compile_one(file, args.option("--root"), None, &behaviors)?;
+    let simulated: Option<Simulated> = match &bytes {
+        Some(bytes) => Some(
+            simulate(bytes, &behaviors, &options)
+                .map_err(|error| CliError::failed(format!("sigilc simulate: `{file}`: {error}")))?,
+        ),
+        None => None,
+    };
+    let ok = simulated.is_some();
+    let settings = SimulateSettings {
+        ticks,
+        seed: format!("{:016x}", options.seed),
+        capacity: options.capacity,
+        bounds: [
+            options.bounds_min.x,
+            options.bounds_min.y,
+            options.bounds_max.x,
+            options.bounds_max.y,
+        ],
+        target: target_json,
+        events: options
+            .events
+            .iter()
+            .map(|event| EventJson {
+                tick: event.tick,
+                name: event.name.clone(),
+            })
+            .collect(),
+    };
+    let document = SimulateDocument {
+        schema: SIMULATE_SCHEMA,
+        schema_version: SCHEMA_VERSION,
+        source: file,
+        unit_path: report.unit_path.as_deref(),
+        unit_id: report.unit_id.as_deref(),
+        content_hash: report.content_hash.as_deref(),
+        ok,
+        diagnostics: &report.diagnostics,
+        settings,
+        emitters: simulated.as_ref().map_or(&[], |run| &run.emitters),
+        bullet_types: simulated.as_ref().map_or(&[], |run| &run.bullet_types),
+        stubbed_behaviors: simulated.as_ref().map_or(&[], |run| &run.stubbed_behaviors),
+        bullet_fields: BULLET_FIELDS,
+        despawn_fields: DESPAWN_FIELDS,
+        frames: simulated.as_ref().map_or(&[], |run| &run.frames),
+        final_state_hash: simulated.as_ref().map(|run| run.final_state_hash.as_str()),
+    };
+    // Compact, unlike the other documents: a preview holds one row per bullet per tick
+    // (project ADR-0010, building block 5: keep the preview output small).
+    let json = serde_json::to_string(&document)
+        .map_err(|error| CliError::failed(format!("could not encode JSON: {error}")))?;
+    writeln!(stdout, "{json}")?;
+    Ok(if ok { EXIT_OK } else { EXIT_PROBLEMS })
+}
+
+/// Comma-separated finite `f32`s, or `None` if any part is not one.
+fn parse_floats(text: &str) -> Option<Vec<f32>> {
+    text.split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite())
+        })
+        .collect()
+}
+
+/// `<name>@<tick>` entries separated by commas, each tick below `ticks`, in the order given.
+fn parse_events(text: &str, ticks: u32) -> Result<Vec<ScheduledEvent>, CliError> {
+    text.split(',')
+        .map(|entry| {
+            let invalid = || {
+                CliError::usage(format!(
+                    "sigilc simulate: `--events` entry `{entry}` is not `<name>@<tick>` with a name of letters, digits, `_` and `.` (at most {MAX_EVENT_NAME_BYTES} bytes) and a tick below {ticks}"
+                ))
+            };
+            let (name, tick) = entry.split_once('@').ok_or_else(invalid)?;
+            let tick = tick.parse::<u64>().map_err(|_| invalid())?;
+            let valid_name = !name.is_empty()
+                && name.len() <= MAX_EVENT_NAME_BYTES
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.');
+            if !valid_name || tick >= u64::from(ticks) {
+                return Err(invalid());
+            }
+            Ok(ScheduledEvent {
+                tick,
+                name: name.to_string(),
+            })
+        })
+        .collect()
 }
 
 fn write_json(stdout: &mut dyn Write, document: &impl Serialize) -> Result<(), CliError> {
