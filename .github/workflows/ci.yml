@@ -199,6 +199,19 @@ jobs:
           features=grimoire_assets/conformance,grimoire_debug/conformance,grimoire_debug/tcp
           cargo clippy -p grimoire_assets -p grimoire_debug --all-targets --features "$features" --locked -- -D warnings
           cargo test -p grimoire_assets -p grimoire_debug --features "$features" --locked --no-fail-fast
+      # Feature `debug-link` (contract §9.1, §9.7) is non-default too: its facade tests
+      # (`tests/debug_link.rs`, `required-features = ["debug-link"]`) run only here, the socket test
+      # among them over a real loopback socket (plan 0002 WP8.4).
+      - name: Test (grimoire, feature debug-link)
+        env:
+          GRIMOIRE_SOCKET_TESTS: "1"
+        run: cargo test -p grimoire --features debug-link --locked --no-fail-fast
+      # Contract §2 rule 14: every `--workspace` run builds grimoire_debug with `tcp` (grimoire_link
+      # enables it), so only a package-selected run without grimoire_link proves a game's shipping
+      # configuration (facade without `debug-link`, grimoire_debug without `tcp`) still compiles and
+      # lints clean.
+      - name: Clippy (grimoire and grimoire_debug without debug-link)
+        run: cargo clippy -p grimoire_debug -p grimoire --all-targets --locked -- -D warnings
       # Local test runs force the CPU adapter; prove that path (WARP on Windows, lavapipe on Linux).
       # macOS has no CPU adapter. --workspace keeps the feature resolution of the Test step, so the
       # wgpu build is reused instead of compiled again.
