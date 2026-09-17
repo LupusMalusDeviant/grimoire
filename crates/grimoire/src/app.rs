@@ -12,7 +12,7 @@ use grimoire_platform::{
 use grimoire_render::{Camera25D, NullRenderer, RendererConfig, StageRendererConfig, WgpuRenderer};
 use grimoire_sim::{Simulation, TickInput};
 
-use crate::adapters::debug::ProfilerBudgets;
+use crate::adapters::debug::{DEFAULT_OVERLAY_KEY, ProfilerBudgets};
 use crate::error::GrimoireError;
 use crate::input::InputMap;
 use crate::main_loop::{
@@ -58,6 +58,7 @@ impl App {
             plugins: Vec::new(),
             max_frames: None,
             exit_key: None,
+            overlay_key: Some(DEFAULT_OVERLAY_KEY),
             executor: None,
             camera_25d: None,
             profiler: true,
@@ -124,6 +125,8 @@ pub struct AppBuilder {
     plugins: Vec<Box<dyn GamePlugin>>,
     max_frames: Option<u64>,
     exit_key: Option<KeyCode>,
+    /// Toggles the stats overlay (WP6.4, contract §9.2; default F3).
+    overlay_key: Option<KeyCode>,
     /// `None` keeps the world's default, the sequential executor.
     executor: Option<Arc<dyn Executor>>,
     /// `None` disables the WP2.4 render-side camera follow entirely: `extract_stage` implementations
@@ -149,6 +152,7 @@ impl fmt::Debug for AppBuilder {
             .field("plugins", &plugins)
             .field("max_frames", &self.max_frames)
             .field("exit_key", &self.exit_key)
+            .field("overlay_key", &self.overlay_key)
             .field("camera_25d", &self.camera_25d)
             .field("profiler", &self.profiler)
             .field("profiler_budgets", &self.profiler_budgets)
@@ -245,6 +249,19 @@ impl AppBuilder {
     #[must_use]
     pub fn exit_key(mut self, key: KeyCode) -> Self {
         self.exit_key = Some(key);
+        self
+    }
+
+    /// Key whose press toggles the stats overlay in every frame loop (contract §9.2, plan 0002
+    /// WP6.4; default `Some(KeyCode::F3)`, `None` disables toggling). Available in every build.
+    ///
+    /// The overlay draws the frame profile's scopes with budget bars, red over budget
+    /// ([`crate::adapters::debug::StatsOverlay`]), into `StageFrame::debug_sprites` after every
+    /// plugin's `extract_stage`. Without the profiler ([`AppBuilder::profiler`]) it shows only
+    /// frames per second and frame time. The key still reaches the input state like any other.
+    #[must_use]
+    pub fn overlay_key(mut self, key: Option<KeyCode>) -> Self {
+        self.overlay_key = key;
         self
     }
 
@@ -501,6 +518,7 @@ impl AppBuilder {
             input_map: self.input_map,
             max_frames: self.max_frames,
             exit_key: self.exit_key,
+            overlay_key: self.overlay_key,
             record_hashes,
             executor: self.executor,
             camera_25d: self.camera_25d,

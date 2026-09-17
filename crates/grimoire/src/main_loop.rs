@@ -14,7 +14,7 @@ use grimoire_render::{Camera25D, CameraFollow, RenderError, StageFrame, StageSta
 use grimoire_sim::{FixedTimestep, Simulation, TickInput};
 
 use crate::adapters::debug::{
-    Profiler, ProfilerBudgets, SCOPE_EXTRACT, SCOPE_FRAME, SCOPE_RENDER, SCOPE_SIM,
+    Profiler, ProfilerBudgets, SCOPE_EXTRACT, SCOPE_FRAME, SCOPE_RENDER, SCOPE_SIM, StatsOverlay,
 };
 use crate::aim::{PointerState, sample_aim};
 use crate::error::GrimoireError;
@@ -42,6 +42,8 @@ pub(crate) struct LoopSettings {
     pub input_map: InputMap,
     pub max_frames: Option<u64>,
     pub exit_key: Option<KeyCode>,
+    /// Key that toggles the stats overlay (WP6.4, contract §9.2); `None` never toggles it.
+    pub overlay_key: Option<KeyCode>,
     pub record_hashes: bool,
     /// Set on the world right after `Simulation::new`; `None` keeps the sequential default.
     pub executor: Option<Arc<dyn Executor>>,
@@ -128,6 +130,8 @@ pub(crate) struct GameLoop<R: LoopRenderer> {
     logged_missing_stage_support: bool,
     /// Frame profiler (plan 0002 WP6.3, contract §9.7); `None` when turned off.
     profiler: Option<Profiler>,
+    /// Stats overlay (plan 0002 WP6.4, contract §9.7); presentation state only.
+    overlay: StatsOverlay,
     timestep: FixedTimestep,
     last_time: Duration,
     fps: FpsCounter,
@@ -161,6 +165,7 @@ impl<R: LoopRenderer> GameLoop<R> {
             held_camera: None,
             logged_missing_stage_support: false,
             profiler,
+            overlay: StatsOverlay::new(),
             timestep,
             last_time: Duration::ZERO,
             fps: FpsCounter::new(Duration::ZERO),
@@ -271,9 +276,15 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
                     pressed: true,
                     repeat: false,
                 } = *raw
-                    && self.settings.exit_key == Some(code)
                 {
-                    ctx.request_exit();
+                    if self.settings.exit_key == Some(code) {
+                        ctx.request_exit();
+                    }
+                    // Contract §9.3: a press toggles the overlay. The key still reaches
+                    // `InputState` like any other, so a game that binds it sees it too.
+                    if self.settings.overlay_key == Some(code) {
+                        self.overlay.toggle();
+                    }
                 }
                 self.input.apply(raw);
                 self.pointer.apply(raw);
@@ -385,6 +396,14 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
         self.held_focus = focus;
         self.held_camera = self.stage.camera_25d;
 
+        // Contract §9.3 step 5 / §9.7: the overlay goes into the debug channel after every
+        // `extract_stage`, showing the profile of the frames recorded so far.
+        self.overlay.draw(
+            &self.stage.base.camera,
+            [self.viewport.0, self.viewport.1],
+            &mut self.stage.debug_sprites,
+        );
+
         if !self.logged_missing_stage_support && !running.renderer.supports_stage() {
             log::info!(
                 "renderer {} has no render_stage override: only StageFrame::base is drawn",
@@ -433,6 +452,8 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
                 plugin.on_profile(profiler.profile());
             }
         }
+        self.overlay
+            .record(&stats, self.profiler.as_ref().map(Profiler::profile));
         self.frames += 1;
         if self
             .settings
@@ -616,6 +637,7 @@ mod tests {
             input_map: InputMap::default(),
             max_frames: None,
             exit_key: None,
+            overlay_key: None,
             record_hashes: true,
             executor: None,
             camera_25d: None,
