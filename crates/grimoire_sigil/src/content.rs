@@ -216,6 +216,29 @@ impl SigilLibrary {
         self.epoch
     }
 
+    /// This library with the unit at `index` replaced by `unit` (same [`UnitId`]), the same
+    /// registry, a recomputed manifest hash and one more swap (`replace_unit`, contract §11.8).
+    /// The caller has already checked the index, the unit's behavior references and that `swaps`
+    /// is below `u32::MAX`.
+    pub(crate) fn with_replaced_unit(&self, index: u16, unit: SigilUnit) -> Self {
+        let mut units = self.units.clone();
+        units[usize::from(index)] = unit;
+        let manifest = manifest_hash(self.registry_fingerprint, &units);
+        Self {
+            units,
+            registry: Arc::clone(&self.registry),
+            registry_fingerprint: self.registry_fingerprint,
+            epoch: ContentEpoch::new(self.epoch.swaps.saturating_add(1), manifest),
+        }
+    }
+
+    /// This library with its swap counter set to `swaps`, for tests of the swap limit.
+    #[cfg(test)]
+    pub(crate) fn with_swaps(mut self, swaps: u32) -> Self {
+        self.epoch.swaps = swaps;
+        self
+    }
+
     /// Fingerprint of the behavior registry this library was built against.
     #[must_use]
     pub const fn registry_fingerprint(&self) -> u64 {

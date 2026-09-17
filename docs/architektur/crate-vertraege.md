@@ -3095,7 +3095,20 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   Snapshot aus einer Simulation mit anderer Registry bricht in `sigil.begin` mit Panic ab (§8.4, Bedingung 2).
 - **Nicht Simulationszustand** sind wie der Executor (§7): Registry, Arbeitspuffer der Blöcke und die
   Swap-Protokollierung der Fassade.
-- **Tests (WP5.5, WP8.4):**
+- **Umsetzung (WP5.5), Klarstellungen:**
+  - Die Prüfreihenfolge ist `NotInstalled`, `UnknownUnit`, `UnknownBehavior`, `SwapLimit`; geprüft wird vor jeder
+    Änderung.
+  - „Ohne Ereignisse“ heißt: Der Swap schreibt kein `BulletEvent`. `events()` zeigt bis zum nächsten `sigil.begin`
+    unverändert die Ereignisse des letzten Ticks, und der Pool-Hash enthält keine Swap-Ereignisse. Freigegebene
+    Slots gehen in Slot-Reihenfolge in die Freiliste (§11.3), wie bei jedem Despawn.
+  - Emitter starten in Query-Reihenfolge neu; `restarted_emitters` zählt sie. Das Ergebnis hängt nicht von der
+    Reihenfolge ab.
+  - `SigilContent` wird in ihren bestehenden Ressourcen-Slot geschrieben; ihre Position im Welt-Hash bleibt.
+  - Der aus der Bibliothek abgeleitete Laufzeit-Cache von `sigil.update` (§11.9) wird über den Manifest-Hash neu
+    aufgebaut; er ist kein Zustand.
+  - `restore_checked` vergleicht die Epoche aus `snapshot.resource::<SigilContent>()` mit der geladenen, bevor
+    `Simulation::restore_checked` etwas ändert; Content nur auf einer Seite ist ebenfalls `ContentEpochMismatch`.
+- **Tests (WP5.5, WP8.4)** — die In-Process-Tests aus WP5.5 stehen in `grimoire_sigil/tests/hot_swap.rs`:
   - In-Process-Swap ohne IPC wirkt ab `effective_tick`;
   - `state_hash` unterscheidet Epochen bei gleichem Pool;
   - `restore_checked` mit fremder Epoche liefert einen Fehler und lässt den Hash unverändert;
