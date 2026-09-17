@@ -9,16 +9,20 @@ use grimoire_platform::PlatformWindow;
 use grimoire_render::{RenderFrame, RenderStats, StageFrame};
 use grimoire_sim::Simulation;
 
+use crate::render_assets::{PluginError, RenderAssets};
+
 /// A game (or a part of one) plugged into the engine.
 ///
 /// Call order during a run:
 /// 1. [`GamePlugin::build`] once per plugin, in registration order, on a fresh simulation.
-/// 2. [`GamePlugin::window_created`] once per plugin on the desktop, after the renderer exists.
-/// 3. Per frame: all simulation ticks due, then [`GamePlugin::extract`] and
+/// 2. [`GamePlugin::register_assets`] once per plugin, in registration order, with the loop's
+///    renderer (every frame loop, never [`crate::AppBuilder::run_headless`]).
+/// 3. [`GamePlugin::window_created`] once per plugin on the desktop, after the renderer exists.
+/// 4. Per frame: all simulation ticks due, then [`GamePlugin::extract`] and
 ///    [`GamePlugin::extract_stage`] for every plugin in registration order, rendering, then
 ///    [`GamePlugin::on_frame`] for every plugin, then [`GamePlugin::on_profile`] for every plugin
 ///    (unless the profiler is off).
-/// 4. [`GamePlugin::shutdown`] once per plugin, in registration order, when the frame loop ends.
+/// 5. [`GamePlugin::shutdown`] once per plugin, in registration order, when the frame loop ends.
 ///
 /// Only `build` may shape simulation state (components, resources, systems, initial entities);
 /// the other hooks are presentation and must not influence it, or runs stop being reproducible.
@@ -31,6 +35,29 @@ pub trait GamePlugin {
     /// Systems keep all simulation state inside the world; see [`Simulation`].
     fn build(&mut self, sim: &mut Simulation) {
         let _ = sim;
+    }
+
+    /// Registers the meshes and textures this plugin draws with the loop's renderer (contract
+    /// §9.2, PO decision 2026-09-17 "Fassaden-Haken für Assets").
+    ///
+    /// Called once per run, for every plugin in registration order, right after every plugin's
+    /// [`GamePlugin::build`] and before [`GamePlugin::window_created`] and the first frame: with
+    /// the window or offscreen renderer in [`crate::AppBuilder::run`] and
+    /// [`crate::AppBuilder::run_offscreen`], with a [`crate::HeadlessRenderAssets`] (validation
+    /// and handles without a GPU) in [`crate::AppBuilder::run_headless_frames`], never in
+    /// [`crate::AppBuilder::run_headless`]. Keep the returned handles in the plugin and use them
+    /// in [`GamePlugin::extract_stage`]; loading figures from a pack goes through
+    /// [`crate::adapters::figure_assets::load_figure_into`].
+    ///
+    /// Presentation only: the plugin sees no simulation here, and no handle may reach it.
+    ///
+    /// # Errors
+    /// Any [`PluginError`]. The loop then calls no further `register_assets` or
+    /// `window_created`, runs no frame, calls [`GamePlugin::shutdown`] for every plugin and ends
+    /// the run with [`crate::GrimoireError::Assets`].
+    fn register_assets(&mut self, assets: &mut dyn RenderAssets) -> Result<(), PluginError> {
+        let _ = assets;
+        Ok(())
     }
 
     /// Describes the current state for rendering. `frame` has been cleared of sprites before the

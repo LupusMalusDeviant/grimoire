@@ -10,7 +10,7 @@ use grimoire_ecs::Executor;
 use grimoire_platform::{
     AppHandler, AppResult, KeyCode, PlatformContext, PlatformEvent, RawInputEvent,
 };
-use grimoire_render::{Camera25D, CameraFollow, RenderError, Renderer, StageFrame, StageStats};
+use grimoire_render::{Camera25D, CameraFollow, RenderError, StageFrame, StageStats};
 use grimoire_sim::{FixedTimestep, Simulation, TickInput};
 
 use crate::adapters::debug::{
@@ -20,6 +20,8 @@ use crate::aim::{PointerState, sample_aim};
 use crate::error::GrimoireError;
 use crate::input::{InputMap, InputState};
 use crate::plugin::{FrameStats, GamePlugin};
+use crate::render_assets::{HeadlessRenderAssets, LoopRenderer};
+use grimoire_render::WgpuRenderer;
 
 /// Length of the window over which [`FrameStats::fps`] is averaged.
 const FPS_WINDOW: Duration = Duration::from_secs(1);
@@ -102,7 +104,7 @@ impl FpsCounter {
 }
 
 /// Fixed-timestep main loop over any [`Renderer`], driven by a platform runner.
-pub(crate) struct GameLoop<R: Renderer> {
+pub(crate) struct GameLoop<R: LoopRenderer> {
     settings: LoopSettings,
     plugins: Vec<Box<dyn GamePlugin>>,
     factory: Option<RendererFactory<R>>,
@@ -134,7 +136,7 @@ pub(crate) struct GameLoop<R: Renderer> {
     outcome: Outcome,
 }
 
-impl<R: Renderer> GameLoop<R> {
+impl<R: LoopRenderer> GameLoop<R> {
     pub(crate) fn new(
         settings: LoopSettings,
         plugins: Vec<Box<dyn GamePlugin>>,
@@ -191,7 +193,7 @@ impl<R: Renderer> GameLoop<R> {
     }
 }
 
-impl<R: Renderer> AppHandler for GameLoop<R> {
+impl<R: LoopRenderer> AppHandler for GameLoop<R> {
     fn init(&mut self, ctx: &mut dyn PlatformContext) -> AppResult {
         let factory = self
             .factory
@@ -215,7 +217,27 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             log::debug!("building plugin {}", plugin.name());
             plugin.build(&mut sim);
         }
-        if let Some(window) = ctx.window() {
+
+        // Contract §9.2 asset hook: every plugin registers its meshes and textures with this
+        // loop's renderer before the first frame. A failure ends the run like a render error, but
+        // after a successful `init`, so every built plugin still receives `shutdown`.
+        let mut renderer = renderer;
+        let mut headless_assets = HeadlessRenderAssets::new();
+        let mut assets_failed = false;
+        for plugin in &mut self.plugins {
+            let assets = renderer.render_assets(&mut headless_assets);
+            if let Err(source) = plugin.register_assets(assets) {
+                let plugin = plugin.name().to_owned();
+                log::error!(
+                    "plugin {plugin} failed to register its assets, ending the run: {source}"
+                );
+                self.fail(GrimoireError::Assets { plugin, source });
+                assets_failed = true;
+                break;
+            }
+        }
+
+        if !assets_failed && let Some(window) = ctx.window() {
             for plugin in &mut self.plugins {
                 plugin.window_created(&window);
             }
@@ -224,7 +246,7 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
         self.last_time = ctx.clock().elapsed();
         self.fps = FpsCounter::new(self.last_time);
         self.running = Some(Running { sim, renderer });
-        if self.settings.max_frames == Some(0) {
+        if assets_failed || self.settings.max_frames == Some(0) {
             ctx.request_exit();
         }
         Ok(())
@@ -434,14 +456,14 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
 }
 
 /// Feeds scripted platform events to a loop before each frame, for headless runs.
-pub(crate) struct ScriptedEvents<'a, R: Renderer> {
+pub(crate) struct ScriptedEvents<'a, R: LoopRenderer> {
     pub inner: &'a mut GameLoop<R>,
     pub script: &'a mut dyn FnMut(u64, &mut Vec<PlatformEvent>),
     pub events: Vec<PlatformEvent>,
     pub frame: u64,
 }
 
-impl<R: Renderer> AppHandler for ScriptedEvents<'_, R> {
+impl<R: LoopRenderer> AppHandler for ScriptedEvents<'_, R> {
     fn init(&mut self, ctx: &mut dyn PlatformContext) -> AppResult {
         self.inner.init(ctx)
     }
@@ -469,11 +491,57 @@ impl<R: Renderer> AppHandler for ScriptedEvents<'_, R> {
     }
 }
 
+/// Drives a scripted loop over an offscreen `WgpuRenderer` and hands selected frames' images to a
+/// capture callback ([`crate::AppBuilder::run_offscreen`]).
+pub(crate) struct OffscreenFrames<'a> {
+    pub scripted: ScriptedEvents<'a, WgpuRenderer>,
+    /// `0` never captures.
+    pub capture_every: u64,
+    pub capture: &'a mut dyn FnMut(u64, &[u8]),
+}
+
+impl AppHandler for OffscreenFrames<'_> {
+    fn init(&mut self, ctx: &mut dyn PlatformContext) -> AppResult {
+        self.scripted.init(ctx)
+    }
+
+    fn event(&mut self, ctx: &mut dyn PlatformContext, event: &PlatformEvent) {
+        self.scripted.event(ctx, event);
+    }
+
+    fn frame(&mut self, ctx: &mut dyn PlatformContext) {
+        let frame = self.scripted.inner.frames;
+        self.scripted.frame(ctx);
+        let completed = self.scripted.inner.frames > frame;
+        if !completed || self.capture_every == 0 || !frame.is_multiple_of(self.capture_every) {
+            return;
+        }
+        let game_loop = &mut *self.scripted.inner;
+        let Some(running) = game_loop.running.as_mut() else {
+            return;
+        };
+        match running.renderer.read_offscreen_rgba() {
+            Ok(rgba) => (self.capture)(frame, &rgba),
+            Err(error) => {
+                log::error!("reading back offscreen frame {frame} failed, ending the run: {error}");
+                game_loop.fail(error.into());
+                ctx.request_exit();
+            }
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.scripted.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use grimoire_platform::{Clock, ManualClock, PhysicalSize, PlatformWindow, run_headless};
-    use grimoire_render::{RenderFrame, RenderStats};
+    use grimoire_render::{RenderFrame, RenderStats, Renderer};
+
+    use crate::render_assets::RenderAssets;
 
     /// Fails with the scripted error on the given render call (0-based) and records resizes.
     struct ScriptedRenderer {
@@ -514,6 +582,15 @@ mod tests {
 
         fn backend_name(&self) -> &str {
             "Scripted"
+        }
+    }
+
+    impl LoopRenderer for ScriptedRenderer {
+        fn render_assets<'a>(
+            &'a mut self,
+            headless: &'a mut HeadlessRenderAssets,
+        ) -> &'a mut dyn RenderAssets {
+            headless
         }
     }
 
