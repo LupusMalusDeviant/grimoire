@@ -2025,7 +2025,7 @@ Engine-ADR „Crate-Map-Erweiterung P1“.
 |-------|----------|--------|---------|
 | `grimoire::adapters::sigil_render` | Sigil → Render | Extraktion Pool → `BulletVisual` → `BulletInstance` (mit Palettenraum und Interpolation) in `StageFrame::bullets` | §6, §11, API §9.9 (WP5.3) |
 | `grimoire::adapters::sigil_collide` | Sigil → Kollision | Broadphase über Bullets und `Collider`-Entities, Graze-Ring-Abfrage je Tick | §9.6 (Ressourcentypen `GrazeProbe`, `GrazeHits` mit den Skeletten in WP1.3, Plugin und Systeme WP11.2) |
-| `grimoire::adapters::assets` | Assets → Sigil | Sigil-Einträge aus `AssetSource` an `SigilUnit::from_bytes`, Bibliothek für `grimoire_sigil::install` | §11.2, §12 |
+| `grimoire::adapters::assets` | Assets → Sigil | Sigil-Einträge aus `AssetSource` an `SigilUnit::from_bytes`, Bibliothek für `grimoire_sigil::install` | §11.2, §12, API §9.11 (WP8.3) |
 | `grimoire::adapters::debug` | Debug ↔ Sim/Render | Uhrzugriff des Profilers über `PlatformContext::clock`, `SystemObserver`-Anbindung, Overlay in `StageFrame::debug_sprites`, Warteschlange für Swaps | §9.7, §13 |
 
 - Adapter-Systeme, die im Tick laufen, folgen §7: deklarierte Zugriffe, verzögerte Schreibzugriffe, heiße
@@ -2619,6 +2619,38 @@ pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub 
   Frames). Der Offscreen-Test nimmt wie `grimoire_render/tests/offscreen.rs` eine prozessweite GPU-Sperre.
   `tests/figure_pack.rs` lädt die Test-Figur über `load_figure_into` aus einem Plugin in
   `run_headless_frames`.
+
+### 9.11 Adapter Assets → Sigil (`grimoire::adapters::assets`)
+
+*Stufe A, PO-Freigabe offen.* Ergänzung P1, Plan 0002 WP8.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt
+die öffentliche API fest.
+
+```rust
+#[non_exhaustive]
+pub enum SigilAssetsError {                      // thiserror, Debug
+    Read { id: AssetId, source: AssetError },    // Lesen scheitert (etwa HashMismatch)
+    UnsupportedUnitVersion { id: AssetId, kind_version: u32, expected: u32 },
+    Unit { id: AssetId, source: UnitError },     // SigilUnit::from_bytes scheitert
+    UnitIdMismatch { id: AssetId, unit: UnitId },
+    Library(#[from] SigilError),                 // SigilLibrary::new scheitert
+}
+pub fn sigil_units(source: &dyn AssetSource) -> Result<Vec<SigilUnit>, SigilAssetsError>;
+pub fn sigil_library(source: &dyn AssetSource, registry: Arc<BehaviorRegistry>) -> Result<SigilLibrary, SigilAssetsError>;
+```
+
+**Semantik:**
+- `sigil_units` nimmt jeden Eintrag der Art `SIGIL` in `entries()`-Reihenfolge, liest ihn (die Quelle prüft SHA-256)
+  und dekodiert ihn mit `SigilUnit::from_bytes`; Einträge anderer Arten bleiben unberührt. Die Artversion muss
+  `SigilUnit::FORMAT_VERSION` sein (§12: die Artversion eines Sigil-Eintrags ist die Binärformatversion der Unit),
+  die `UnitId` der Unit muss gleich der `AssetId` des Eintrags sein (§11.1: beide aus demselben kanonischen
+  Content-Pfad). Der erste Verstoß beendet den Aufruf mit dem passenden Fehler.
+- `sigil_library` baut aus diesen Units mit `SigilLibrary::new` die Bibliothek für `grimoire_sigil::install` (§11.2,
+  §11.6). Eine Quelle ohne Sigil-Einträge ergibt eine leere Bibliothek.
+- Liest nur, schreibt keinen Zustand; kein Zustands-Hash ändert sich. Die Content-Epoche entspricht einer Bibliothek aus
+  denselben Unit-Bytes (Test).
+- **Tests:** `crates/grimoire/tests/sigil_assets.rs`: Pack mit der Unit-Fixture aus `PackWriter` → `PackReader` →
+  Bibliothek mit derselben Epoche → installiertes Pattern feuert; je ein Test für leere Quelle, fremde Artversion,
+  ungültige Unit-Bytes, abweichende Unit-Kennung und beschädigte Nutzdaten.
 
 ## 10. `grimoire_exec`
 
@@ -3227,13 +3259,15 @@ pub struct EventRequest { pub event: EventId }   // Component: Clone, Debug, Par
 
 *Freigegeben (WP1.2).*
 
-Format-Dokumentation: `docs/formats/pack.md` (Manifest-Feldtabelle generiert, WP8.1; Header/TOC/Ausrichtung bleiben
-Ablauflogik und stehen nur hier). Dieser Abschnitt ist die verbindliche Kurzfassung. Nach Projekt-ADR-0011
+Format-Dokumentation: `docs/formats/pack.md` (von Hand, das ganze Format: Kopf, Inhaltsverzeichnis, Ausrichtung,
+Arten, Prüfungen, Grenzen, Content-Hash, Golden-Fixtures) und `docs/formats/pack-manifest.md` (Feldtabelle des
+Manifests, generiert). Dieser Abschnitt ist die verbindliche Kurzfassung. Nach Projekt-ADR-0011
 (angenommen, Option 2e) erzeugt `grimoire_schemagen` aus `schema/pack_manifest_v1.gschema` einen Manifest-Codec
-(`crates/grimoire_assets/src/generated/pack_manifest.rs`, Typ `PackManifestBody`) und die Feldtabelle oben; er muss
-das hier festgelegte Byte-Layout exakt reproduzieren. WP8.1 lässt `PackManifestBody` bewusst noch unverdrahtet
-neben dem handgeschriebenen `PackReader`/`PackWriter`-Code (Begründung im Schema-Kommentar); die Verdrahtung ist
-WP8.3.
+(`crates/grimoire_assets/src/generated/pack_manifest.rs`, Typ `PackManifestBody`) und die Feldtabelle; er muss
+das hier festgelegte Byte-Layout exakt reproduzieren. *Klarstellung (WP8.3):* `PackReader` und `PackWriter`
+kodieren und dekodieren das Manifest ausschließlich über diesen Codec und bilden seine Fehler auf
+`PackError::Manifest` ab; Kopf, Inhaltsverzeichnis, Ausrichtung und die Abgleiche zwischen Manifest und
+Inhaltsverzeichnis bleiben handgeschrieben. Byte-Layout, Fehlervarianten und Grenzen ändern sich dadurch nicht.
 
 **Trait-Entscheid (PRD-0002 FR-02, §2a):**
 
@@ -3273,7 +3307,8 @@ pub struct PackManifest;             // compiler(), compiler_version(), path_of(
 pub struct PackWriter;               // Referenz-Schreiber für Tests und Fixtures: new(compiler, compiler_version),
                                      // add(&AssetPath, AssetKind, kind_version, &[u8]) -> Result<AssetId, PackError>,
                                      // application(Vec<u8>), finish() -> Result<Vec<u8>, PackError>
-pub struct Handle<T>;                // id() -> AssetId; Copy, Eq, Ord, Hash, Debug (unabhängig von T)
+pub struct Handle<T>;                // id() -> AssetId; Copy, Eq, Ord, Hash, Debug (unabhängig von T);
+                                     // trägt die Kennung des ausgebenden Stores (Klarstellung WP8.3, siehe unten)
 pub struct AssetStore;               // new(Box<dyn AssetSource>), source() -> &dyn AssetSource,
                                      // load<T: Send + Sync + 'static, E: Display>(&mut self, id, expected: AssetKind,
                                      //     decode: impl FnOnce(&[u8]) -> Result<T, E>) -> Result<Handle<T>, AssetError>,
@@ -3386,7 +3421,11 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
   - Es dekodiert höchstens einmal je `(AssetId, T)` und bildet Fehler von `decode` auf `AssetError::Decode` ab.
   - Die Dekodierfunktion kommt vom Aufrufer, weil `grimoire_assets` die Typen anderer Subsysteme nicht kennt und
     die Orphan-Regel ein Trait-Impl in der Fassade verbietet.
-  - `get` mit einem Handle eines anderen Stores oder Typs liefert `None`, nie Panic.
+  - `get` mit einem Handle eines anderen Stores oder Typs liefert `None`, nie Panic. *Klarstellung (WP8.3):* Ein
+    Handle trägt die Kennung des Stores, der es ausgegeben hat; `get` liefert `None` für das Handle eines anderen
+    Stores auch dann, wenn dieser Store dieselbe `AssetId` mit demselben Typ dekodiert hat. Gleichheit, Ordnung und
+    Hash eines Handles folgen `AssetId` und Store, nie `T`; Handles eines Stores ordnen nach `AssetId`. Bis WP8.3
+    fand `get` in diesem Fall den Wert des eigenen Stores, entgegen dem Satz oben.
   - Der Store ist weder `Clone` noch `StableHash`. Was die Simulation aus ihm übernimmt (geladene Units), regelt
     §11.2.
 - Hot-Swap einzelner Nicht-Sigil-Assets (PRD-0002 FR-10) ist in v1 nur reserviert (Nachrichtenbereich in §13).
@@ -3396,6 +3435,10 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
   `content_hash`-Gleichheit.
 - **Verhaltenstests:**
   - Golden-Fixture `tests/fixtures/pack_v1_minimal.grimpack` (handgeprüft, Rundreise mit `PackWriter` byte-gleich)
+  - Golden-Fixture `tests/fixtures/pack_v1_sigil.grimpack` (WP8.3): eine echte `SigilUnit` und ein Anwendungs-Eintrag,
+    von Hand hergeleitet; `pack_v1_sigil.hex` ist die kommentierte Herleitung Feld für Feld, SHA-256 und `AssetId`
+    stammen aus unabhängigen Nachbildungen, nicht aus `grimoire_assets`. Ein Test prüft Datei gleich Herleitung, die
+    gelesenen Felder und die byte-gleiche Rundreise mit `PackWriter`.
   - Grenzfälle je `PackError`-Variante
   - die Fixture dient auch den C#-Konformanztests (Ort nach P-1)
 - Neue Drittabhängigkeit `sha2` über `[workspace.dependencies]` (§2 Regel 4), ohne Default-Features außer `std`;

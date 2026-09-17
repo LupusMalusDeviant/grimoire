@@ -5,6 +5,16 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+### Added
+- `grimoire` (Fassade): Adapter Assets → Sigil `adapters::assets` (Plan 0002 WP8.3, Vertrag §9.11, Stufe A, PO-Freigabe offen). `sigil_units` liest jeden Eintrag der Art `SIGIL` aus einer `AssetSource` (Pack oder `MemorySource`), prüft Artversion gleich `SigilUnit::FORMAT_VERSION` und `UnitId` gleich `AssetId` und dekodiert ihn; `sigil_library` baut daraus die Bibliothek für `grimoire_sigil::install`. Fehler als `SigilAssetsError`. Dazu der in §9.1 zugesagte Re-Export `grimoire::assets`.
+- `grimoire_assets`: handhergeleitete Golden-Fixture `tests/fixtures/pack_v1_sigil.grimpack` mit einer echten `SigilUnit` und einem Anwendungs-Eintrag; `pack_v1_sigil.hex` ist die kommentierte Herleitung Feld für Feld, SHA-256 und `AssetId` stammen aus unabhängigen Nachbildungen. Beispiel `pack_inspect` (Konsole) zeigt Manifest, Einträge und Content-Hash eines Packs und prüft jeden Eintrag. `docs/formats/pack.md` beschreibt jetzt das ganze Format von Hand; die generierte Feldtabelle des Manifests steht in `docs/formats/pack-manifest.md`. Neue Property-Tests: Mutationen der neuen Fixture und die Rundreise beliebiger Schreiber-Inhalte samt Content-Hash-Gleichheit mit `MemorySource`.
+
+### Changed
+- `grimoire_assets`: `PackReader` und `PackWriter` kodieren und dekodieren das Manifest jetzt über den generierten Codec `PackManifestBody` (Projekt-ADR-0011, WP8.3) statt über eigenen Code; Byte-Layout, Fehlervarianten und Grenzen bleiben gleich, beide Golden-Fixtures bleiben byte-gleich. Eine Manifest-Eintragsanzahl, die nicht zum Inhaltsverzeichnis passt, wird vor dem Dekodieren als `ManifestMismatch` erkannt, sodass der Pfad-Vektor nie über die bereits geprüfte Eintragsanzahl hinaus alloziert.
+
+### Fixed
+- `grimoire_assets`: `AssetStore::get` lieferte für das Handle eines anderen Stores einen Wert, wenn der eigene Store dieselbe `AssetId` mit demselben Typ dekodiert hatte, entgegen Vertrag §12. Handles tragen jetzt die Kennung ihres Stores (Klarstellung, Stufe K); Gleichheit, Ordnung und Hash folgen `AssetId` und Store.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added
