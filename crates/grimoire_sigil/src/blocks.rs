@@ -15,7 +15,7 @@ use grimoire_core::Vec2;
 use grimoire_core::math::dmath;
 use grimoire_sim::SimRng;
 
-use crate::unit::{BlockDef, BlockKind, ModifierDef};
+use crate::unit::{BlockDef, BlockKind, ModifierDef, ModifierKind, ProgramRecord};
 
 /// One placed shot: heading (radians), speed and a position offset from the emitter's spawn
 /// point, before the per-bullet modifier stack's spawn-time contribution (`crate::runtime`) is
@@ -71,6 +71,36 @@ pub(crate) fn generate_shots(
         // inventing an eighth block kind here.
         _ => Vec::new(),
     }
+}
+
+/// Generates one volley of `program`: its block's shots (see [`generate_shots`]), then every
+/// `mirror` modifier of its stack applied in authored order. Shared by `sigil.emit` (an emitter's
+/// volley) and `sigil.update` (the volley of a `burst` or `become_emitter` transform), so both
+/// place shots identically; only the generator `rng` they pass differs (contract §11.7).
+pub(crate) fn program_shots(
+    program: &ProgramRecord,
+    base_speed: f32,
+    base_angle: f32,
+    aim: Option<Vec2>,
+    origin: Vec2,
+    volley_index: u32,
+    rng: &mut SimRng,
+) -> Vec<Shot> {
+    let mut shots = generate_shots(
+        &program.block,
+        base_speed,
+        base_angle,
+        aim,
+        origin,
+        volley_index,
+        rng,
+    );
+    for modifier in &program.modifiers {
+        if modifier.kind == ModifierKind::MIRROR {
+            shots = apply_mirror(&shots, modifier, base_angle);
+        }
+    }
+    shots
 }
 
 const TAU: f32 = dmath::TAU;

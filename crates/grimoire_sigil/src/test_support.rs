@@ -39,7 +39,9 @@ pub(crate) fn build_unit_bytes(
     }
     contents.push((1, bullet_type_bytes));
 
-    if let Some(count) = program_count {
+    // An empty `Programs` section is not canonical (`SigilUnit::from_bytes`), so a count of `0`
+    // omits the section like the encoder does.
+    if let Some(count) = program_count.filter(|&count| count > 0) {
         // `count` minimal-but-well-formed program records (Plan 0002 WP4.2 real `Programs`
         // layout: a `BlockDef` -- kind 1 (`ring`), reserved 0, `count: u16 = 0`, six finite-zero
         // `f32` params, `seed_hash: u32 = 0` -- followed by a `modifier_count: u16 = 0`), rather
