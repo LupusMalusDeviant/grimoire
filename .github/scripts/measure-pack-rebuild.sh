@@ -34,19 +34,21 @@ done
 sources=$(find "$content" -name '*.sigil' | wc -l | tr -d ' ')
 echo "Content: $sources source files below a single root."
 
-start=$(date +%s)
+start=$(date +%s%N)
 "$ac" build "$content" \
   --out "$work/packs" \
   --behaviors "$reference/behaviors.json" \
   --sigilc "$sigilc" \
   --timings
-elapsed=$(( $(date +%s) - start ))
+elapsed_ms=$(( ($(date +%s%N) - start) / 1000000 ))
 
 pack="$work/packs/content.grimpack"
 bytes=$(wc -c <"$pack" | tr -d ' ')
-echo "Pack: $bytes bytes for $sources units; full rebuild in ${elapsed} s (budget ${budget} s)."
+per_unit=$(( elapsed_ms * 1000 / sources ))
+echo "Pack: $bytes bytes for $sources units; full rebuild in ${elapsed_ms} ms" \
+  "(${per_unit} us per unit, budget $(( budget * 1000 )) ms)."
 
-if [ "$elapsed" -gt "$budget" ]; then
-  echo "A full pack rebuild took ${elapsed} s, above the ${budget} s goal of PRD-0016." >&2
+if [ "$elapsed_ms" -gt $(( budget * 1000 )) ]; then
+  echo "A full pack rebuild took ${elapsed_ms} ms, above the ${budget} s goal of PRD-0016." >&2
   exit 1
 fi
