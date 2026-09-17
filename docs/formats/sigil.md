@@ -18,7 +18,8 @@ the schema pass (field names, kinds, units and ranges per construct, name resolu
 encoding, implemented in `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/src/compiler/`).
 [§13](#13-command-line-interface-sigilc) is WP4.3: the command-line interface `sigilc` (`check`,
 `build`, `parse --json`, `set`, `fmt`), its JSON documents, the behaviour manifest, value paths and
-the canonical layout. Not covered here: `sigilc simulate` (Plan 0002 WP5.6), a `sigilc migrate`
+the canonical layout. [§14](#14-reference-patterns) is WP4.5: the reference patterns and their
+coverage table. Not covered here: `sigilc simulate` (Plan 0002 WP5.6), a `sigilc migrate`
 (there is no second source version yet) and the runtime interpreter (Plan 0002 WP5). A file that
 is syntactically valid by [§1](#1-overview)–[§4](#4-syntactic-grammar)'s rules can still be
 rejected by the schema pass.
@@ -1041,3 +1042,57 @@ diagnostics are printed, the file stays untouched and the exit code is `1`. The 
 idempotent, and formatting never changes the compiled unit; `tests/fmt_canonical.rs` checks both
 with whitespace-perturbed variants of every corpus file and fixture, all of which are already in
 the canonical layout.
+
+## 14. Reference patterns
+
+Plan 0002 WP4.5 (PO decision P-5: twelve in P1 with full coverage, patterns 13 to 20 in P2).
+`crates/grimoire_sigilc/tests/reference/` holds the reference patterns: complete, readable Sigil
+patterns that serve as documentation, as test cases and as examples for the Sigil editor. Together
+they use every building block, every modifier, every transformation and every trigger at least once.
+They name silhouettes and palettes only from the drawn rows of the visual catalogue
+([§10.10](#1010-visual-catalogue)), so the bullet pass draws every one of their bullets.
+
+- The directory is the patterns' content root: `12-finale-composite.sigil` imports
+  `01-opening-ring.sigil` by that path. `behaviors.json` next to them is the behaviour manifest
+  ([§13.3](#133-behaviour-manifest---behaviors-file)) for the one behaviour they reference,
+  `drift_orbit`; the id there is a test id, a game registers its own.
+- `sigilc check --behaviors tests/reference/behaviors.json tests/reference/*.sigil` compiles them
+  without a diagnostic, and they are in the canonical layout ([§13.7](#137-fmt-and-the-canonical-layout)).
+- `tests/reference_patterns.rs` compiles each pattern, installs it in a simulation with an aim
+  target, fires its primary emitters for 480 ticks, raises the event `phase_end` once, and checks that
+  every bullet type appears, no spawn is dropped, every position and velocity stays finite, and
+  that the transformations, the sub-emitter and the behaviour visibly act. It also compares the
+  table below with the sources and checks that its union covers every kind the compiler accepts.
+  The `set` and `fmt` gates (`tests/set_lossless.rs`, `tests/fmt_canonical.rs`) include them too.
+- Plan 0002 WP4.4 compiles them on Windows, Linux and macOS and compares the units byte for byte;
+  WP5.7 freezes their golden hashes.
+
+The coverage table lists what each pattern's own file uses (an imported pattern's contents count
+for the file that declares them). **Features** are further constructs the set must show at least
+once: `composition` (`import` and `emitter ... from`), `behaviour`, `sub-emitter` (`role = sub`),
+`offset`, `repeat forever`, `despawn_vfx` and both `speed_curve` interpolations. Keep the markers
+and the row format when editing; `—` marks an empty cell.
+
+<!-- reference-coverage:begin -->
+| Pattern | Blocks | Modifiers | Transforms | Triggers | Flags | Features |
+|---|---|---|---|---|---|---|
+| `01-opening-ring` | ring | accelerate | — | — | grazeable, smashable | — |
+| `02-spiral-curtain` | spiral | rotate | — | — | grazeable | repeat forever |
+| `03-aimed-fan` | aimed, fan | sine_offset | — | — | grazeable | repeat forever |
+| `04-bending-wave` | wave | curve | — | — | env_active, grazeable | — |
+| `05-rail-sweep` | line | speed_curve | — | — | grazeable, reflectable | interp linear, offset |
+| `06-seeded-scatter` | scatter | speed_curve | — | — | grazeable | interp smooth, repeat forever |
+| `07-mirror-bloom` | fan | mirror, rotate | — | — | grazeable | — |
+| `08-returning-needles` | ring | — | reverse | time | grazeable | — |
+| `09-shatter-orbs` | fan, ring | — | burst | distance | grazeable, smashable | despawn_vfx, repeat forever |
+| `10-phase-shift` | ring, spiral | — | change_type, reverse | event | grazeable | repeat forever |
+| `11-seed-bloom` | fan, ring | — | become_emitter, change_type | distance, time | grazeable, smashable | sub-emitter |
+| `12-finale-composite` | ring | rotate | — | — | grazeable | behaviour, composition, offset |
+<!-- reference-coverage:end -->
+
+Every kind appears at least once: blocks `ring` (01, 08-12), `spiral` (02, 10), `fan` (03, 07, 09,
+11), `aimed` (03), `wave` (04), `line` (05), `scatter` (06); modifiers `accelerate` (01), `rotate`
+(02, 07, 12), `sine_offset` (03), `curve` (04), `speed_curve` (05, 06), `mirror` (07); transformations
+`reverse` (08, 10), `burst` (09), `change_type` (10, 11), `become_emitter` (11); triggers `time` (08,
+11), `distance` (09, 11), `event` (10); flags `grazeable` (all), `smashable` (01, 09, 11), `env_active`
+(04), `reflectable` (05).
