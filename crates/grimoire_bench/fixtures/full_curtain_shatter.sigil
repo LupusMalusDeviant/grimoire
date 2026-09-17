@@ -1,0 +1,78 @@
+sigil 1
+// full_curtain_shatter: third of the three units of the benchmark scene "Vollvorhang" (PRD-0004,
+// plan 0002 WP6.6); see full_curtain_flow.sigil for how the benches use them.
+// Compiled by sigilc into full_curtain_shatter_unit_v1.bin; grimoire_sigilc's
+// tests/unit_fixtures.rs checks the compiled bytes stay current.
+// Covers: blocks ring, scatter (seeded); modifier accelerate; transform burst on a distance
+//         trigger with a cascade one level deep.
+
+meta {
+  name = "Full Curtain: Shatter"
+  difficulty = [hard, benchmark]
+  density = 3000
+}
+
+// Shatters into fragments after six units of travel.
+bullet heavy {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.9
+  radius = 0.35u
+  damage = 2
+  flags = [smashable]
+  transform burst {
+    when = distance 6u
+    bullet = fragment
+    speed = 0.09u/t
+    block ring {
+      count = 8
+      start = 22.5deg
+    }
+  }
+}
+
+bullet fragment {
+  silhouette = diamond
+  palette = enemy.poison_lime
+  glow = 0.4
+  radius = 0.12u
+  damage = 1
+  flags = [grazeable]
+}
+
+bullet shard {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.6
+  radius = 0.13u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter shatter {
+  bullet = heavy
+  repeat = forever
+  interval = 30t
+  speed = 0.06u/t
+  block ring {
+    count = 8
+  }
+}
+
+emitter storm {
+  bullet = shard
+  repeat = forever
+  interval = 10t
+  speed = 0.1u/t
+  block scatter {
+    count = 12
+    cone = 360deg
+    direction = 0deg
+    speed_jitter = 0.5
+    seed = curtain_storm
+  }
+  modifier accelerate {
+    rate = 0.0005u/t2
+    max_speed = 0.16u/t
+  }
+}

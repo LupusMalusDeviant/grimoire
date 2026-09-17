@@ -25,33 +25,36 @@
 //!   `src/generated/debug_protocol.rs` and re-exported here. Each carries its own
 //!   `encode`/`decode` pair following contract §2 rule 9 (length/count checked against both a
 //!   documented maximum and the bytes actually remaining, before any allocation; never panics).
-//! - **WP8.2** (this crate's current state): the [`Message`] enum and its
+//! - **WP8.2**: the [`Message`] enum and its
 //!   [`Message::id`]/[`Message::to_frame`]/[`Message::from_frame`] dispatch, plus the handshake
 //!   state machine (contract §13 "Handshake", PO decision V-13) and the "Nach dem Handshake"
 //!   dispatch rules (reachable only via [`Session::dispatch_frame`]) — all hand-written on top of
 //!   the payload types above, since they are control flow with only a few fields each, not a
 //!   wire-format vocabulary a schema compiler earns its keep describing (project ADR-0011
-//!   "Vorschlag" point 1). [`accept_handshake`] and [`connect_handshake`] are written purely against
-//!   [`DebugTransport`], so they are exercised in this crate's own tests only through
-//!   [`InProcessTransport`]; wiring them into [`TcpServerTransport`]'s connection-handling thread
-//!   (with the tighter, pre-allocation byte-level defenses contract §13 "TCP" describes for a
-//!   not-yet-authenticated socket peer) is Plan-0002 WP8.4's "Engine-Server ... IO-Thread", not
-//!   this crate's job. `TcpConfig::token` is still carried by [`TcpConfig`] but not checked by
-//!   [`TcpServerTransport`] itself for the same reason.
+//!   "Vorschlag" point 1). [`accept_handshake`] and [`connect_handshake`] are written purely
+//!   against [`DebugTransport`] and block their thread while they wait.
 //! - **WP6.3**: the profiler data model (contract §13 "Profiler-Datenmodell"): [`FrameProfile`]
 //!   with [`ScopeId`], [`ScopeTotal`] (including budget and estimate flag) and [`StatsFrame`],
 //!   which builds a [`Stats`] value; the clock-free Scope-API [`ScopeRegistry`] and
 //!   [`ScopeTimer`]; and [`ProfileLog`] with its CSV/JSON export
 //!   (`docs/formats/profiler-export.md`). Nothing here reads a clock: the facade measures with the
 //!   platform clock and attaches the profiler to the schedule observer (contract §9.7).
-//! - **Later**: [`Message::SwapSigilUnit`] and [`Message::SigilPreview`] decode and dispatch
-//!   correctly here, but *acting* on one (queueing a swap at a tick boundary, or ever answering
-//!   `SigilPreview` with anything but `Error(NotSupported)`) is Plan-0002 WP8.3/WP8.4's job.
+//! - **WP8.4**: the engine server. [`EngineLink`] runs the handshake and the post-handshake
+//!   dispatch without blocking at the engine's frame boundaries, answers `SigilPreview` with
+//!   `Error(NotSupported)` and reports what the engine must act on as [`LinkEvent`]s; the facade
+//!   (`grimoire`, feature `debug-link`) applies `SwapSigilUnit` before the next
+//!   `Simulation::step` and streams `Stats`. [`TcpServerTransport`]'s IO thread, outside the
+//!   simulation crates, does the socket IO and hands frames over a bounded channel; it enforces
+//!   the one-frame gate before the handshake, the handshake timeout, `Error(Busy)` for a second
+//!   client, the inbound byte limit and clean connection boundaries (contract §13 "TCP").
+//!   [`InProcessTransport::send_bytes`] injects raw bytes for tests of garbage, over-length frames
+//!   and connections that end mid-frame.
 
 mod export;
 mod frame;
 mod generated;
 mod handshake;
+mod link;
 mod message;
 mod profile;
 mod transport;
@@ -69,6 +72,7 @@ pub use handshake::{
     AcceptedHandshake, EngineIdentity, HandshakeError, PostHandshakeOutcome, Session, ToolIdentity,
     accept_handshake, connect_handshake,
 };
+pub use link::{EngineLink, LinkError, LinkEvent};
 pub use message::Message;
 pub use profile::{FrameProfile, ScopeId, ScopeRegistry, ScopeTimer, ScopeTotal, StatsFrame};
 pub use transport::{
@@ -94,14 +98,13 @@ pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 pub const MAX_UNIT_BYTES: u32 = 8 * 1024 * 1024;
 
 /// Largest `len` value accepted for the *first* frame of a connection, before the handshake
-/// completes. Frozen across all protocol versions (contract §13). Enforced semantically by
-/// [`accept_handshake`] against the wire length its transport reconstructs from a decoded
-/// [`Frame`]; the tighter, pre-allocation byte-level enforcement contract §13 "TCP" describes for
-/// [`TcpServerTransport`] specifically is Plan-0002 WP8.4's job (see the crate docs).
+/// completes. Frozen across all protocol versions (contract §13). Enforced by
+/// [`accept_handshake`] and [`EngineLink`] against the wire length of a decoded [`Frame`], and by
+/// the TCP transport's IO thread before it reads any payload byte.
 pub const MAX_HELLO_FRAME_LEN: u32 = 1024;
 
-/// Byte budget for a transport's inbound queue (contract §13, TCP). Not yet enforced by
-/// [`TcpServerTransport`] in this crate; that backpressure wiring is Plan-0002 WP8.4's job.
+/// Byte budget for a transport's inbound queue (contract §13, TCP): payload bytes of the frames
+/// waiting for `poll`. At the limit the TCP transport stops reading its socket.
 pub const MAX_INBOUND_QUEUED_BYTES: usize = 2 * MAX_FRAME_LEN as usize;
 
 /// Time allowed for the first complete frame of a connection to arrive (contract §13). Enforced

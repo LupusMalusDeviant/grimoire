@@ -18,10 +18,25 @@
 //! tick against the 1.0 ms budget of Plan 0002 WP5.4), so the CI log shows the numbers the plan
 //! asks for without decoding JSON. The budget lines are trend output like everything here: a
 //! millisecond budget is never a CI gate on shared runners (engine ADR-0010).
+//!
+//! Plan 0002 WP6.5 adds the collision benches (one line per scenario and thread count) and WP6.6 the
+//! full curtain (`grimoire_bench::curtain`): one line each for its simulation, extraction,
+//! collision and render preparation phases, and, with a GPU adapter, for the offscreen
+//! `render_stage` call and the GPU time the adapter's timestamp queries report. Those last two get
+//! no budget verdict: on a software adapter the rasterizer runs on the CPU inside `render_stage`.
 
 use std::collections::BTreeMap;
+use std::hint::black_box;
 use std::process::ExitCode;
 use std::time::Instant;
+
+use grimoire_bench::curtain::{
+    CURTAIN_BULLETS, CURTAIN_COLLIDE_BUDGET_MS, CURTAIN_COLLIDE_SCENARIO,
+    CURTAIN_EXTRACT_BUDGET_MS, CURTAIN_EXTRACT_SCENARIO, CURTAIN_RENDER_GPU_SCENARIO,
+    CURTAIN_RENDER_HEIGHT, CURTAIN_RENDER_PREP_BUDGET_MS, CURTAIN_RENDER_PREP_SCENARIO,
+    CURTAIN_RENDER_STAGE_SCENARIO, CURTAIN_RENDER_WIDTH, CURTAIN_SIM_BUDGET_MS,
+    CURTAIN_SIM_SCENARIO, CURTAIN_WALLCLOCK_TICKS, FullCurtain,
+};
 
 use grimoire_bench::scenarios::{
     BULLET_UPLOAD_SCENARIO, COLLIDE_BULLETS, COLLIDE_CLUSTER_SCENARIO, COLLIDE_ENEMIES,
@@ -199,6 +214,112 @@ fn measure_collide(layout: CollideLayout, executor: &dyn Executor) -> Vec<f64> {
         samples.push(start.elapsed().as_nanos() as f64);
     }
     samples
+}
+
+/// Wall-clock samples of the full-curtain phases (plan 0002 WP6.6). Every sample sums one phase over
+/// [`CURTAIN_WALLCLOCK_TICKS`] ticks of the same run.
+struct CurtainSamples {
+    sim: Vec<f64>,
+    extract: Vec<f64>,
+    collide: Vec<f64>,
+    /// Render CPU preparation without a GPU.
+    prep: Vec<f64>,
+    /// The `render_stage` call, with an adapter.
+    stage: Option<Vec<f64>>,
+    /// GPU time from timestamp queries, when every frame of every sample reported one.
+    gpu: Option<Vec<f64>>,
+    adapter: Option<String>,
+}
+
+/// One sample: nanoseconds per phase, plus the summed GPU time if every frame reported one.
+struct CurtainSample {
+    phases: [u128; 5],
+    gpu: Option<u128>,
+}
+
+/// Measures the full curtain. Without an adapter the `render_stage` phase is left out, unless
+/// `GRIMOIRE_REQUIRE_GPU_ADAPTER` is `1`, which makes a missing adapter an error (CI sets it, so the
+/// trend never silently loses the phase).
+fn measure_curtain() -> Result<CurtainSamples, String> {
+    let require_adapter = matches!(
+        std::env::var("GRIMOIRE_REQUIRE_GPU_ADAPTER").as_deref(),
+        Ok("1" | "true")
+    );
+    let mut curtain =
+        FullCurtain::build(true).map_err(|err| format!("full-curtain renderer: {err}"))?;
+    if require_adapter && !curtain.has_renderer() {
+        return Err("no GPU adapter although GRIMOIRE_REQUIRE_GPU_ADAPTER=1".to_string());
+    }
+    let run_sample = |curtain: &mut FullCurtain| -> Result<CurtainSample, String> {
+        let mut sample = CurtainSample {
+            phases: [0; 5],
+            gpu: Some(0),
+        };
+        for _ in 0..CURTAIN_WALLCLOCK_TICKS {
+            let start = Instant::now();
+            curtain.step_sim();
+            sample.phases[0] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            black_box(curtain.extract());
+            sample.phases[1] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            black_box(curtain.collide(&SequentialExecutor));
+            sample.phases[2] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            black_box(curtain.prepare_render());
+            sample.phases[3] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            let frame = curtain.render();
+            sample.phases[4] += start.elapsed().as_nanos();
+            if let Some(frame) = frame {
+                let frame = frame.map_err(|err| format!("full-curtain render: {err}"))?;
+                sample.gpu = match (sample.gpu, frame.gpu_time) {
+                    (Some(sum), Some(gpu)) => Some(sum + gpu.as_nanos()),
+                    _ => None,
+                };
+                curtain
+                    .sync_gpu()
+                    .map_err(|err| format!("full-curtain readback: {err}"))?;
+            }
+        }
+        Ok(sample)
+    };
+    for _ in 0..WARMUP_SAMPLES {
+        run_sample(&mut curtain)?;
+    }
+    let with_renderer = curtain.has_renderer();
+    let mut samples = CurtainSamples {
+        sim: Vec::with_capacity(SAMPLES as usize),
+        extract: Vec::with_capacity(SAMPLES as usize),
+        collide: Vec::with_capacity(SAMPLES as usize),
+        prep: Vec::with_capacity(SAMPLES as usize),
+        stage: with_renderer.then(|| Vec::with_capacity(SAMPLES as usize)),
+        gpu: with_renderer.then(|| Vec::with_capacity(SAMPLES as usize)),
+        adapter: curtain.adapter_report_line(),
+    };
+    for _ in 0..SAMPLES {
+        let sample = run_sample(&mut curtain)?;
+        let [sim, extract, collide, prep, stage] = sample.phases;
+        samples.sim.push(sim as f64);
+        samples.extract.push(extract as f64);
+        samples.collide.push(collide as f64);
+        samples.prep.push(prep as f64);
+        if let Some(stage_samples) = samples.stage.as_mut() {
+            stage_samples.push(stage as f64);
+        }
+        samples.gpu = match (samples.gpu.take(), sample.gpu) {
+            (Some(mut gpu_samples), Some(gpu)) => {
+                gpu_samples.push(gpu as f64);
+                Some(gpu_samples)
+            }
+            _ => None,
+        };
+    }
+    Ok(samples)
 }
 
 fn measure_sigil_ticks(mut sim: Simulation, ticks: u32) -> Vec<f64> {
@@ -457,7 +578,106 @@ fn main() -> ExitCode {
         }
     }
 
-    for result in results.iter().chain(&collide_results) {
+    // Plan 0002 WP6.6 (PRD-0004 "Vollvorhang"): the full curtain's phases per tick against the P1
+    // stress-test budgets. `render_stage` and the GPU time get no verdict: on the software adapter
+    // the rasterizer runs on the CPU inside that call, so only the preparation without a GPU is
+    // comparable to the render CPU budget.
+    let curtain = match measure_curtain() {
+        Ok(curtain) => curtain,
+        Err(err) => {
+            eprintln!("wallclock: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let curtain_params = BTreeMap::from([
+        ("bullets".to_string(), int(CURTAIN_BULLETS)),
+        ("ticks".to_string(), int(CURTAIN_WALLCLOCK_TICKS)),
+    ]);
+    let mut curtain_results = Vec::new();
+    let mut render_params = curtain_params.clone();
+    render_params.insert("width".to_string(), int(CURTAIN_RENDER_WIDTH));
+    render_params.insert("height".to_string(), int(CURTAIN_RENDER_HEIGHT));
+    let mut phases = vec![
+        (
+            CURTAIN_SIM_SCENARIO,
+            curtain.sim,
+            Some(CURTAIN_SIM_BUDGET_MS),
+            "simulation tick",
+            curtain_params.clone(),
+        ),
+        (
+            CURTAIN_EXTRACT_SCENARIO,
+            curtain.extract,
+            Some(CURTAIN_EXTRACT_BUDGET_MS),
+            "extraction",
+            curtain_params.clone(),
+        ),
+        (
+            CURTAIN_COLLIDE_SCENARIO,
+            curtain.collide,
+            Some(CURTAIN_COLLIDE_BUDGET_MS),
+            "collision tick (1 thread)",
+            curtain_params.clone(),
+        ),
+        (
+            CURTAIN_RENDER_PREP_SCENARIO,
+            curtain.prep,
+            Some(CURTAIN_RENDER_PREP_BUDGET_MS),
+            "render preparation (bullet upload and clustering, no GPU)",
+            render_params.clone(),
+        ),
+    ];
+    match curtain.stage {
+        Some(stage) => {
+            eprintln!(
+                "{CURTAIN_RENDER_STAGE_SCENARIO}: {}",
+                curtain.adapter.as_deref().unwrap_or("adapter unknown")
+            );
+            phases.push((
+                CURTAIN_RENDER_STAGE_SCENARIO,
+                stage,
+                None,
+                "render_stage call offscreen, including the adapter's work",
+                render_params.clone(),
+            ));
+            match curtain.gpu {
+                Some(gpu) => phases.push((
+                    CURTAIN_RENDER_GPU_SCENARIO,
+                    gpu,
+                    None,
+                    "frame of GPU time (timestamp queries)",
+                    render_params,
+                )),
+                None => eprintln!(
+                    "{CURTAIN_RENDER_GPU_SCENARIO}: skipped, the adapter reported no GPU time for every frame"
+                ),
+            }
+        }
+        None => eprintln!(
+            "{CURTAIN_RENDER_STAGE_SCENARIO}: skipped, no GPU adapter (set GRIMOIRE_GPU_ADAPTER=software)"
+        ),
+    }
+    for (scenario, samples, budget_ms, what, params) in phases {
+        let result = result_for(&meta, scenario, samples, params);
+        let per_tick_ms = result.median / f64::from(CURTAIN_WALLCLOCK_TICKS) / 1.0e6;
+        let budget = match budget_ms {
+            Some(budget_ms) if per_tick_ms <= budget_ms => {
+                format!("budget {budget_ms:.1} ms: within")
+            }
+            Some(budget_ms) => format!("budget {budget_ms:.1} ms: OVER"),
+            None => "no budget verdict on a software adapter".to_string(),
+        };
+        eprintln!(
+            "{scenario}: median {per_tick_ms:.4} ms per {what}, about {CURTAIN_BULLETS} bullets from every modifier type ({budget}; wall clock, trend only)"
+        );
+        curtain_results.push(result);
+    }
+
+    for result in results
+        .iter()
+        .chain(&collide_results)
+        .chain(&curtain_results)
+    {
         match result.to_json_line() {
             Ok(line) => println!("{line}"),
             Err(err) => {

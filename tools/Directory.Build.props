@@ -1,0 +1,31 @@
+<Project>
+  <!-- Common settings of the Grimoire C# tooling suite (Plan 0002 WP9.1, PO decisions P-1 and P-13).
+       Every path is relative to this file, so the suite builds wherever the repository is checked
+       out. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsPackable>false</IsPackable>
+    <Authors>Lupus Malus Deviant</Authors>
+    <Copyright>Copyright Lupus Malus Deviant. All rights reserved.</Copyright>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- The engine version the tools talk to, read from the workspace version in the engine's
+       Cargo.toml: the debug-link handshake compares it byte for byte with the engine's
+       ENGINE_VERSION (contract §13), so tools are rebuilt per engine tag. The build hash comes from
+       GRIMOIRE_BUILD_HASH like ENGINE_BUILD (contract §8.1), else "unknown". -->
+  <PropertyGroup>
+    <GrimoireRepositoryRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))</GrimoireRepositoryRoot>
+    <GrimoireEngineVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(GrimoireRepositoryRoot)/Cargo.toml')), '(?m)^version = "([^"]+)"').Groups[1].Value)</GrimoireEngineVersion>
+    <GrimoireBuildHash>$(GRIMOIRE_BUILD_HASH)</GrimoireBuildHash>
+    <GrimoireBuildHash Condition="'$(GrimoireBuildHash)' == ''">unknown</GrimoireBuildHash>
+  </PropertyGroup>
+</Project>

@@ -43,6 +43,22 @@ const FIXTURES: &[Fixture] = &[
         source: "grimoire/tests/fixtures/sigil_curtain.sigil",
         unit: "grimoire/tests/fixtures/sigil_curtain_unit_v1.bin",
     },
+    // Plan 0002 WP6.6: the three units of the benchmark scene "Vollvorhang" in `grimoire_bench`.
+    Fixture {
+        canonical_path: "fixtures/full_curtain_flow.sigil",
+        source: "grimoire_bench/fixtures/full_curtain_flow.sigil",
+        unit: "grimoire_bench/fixtures/full_curtain_flow_unit_v1.bin",
+    },
+    Fixture {
+        canonical_path: "fixtures/full_curtain_weave.sigil",
+        source: "grimoire_bench/fixtures/full_curtain_weave.sigil",
+        unit: "grimoire_bench/fixtures/full_curtain_weave_unit_v1.bin",
+    },
+    Fixture {
+        canonical_path: "fixtures/full_curtain_shatter.sigil",
+        source: "grimoire_bench/fixtures/full_curtain_shatter.sigil",
+        unit: "grimoire_bench/fixtures/full_curtain_shatter_unit_v1.bin",
+    },
 ];
 
 fn crates_dir() -> PathBuf {

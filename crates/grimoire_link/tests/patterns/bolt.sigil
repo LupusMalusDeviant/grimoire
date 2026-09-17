@@ -1,0 +1,31 @@
+sigil 1
+// The pattern the hot-reload proof starts with (Plan 0002 WP8.5): one slow ring of six bolts.
+// `tests/hot_reload_e2e.rs` copies this file into a temporary content root, compiles it with
+// `grimoire_link::compile`, installs the unit in a real engine run and then overwrites the file
+// with `bolt_faster.sigil` — exactly what saving in an editor does.
+
+meta {
+  name = "Dev Link Bolt"
+  difficulty = [normal]
+  density = 60
+}
+
+bullet bolt {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.5
+  radius = 0.3u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter ring {
+  bullet = bolt
+  repeat = forever
+  interval = 12t
+  speed = 0.06u/t
+  block ring {
+    count = 6
+    start = 0deg
+  }
+}

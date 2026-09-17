@@ -63,6 +63,10 @@ impl App {
             camera_25d: None,
             profiler: true,
             profiler_budgets: ProfilerBudgets::default(),
+            #[cfg(feature = "debug-link")]
+            debug_link: None,
+            #[cfg(feature = "debug-link")]
+            debug_link_token: [0; 32],
         }
     }
 }
@@ -136,6 +140,12 @@ pub struct AppBuilder {
     profiler: bool,
     /// Budgets per profiler scope (default [`ProfilerBudgets::default`]).
     profiler_budgets: ProfilerBudgets,
+    /// Transport of the debug link (contract §9.2); `None` binds from the environment, if set.
+    #[cfg(feature = "debug-link")]
+    debug_link: Option<Box<dyn grimoire_debug::DebugTransport>>,
+    /// Token a tool must present over [`AppBuilder::debug_link`]'s transport.
+    #[cfg(feature = "debug-link")]
+    debug_link_token: [u8; 32],
 }
 
 impl fmt::Debug for AppBuilder {
@@ -156,6 +166,7 @@ impl fmt::Debug for AppBuilder {
             .field("camera_25d", &self.camera_25d)
             .field("profiler", &self.profiler)
             .field("profiler_budgets", &self.profiler_budgets)
+            .field("debug_link", &self.has_debug_link())
             .field(
                 "executor_threads",
                 &self
@@ -309,6 +320,44 @@ impl AppBuilder {
         self
     }
 
+    /// Uses `transport` for the debug link of every run instead of binding one from the
+    /// environment (contract §9.2, §9.7; feature `debug-link`, plan 0002 WP8.4).
+    ///
+    /// Without this call, a run binds a [`grimoire_debug::TcpServerTransport`] after the plugins
+    /// are built if `GRIMOIRE_DEBUG_ADDR` is set (with the token of `GRIMOIRE_DEBUG_TOKEN`); a
+    /// configuration error is logged and the run continues without a link. Over the link a tool
+    /// swaps Sigil units at tick boundaries and receives `Stats`
+    /// ([`crate::adapters::debug::link::DebugLink`]); without an applied swap every state hash is
+    /// the same with and without a link. The handshake token for `transport` is
+    /// [`AppBuilder::debug_link_token`], all zeros unless set, which suits an in-process transport
+    /// whose both ends the caller holds.
+    #[cfg(feature = "debug-link")]
+    #[must_use]
+    pub fn debug_link(mut self, transport: Box<dyn grimoire_debug::DebugTransport>) -> Self {
+        self.debug_link = Some(transport);
+        self
+    }
+
+    /// The token a tool must present over the transport of [`AppBuilder::debug_link`] (contract
+    /// §13 "Handshake" step 6; default all zeros). A link bound from the environment uses
+    /// `GRIMOIRE_DEBUG_TOKEN` instead.
+    #[cfg(feature = "debug-link")]
+    #[must_use]
+    pub fn debug_link_token(mut self, token: [u8; 32]) -> Self {
+        self.debug_link_token = token;
+        self
+    }
+
+    #[cfg(feature = "debug-link")]
+    fn has_debug_link(&self) -> bool {
+        self.debug_link.is_some()
+    }
+
+    #[cfg(not(feature = "debug-link"))]
+    fn has_debug_link(&self) -> bool {
+        false
+    }
+
     /// Executor for parallel stages and data-parallel queries (default: the world's
     /// [`grimoire_ecs::SequentialExecutor`]).
     ///
@@ -363,6 +412,10 @@ impl AppBuilder {
     ///
     /// Plugins are built once in registration order; `extract` and `on_frame` are never called.
     /// `input(tick)` supplies the input of the tick about to be simulated.
+    ///
+    /// With the feature `debug-link` and a link (`AppBuilder::debug_link` or the environment),
+    /// the link is polled and queued swaps are applied before every tick, before `input` is
+    /// called (contract §9.3).
     #[must_use]
     pub fn run_headless(
         mut self,
@@ -376,8 +429,16 @@ impl AppBuilder {
         for plugin in &mut self.plugins {
             plugin.build(&mut sim);
         }
+        #[cfg(feature = "debug-link")]
+        let mut link =
+            crate::main_loop::open_debug_link(self.debug_link.take(), self.debug_link_token);
         let mut hashes = Vec::new();
         for _ in 0..ticks {
+            #[cfg(feature = "debug-link")]
+            if let Some(link) = &mut link {
+                link.poll();
+                link.apply_swaps(&mut sim);
+            }
             sim.step(input(sim.tick()));
             if self.hash_every != 0 && sim.tick().is_multiple_of(self.hash_every) {
                 hashes.push((sim.tick(), sim.state_hash()));
@@ -523,6 +584,11 @@ impl AppBuilder {
             executor: self.executor,
             camera_25d: self.camera_25d,
             profiler: self.profiler.then_some(self.profiler_budgets),
+            #[cfg(feature = "debug-link")]
+            debug_link: Some(crate::main_loop::DebugLinkSetup {
+                transport: self.debug_link,
+                token: self.debug_link_token,
+            }),
             // Physical pixels; a real `Resized` event overwrites this once the window exists
             // (contract §9.3), but `run_headless_frames*` never resizes, so the configured
             // `WindowConfig` size is what mouse-aim sampling sees throughout those runs.

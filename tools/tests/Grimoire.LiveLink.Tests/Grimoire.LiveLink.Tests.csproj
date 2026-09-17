@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Grimoire.LiveLink against a contract-§13 engine double over in-memory streams; the TCP tests run
+       only with GRIMOIRE_SOCKET_TESTS=1, which only CI sets. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <RootNamespace>Grimoire.LiveLink.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Grimoire.LiveLink/Grimoire.LiveLink.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/RustFixtures.cs" Link="Shared/RustFixtures.cs" />
+    <None Include="../../../crates/grimoire_debug/tests/handshake_golden.rs" Link="fixtures/handshake_golden.rs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

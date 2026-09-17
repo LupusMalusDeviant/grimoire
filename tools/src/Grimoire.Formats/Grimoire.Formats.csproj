@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Wire formats of the engine for C# tools: the codecs generated from schema/*.gschema
+       (Generated/, grimoire_schemagen, project ADR-0011) plus the hand-written runtime, debug
+       protocol framing and pack v1 reader and writer (contract §12, §13). No third-party
+       dependencies. -->
+  <PropertyGroup>
+    <RootNamespace>Grimoire.Formats</RootNamespace>
+    <Description>Engine wire formats (debug protocol v1, pack v1) for Grimoire tools.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="GrimoireEngineVersion" Value="$(GrimoireEngineVersion)" />
+    <AssemblyMetadata Include="GrimoireBuildHash" Value="$(GrimoireBuildHash)" />
+    <InternalsVisibleTo Include="Grimoire.Formats.Tests" />
+  </ItemGroup>
+
+  <Target Name="GrimoireCheckBuildIdentity" BeforeTargets="CoreCompile">
+    <Error Condition="'$(GrimoireEngineVersion)' == ''"
+           Text="No workspace version found in $(GrimoireRepositoryRoot)/Cargo.toml." />
+    <Error Condition="'$(GrimoireBuildHash)' != 'unknown' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(GrimoireBuildHash)', '^[0-9a-f]{40}$'))"
+           Text="GRIMOIRE_BUILD_HASH must be exactly 40 lowercase hex characters (contract §8.1)." />
+  </Target>
+</Project>
