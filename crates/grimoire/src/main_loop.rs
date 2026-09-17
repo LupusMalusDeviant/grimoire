@@ -54,6 +54,38 @@ pub(crate) struct LoopSettings {
     pub initial_viewport: (f32, f32),
     /// Budgets of the frame profiler (WP6.3), `None` when [`crate::AppBuilder::profiler`] is off.
     pub profiler: Option<ProfilerBudgets>,
+    /// Transport and token of the debug link, taken once by `init` (contract §9.7).
+    #[cfg(feature = "debug-link")]
+    pub debug_link: Option<DebugLinkSetup>,
+}
+
+/// How a run sets up its debug link (contract §9.7).
+#[cfg(feature = "debug-link")]
+pub(crate) struct DebugLinkSetup {
+    /// The builder's transport; `None` binds one from the environment, if configured.
+    pub transport: Option<Box<dyn grimoire_debug::DebugTransport>>,
+    /// Token a tool must present over `transport`.
+    pub token: [u8; 32],
+}
+
+/// The debug link of a run (contract §9.7): over `transport` if given, else bound from the
+/// environment; a configuration or bind error is logged and the run continues without a link.
+#[cfg(feature = "debug-link")]
+pub(crate) fn open_debug_link(
+    transport: Option<Box<dyn grimoire_debug::DebugTransport>>,
+    token: [u8; 32],
+) -> Option<crate::adapters::debug::link::DebugLink> {
+    use crate::adapters::debug::link::DebugLink;
+    match transport {
+        Some(transport) => Some(DebugLink::new(transport, token)),
+        None => match DebugLink::from_env() {
+            Ok(link) => link,
+            Err(error) => {
+                log::error!("debug link not started, the run continues without it: {error}");
+                None
+            }
+        },
+    }
 }
 
 /// Result of [`crate::AppBuilder::run_headless_frames`].
@@ -132,6 +164,9 @@ pub(crate) struct GameLoop<R: LoopRenderer> {
     profiler: Option<Profiler>,
     /// Stats overlay (plan 0002 WP6.4, contract §9.7); presentation state only.
     overlay: StatsOverlay,
+    /// Debug link (plan 0002 WP8.4, contract §9.7), set up by `init`.
+    #[cfg(feature = "debug-link")]
+    link: Option<crate::adapters::debug::link::DebugLink>,
     timestep: FixedTimestep,
     last_time: Duration,
     fps: FpsCounter,
@@ -166,6 +201,8 @@ impl<R: LoopRenderer> GameLoop<R> {
             logged_missing_stage_support: false,
             profiler,
             overlay: StatsOverlay::new(),
+            #[cfg(feature = "debug-link")]
+            link: None,
             timestep,
             last_time: Duration::ZERO,
             fps: FpsCounter::new(Duration::ZERO),
@@ -248,6 +285,13 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
             }
         }
 
+        // Contract §9.3 `init`, §9.10: the debug link comes after the plugins are built, their
+        // assets registered and the window announced, before the first frame.
+        #[cfg(feature = "debug-link")]
+        if !assets_failed && let Some(setup) = self.settings.debug_link.take() {
+            self.link = open_debug_link(setup.transport, setup.token);
+        }
+
         self.last_time = ctx.clock().elapsed();
         self.fps = FpsCounter::new(self.last_time);
         self.running = Some(Running { sim, renderer });
@@ -305,6 +349,12 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
         let now = ctx.clock().elapsed();
         let frame_time = now.saturating_sub(self.last_time);
         self.last_time = now;
+        // Contract §9.3 step 1 / §9.7: the link is read at the frame start, before the timestep
+        // advances; swaps wait in its queue for the next tick boundary.
+        #[cfg(feature = "debug-link")]
+        if let Some(link) = &mut self.link {
+            link.poll();
+        }
         let plan = self.timestep.advance(frame_time);
 
         let mut tick_input = TickInput::default();
@@ -331,6 +381,12 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
         // observer (read-only, no hash changes) and `sim` sums the steps.
         let mut sim_time = Duration::ZERO;
         for _ in 0..plan.ticks {
+            // Contract §9.3 step 4 / §9.7: queued swaps apply right before a step, never inside
+            // one; a frame without a tick leaves them queued.
+            #[cfg(feature = "debug-link")]
+            if let Some(link) = &mut self.link {
+                link.apply_swaps(&mut running.sim);
+            }
             match &mut self.profiler {
                 Some(profiler) => {
                     let clock = ctx.clock();
@@ -451,6 +507,15 @@ impl<R: LoopRenderer> AppHandler for GameLoop<R> {
             for plugin in &mut self.plugins {
                 plugin.on_profile(profiler.profile());
             }
+        }
+        // Contract §9.3 step 6 / §9.7: `Stats` after every plugin saw the frame.
+        #[cfg(feature = "debug-link")]
+        if let Some(link) = &mut self.link {
+            link.frame_finished(
+                &stats,
+                self.profiler.as_ref().map(Profiler::profile),
+                crate::adapters::debug::link::current_epoch(&running.sim),
+            );
         }
         self.overlay
             .record(&stats, self.profiler.as_ref().map(Profiler::profile));
@@ -643,6 +708,8 @@ mod tests {
             camera_25d: None,
             initial_viewport: (800.0, 600.0),
             profiler: Some(ProfilerBudgets::default()),
+            #[cfg(feature = "debug-link")]
+            debug_link: None,
         }
     }
 
