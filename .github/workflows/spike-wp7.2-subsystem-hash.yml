@@ -1,0 +1,85 @@
+# Spike OF-18.1, plan 0002 WP7.2 (subsystem hash granularity): what do subsystem hashes cost per
+# system per tick versus every N ticks, at 10,000 bullets? Measures the real implementation
+# (grimoire_sim::trace) on the bench scenarios, on a CI runner only (engine ADR-0010: the
+# development machine never produces benchmark numbers). Runs on pushes to the spike's branch that
+# touch the spike or this workflow, and on demand.
+#
+# Every run that is triggered is watched until it finishes:
+#   gh run watch <id> --exit-status        (red run: gh run view <id> --log-failed)
+
+name: Spike WP7.2 subsystem hash cost (OF-18.1)
+
+on:
+  push:
+    branches: [p1/wp7.2-subsystem-hashes]
+    paths:
+      - spikes/wp7.2-subsystem-hash/**
+      - crates/grimoire_sim/src/trace.rs
+      - .github/workflows/spike-wp7.2-subsystem-hash.yml
+  workflow_dispatch:
+
+concurrency:
+  group: spike-wp7.2-subsystem-hash
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: spikes/wp7.2-subsystem-hash
+
+jobs:
+  measure:
+    name: measure (Linux, Callgrind Ir and wall-clock trend)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: spikes/wp7.2-subsystem-hash
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+      - name: Build release
+        run: cargo build --release --locked
+      # Correctness before any number: every traced mode reaches the plain run's state hashes, and
+      # two identical per-system traces have no divergence.
+      - name: Check traces against plain runs
+        run: ./target/release/subsystem-hash-cost check
+      - name: Wall-clock trend (median of 7 runs per mode, trend only)
+        run: |
+          mkdir -p results
+          {
+            echo "### Wall clock, milliseconds per tick (runner trend, engine ADR-0010)"
+            echo
+            ./target/release/subsystem-hash-cost wallclock
+          } | tee results/wallclock.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Callgrind instruction counts
+        run: |
+          mkdir -p results
+          echo "valgrind $(valgrind --version), $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          bash scripts/measure.sh ./target/release/subsystem-hash-cost cg-out \
+            | tee results/ir.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spike-wp7.2-subsystem-hash
+          path: spikes/wp7.2-subsystem-hash/results/
+          if-no-files-found: error
+          retention-days: 30
