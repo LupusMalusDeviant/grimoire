@@ -5,17 +5,26 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::AssetError;
 use crate::ids::{AssetId, AssetKind};
 use crate::source::AssetSource;
 
+/// Source of [`AssetStore`] identities, so a [`Handle`] remembers which store issued it. Starts at
+/// 1; the counter is process-wide and never influences simulation state (the store is not
+/// simulation state, contract §12).
+static NEXT_STORE_ID: AtomicU64 = AtomicU64::new(1);
+
 /// A typed reference to a value decoded by [`AssetStore::load`].
 ///
-/// Identity and ordering depend only on the underlying [`AssetId`], independently of `T`, so two
-/// handles of different types can still be compared by id if needed.
+/// A handle remembers the store that issued it: [`AssetStore::get`] returns `None` for a handle of
+/// another store, even if that store has decoded the same id (contract §12). Equality, ordering
+/// and hashing use the asset id and the issuing store, never `T`; handles of one store order by
+/// [`AssetId`].
 pub struct Handle<T> {
     id: AssetId,
+    store: u64,
     marker: PhantomData<fn() -> T>,
 }
 
@@ -37,7 +46,7 @@ impl<T> Copy for Handle<T> {}
 
 impl<T> PartialEq for Handle<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.id == other.id && self.store == other.store
     }
 }
 
@@ -51,13 +60,14 @@ impl<T> PartialOrd for Handle<T> {
 
 impl<T> Ord for Handle<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.id.cmp(&other.id)
+        (self.id, self.store).cmp(&(other.id, other.store))
     }
 }
 
 impl<T> Hash for Handle<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+        self.store.hash(state);
     }
 }
 
@@ -72,6 +82,8 @@ impl<T> fmt::Debug for Handle<T> {
 /// Not simulation state: it is neither `Clone` nor `StableHash` and lives outside the ECS world
 /// (contract §12).
 pub struct AssetStore {
+    /// Identity stamped into every [`Handle`] this store issues.
+    id: u64,
     source: Box<dyn AssetSource>,
     decoded: BTreeMap<(AssetId, TypeId), Box<dyn Any + Send + Sync>>,
 }
@@ -90,6 +102,7 @@ impl AssetStore {
     #[must_use]
     pub fn new(source: Box<dyn AssetSource>) -> Self {
         Self {
+            id: NEXT_STORE_ID.fetch_add(1, Ordering::Relaxed),
             source,
             decoded: BTreeMap::new(),
         }
@@ -126,6 +139,7 @@ impl AssetStore {
         if self.decoded.contains_key(&key) {
             return Ok(Handle {
                 id,
+                store: self.id,
                 marker: PhantomData,
             });
         }
@@ -151,6 +165,7 @@ impl AssetStore {
         self.decoded.insert(key, Box::new(value));
         Ok(Handle {
             id,
+            store: self.id,
             marker: PhantomData,
         })
     }
@@ -159,6 +174,9 @@ impl AssetStore {
     /// requested with a different `T` (never panics).
     #[must_use]
     pub fn get<T: 'static>(&self, handle: Handle<T>) -> Option<&T> {
+        if handle.store != self.id {
+            return None;
+        }
         self.decoded
             .get(&(handle.id, TypeId::of::<T>()))?
             .downcast_ref::<T>()
@@ -247,6 +265,7 @@ mod tests {
         // Same id, different type: `get` must not find it.
         let wrong_type_handle: Handle<u32> = Handle {
             id: handle.id(),
+            store: handle.store,
             marker: PhantomData,
         };
         assert_eq!(store.get(wrong_type_handle), None);
@@ -254,8 +273,46 @@ mod tests {
         // A handle for an id this store never loaded.
         let other_handle: Handle<Vec<u8>> = Handle {
             id: AssetId(handle.id().0 ^ 1),
+            store: handle.store,
             marker: PhantomData,
         };
         assert_eq!(store.get(other_handle), None);
+    }
+
+    #[test]
+    fn a_handle_of_another_store_is_none_even_for_the_same_decoded_id() {
+        let (mut first, id) = store_with_one_sigil();
+        let (mut second, second_id) = store_with_one_sigil();
+        assert_eq!(id, second_id);
+        let decode = |bytes: &[u8]| Ok::<_, String>(bytes.to_vec());
+        let from_first = first
+            .load::<Vec<u8>, String>(id, AssetKind::SIGIL, decode)
+            .unwrap();
+        let from_second = second
+            .load::<Vec<u8>, String>(id, AssetKind::SIGIL, decode)
+            .unwrap();
+
+        assert_eq!(first.get(from_first), Some(&vec![1u8, 2, 3]));
+        assert_eq!(second.get(from_second), Some(&vec![1u8, 2, 3]));
+        assert_eq!(second.get(from_first), None);
+        assert_eq!(first.get(from_second), None);
+        assert_ne!(from_first, from_second);
+        assert_eq!(from_first.id(), from_second.id());
+    }
+
+    #[test]
+    fn handles_of_one_store_order_by_asset_id() {
+        let mut source = MemorySource::new("test");
+        let a = source.insert(&AssetPath::new("a").unwrap(), AssetKind::SIGIL, 1, vec![1]);
+        let b = source.insert(&AssetPath::new("b").unwrap(), AssetKind::SIGIL, 1, vec![2]);
+        let mut store = AssetStore::new(Box::new(source));
+        let decode = |bytes: &[u8]| Ok::<_, String>(bytes.to_vec());
+        let handle_a = store
+            .load::<Vec<u8>, String>(a, AssetKind::SIGIL, decode)
+            .unwrap();
+        let handle_b = store
+            .load::<Vec<u8>, String>(b, AssetKind::SIGIL, decode)
+            .unwrap();
+        assert_eq!(handle_a.cmp(&handle_b), a.cmp(&b));
     }
 }
