@@ -61,3 +61,36 @@ pub fn corpus_sigil_files() -> Vec<(String, String)> {
 pub fn expected_json_path(display_name: &str) -> PathBuf {
     corpus_root().join(display_name.replace(".sigil", ".expected.json"))
 }
+
+/// Every `.sigil` source that parses cleanly and is meant to: the `valid/` corpus plus the
+/// compiled-unit fixtures of the facade (`crates/grimoire/tests/fixtures/*.sigil`), as
+/// `(display_name, source)` pairs sorted by display name. Plan 0002 WP4.3's `set`/`fmt` gates run
+/// over this set.
+#[allow(dead_code)]
+pub fn clean_sigil_sources() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = corpus_sigil_files()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("valid/"))
+        .collect();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../grimoire/tests/fixtures");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&fixtures)
+        .unwrap_or_else(|error| panic!("reading {fixtures:?}: {error}"))
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("sigil"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let name = format!(
+            "grimoire-fixtures/{}",
+            path.file_name().unwrap().to_str().unwrap()
+        );
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|error| panic!("reading {path:?}: {error}"));
+        out.push((name, source));
+    }
+    assert!(
+        out.len() >= 7,
+        "expected the valid corpus and the facade fixtures"
+    );
+    out
+}

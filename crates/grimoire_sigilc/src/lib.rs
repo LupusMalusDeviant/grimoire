@@ -20,7 +20,10 @@
 //! **Status:** lexer, parser and diagnostics land in WP4.1 (this module tree: [`span`],
 //! [`syntax`], [`parser`], [`fmt`], [`diagnostics`]); the schema pass, name resolution,
 //! `from`-composition, static validation and the `SigilUnit` encoder land in WP4.2 ([`compiler`]);
-//! the `sigilc build`/`set`/`simulate` CLI subcommands remain Plan 0002 WP4.3/WP5.6.
+//! the command-line interface lands in WP4.3 ([`cli`], with value listing and lossless `set` in
+//! [`edit`], the canonical layout in [`fmt::format_canonical`], content paths in
+//! [`content_path`] and the behaviour manifest in [`behaviors`]); `sigilc simulate` remains Plan
+//! 0002 WP5.6.
 //! [`derive_unit_id`] predates WP4.1 (added in WP1.3, once `grimoire_sigil::UnitId`, contract
 //! §11.1, existed) and is unrelated to parsing.
 //!
@@ -39,8 +42,12 @@
 use grimoire_core::StableHasher;
 use grimoire_sigil::UnitId;
 
+pub mod behaviors;
+pub mod cli;
 pub mod compiler;
+pub mod content_path;
 pub mod diagnostics;
+pub mod edit;
 pub mod fmt;
 mod lexer;
 pub mod parser;
@@ -50,7 +57,7 @@ pub mod syntax;
 pub use diagnostics::{
     DIAGNOSTICS_SCHEMA_VERSION, Diagnostic, DiagnosticsDocument, RelatedLocation, Severity,
 };
-pub use fmt::format;
+pub use fmt::{FormatError, format, format_canonical};
 pub use parser::{ParseOutput, SUPPORTED_SIGIL_VERSION, parse};
 pub use span::{Position, Span};
 pub use syntax::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};

@@ -16,10 +16,12 @@ the lossless syntax tree, node paths, lexer/parser diagnostics `SIG0001`–`SIG0
 the schema pass (field names, kinds, units and ranges per construct, name resolution, imports and
 `from`-composition, static validation, diagnostics `SIG0012` onward) and the `SigilUnit` binary
 encoding, implemented in `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/src/compiler/`).
-Not covered by either: the `sigilc build`/`set`/`migrate`/`simulate` CLI subcommands (Plan 0002
-WP4.3/WP5.6) and the runtime interpreter that will actually read a compiled unit's `Programs` and
-`Emitters` content at tick time (Plan 0002 WP5). A file that is syntactically valid by
-[§1](#1-overview)–[§4](#4-syntactic-grammar)'s rules can still be rejected by the schema pass.
+[§13](#13-command-line-interface-sigilc) is WP4.3: the command-line interface `sigilc` (`check`,
+`build`, `parse --json`, `set`, `fmt`), its JSON documents, the behaviour manifest, value paths and
+the canonical layout. Not covered here: `sigilc simulate` (Plan 0002 WP5.6), a `sigilc migrate`
+(there is no second source version yet) and the runtime interpreter (Plan 0002 WP5). A file that
+is syntactically valid by [§1](#1-overview)–[§4](#4-syntactic-grammar)'s rules can still be
+rejected by the schema pass.
 
 ## 1. Overview
 
@@ -195,6 +197,16 @@ members of that same keyword the enclosing body has already seen, regardless of 
 is (`block ring { ... }` and `block fan { ... }` are both just "the block"; `modifier rotate { }`
 then `modifier mirror { }` are `modifiers[0]` and `modifiers[1]`).
 
+**Value paths** (Plan 0002 WP4.3) extend a field's node path into its value, so every value an
+editor or agent may want to change has a name: `[<i>]` addresses the `i`-th (0-based) element of a
+list, `.<name>` a field of a record, recursively (`meta.difficulty[1]`, `emitters.jitter.offset.y`,
+`emitters.bloom.modifiers[2].keys[1].mul`). A field written with an indexed or dotted key
+(`flags[1] = ...`, `block.count = ...`) has exactly the path its key spells, which is the same path
+the corresponding element or nested field would have. `sigilc parse --json --values` lists every
+value with its path ([§13.5](#135-parse---json---values)), and `sigilc set` takes the same paths
+([§13.6](#136-set)). Grammar of a path as `sigilc set` accepts it: `segment { "." segment }`,
+`segment = ident { "[" digit { digit } "]" }`, at most 1024 bytes.
+
 ## 6. Diagnostics
 
 Every diagnostic carries a file, a 1-based line and column, a [node path](#5-node-paths), the
@@ -204,7 +216,7 @@ than one diagnostic; the parser only stops entirely after a bad [header](#3-head
 
 ### 6.1 Text form
 
-`sigilc check <file>...` prints one block per diagnostic:
+`sigilc check <file>...` (and `build`, `fmt`) prints one block per diagnostic:
 
 ```text
 <file>:<line>:<column>: error[<code>]: <message>
@@ -244,7 +256,8 @@ version are all small):
 }
 ```
 
-`severity` is always `"error"` in WP4.1 (see [`Severity`](../../crates/grimoire_sigilc/src/diagnostics.rs)'s
+This document is unchanged since WP4.1; `sigilc parse --json --values` prints the larger values
+document of [§13.5](#135-parse---json---values) instead. `severity` is always `"error"` in WP4.1 (see [`Severity`](../../crates/grimoire_sigilc/src/diagnostics.rs)'s
 doc comment for why the enum already has room for `"warning"`). `related`, when present, is
 `{ "label", "line", "column", "token" }` for the secondary location.
 
@@ -386,6 +399,12 @@ for it. `crates/grimoire_sigilc/tests/corpus.rs` checks this crate's own parser 
 sidecar; the same `.sigil`/`.expected.json` pairs are plain data with nothing Rust-specific about
 them, so a later C# asset-compiler test (this corpus's stated purpose) can run the same files and
 compare against the same sidecars independently.
+
+Since WP4.3 every file under `valid/` also has a `<name>.values.json` sidecar: exactly what
+`sigilc parse --json --values valid/<name>.sigil` prints when run from the corpus root
+([§13.5](#135-parse---json---values)), checked by `tests/values_corpus.rs`. The Sigil editor
+(Plan 0002 WP10.3) reads that document instead of parsing Sigil itself, so its tests can use these
+sidecars the same way.
 
 ## 10. Binary format `SigilUnit` v1
 
@@ -630,7 +649,9 @@ reasonable answer:
    representable in the binary** (`BulletType`'s record has no field for it either). Recommendation:
    decide the source of that name→id table (a manifest file next to the Rust registration code is
    the natural fit) as part of Plan 0002 WP4.3's CLI work, and extend `Programs`/a new section once
-   WP5 needs the per-bullet association.
+   WP5 needs the per-bullet association. **WP4.3:** the command line now takes that table as a
+   behaviour manifest (`--behaviors <file>`, [§13.3](#133-behaviour-manifest---behaviors-file));
+   which code writes the game's manifest is still the Product Owner's decision.
 5. **`silhouette`/`palette` indices are per-unit, not a shared cross-unit catalog** — there isn't
    one yet ([§10.3](#103-bullettypes-kind-1)). Fine for one unit rendering itself consistently;
    two different units can assign the same index to different silhouettes. Recommendation: once
@@ -658,3 +679,248 @@ Same stability rule: a code's meaning is fixed from its first release.
 | `SIG0022` | An unknown enum-like value: a `block`/`modifier`/`transform` kind, a bullet `flags` entry, an emitter `role`, a `speed_curve.interp` mode, or an `offset` record field, that is not one of the known values. |
 | `SIG0023` | A required field or nested member is missing entirely. |
 | `SIG0024` | A present field has the wrong shape (wrong value kind, or a quantity with the wrong unit) for its construct. |
+| `SIG0025` | (`sigilc check`/`build`, WP4.3) The source's canonical content path cannot be formed: the file lies outside the content root, or its path relative to the root is not a valid `AssetPath` (contract §12) ending in `<name>.sigil`. `sigilc` never normalises a path ([§13.2](#132-content-root-and-canonical-content-path)). Node path empty, position 1:1. |
+| `SIG0026` | (`sigilc check`/`build`, WP4.3) The source file cannot be read: missing, not a regular readable file, larger than 1 MiB, or not UTF-8. Node path empty, position 1:1. |
+
+## 13. Command-line interface `sigilc`
+
+Plan 0002 WP4.3, implemented in `grimoire_sigilc::cli` (`crates/grimoire_sigilc/src/cli.rs`); the
+binary `sigilc` only forwards its arguments and standard streams to `cli::run`. The asset compiler
+(project ADR-0010, Plan 0002 WP9.2), the Sigil editor (WP10) and agents drive Sigil through this
+interface instead of parsing Sigil themselves.
+
+*Stufe A, PO-Freigabe offen:* the commands and exit codes ([§13.1](#131-commands-and-exit-codes)),
+the content-root rule ([§13.2](#132-content-root-and-canonical-content-path)), the behaviour
+manifest ([§13.3](#133-behaviour-manifest---behaviors-file)), the three JSON documents
+([§13.4](#134-check---json-and-build---json)–[§13.6](#136-set)), the value paths
+([§5](#5-node-paths)), the canonical layout ([§13.7](#137-fmt-and-the-canonical-layout)) and the
+diagnostic codes `SIG0025`/`SIG0026` ([§12](#12-schema-diagnostic-code-table-sig0012)) are new,
+additive surface. Nothing that existed before changes: the §6.2 diagnostics document and every
+existing sidecar stay byte-for-byte as they were.
+
+### 13.1 Commands and exit codes
+
+| Command | What it does |
+|---|---|
+| `sigilc check [--json] [--root <dir>] [--behaviors <file>] <file>...` | Compiles every file — parser, schema pass, validation and encoding ([§10](#10-binary-format-sigilunit-v1)–[§12](#12-schema-diagnostic-code-table-sig0012)) — and writes nothing. Without `--root`, each file's own directory is its content root. Text mode is silent on success. |
+| `sigilc build [--json] --root <dir> --out <dir> [--behaviors <file>] <file>...` | Like `check`, then writes each unit to `<out>/<canonical content path with .sigil replaced by .unit>`, creating directories. `--root` is required because the unit id derives from the path relative to it. Text mode prints `built <source> -> <output> (unit <id>, content hash <hash>, <size> bytes)` per unit. |
+| `sigilc parse --json [--values] <file>` | Parses one file (no schema pass). Without `--values` it prints the [§6.2](#62-json-form) diagnostics document, with `--values` the [§13.5](#135-parse---json---values) values document. There is no text form; use `check`. |
+| `sigilc set [--json] <file> <node-path>=<value>` | Replaces one existing value in place ([§13.6](#136-set)). |
+| `sigilc fmt [--check] <file>...` | Rewrites files in the canonical layout ([§13.7](#137-fmt-and-the-canonical-layout)); `--check` writes nothing and prints `<file>: not in canonical layout` per file that would change. |
+| `sigilc --version` / `sigilc --help` | Prints `sigilc <engine version>` / the usage text. |
+
+Options may stand anywhere after the command, as `--name value` or `--name=value`; `--` ends option
+parsing (for a file whose name starts with `-`). A repeated or unknown option is a usage error, and
+every argument must be valid Unicode. `<node-path>=<value>` is split at its first `=`; a node path
+never contains one.
+
+Every command ends with one of three exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success, no problem in any file. |
+| `1` | The command ran and found problems: a diagnostic in any file (`check`, `build`, `parse`, or `fmt` on a file that does not parse), a refused `set`, or a file `fmt --check` would change. With `--json`, the document on stdout still describes every file. |
+| `2` | The command could not run as asked: a usage error, a file `parse`/`set`/`fmt` cannot read, an unreadable or invalid behaviour manifest, or output `build`/`set`/`fmt` cannot write. A message goes to stderr and no JSON document is printed. |
+
+Text-mode diagnostics use [§6.1](#61-text-form) and go to stdout. A JSON document goes to stdout,
+one per invocation, pretty-printed UTF-8 without BOM, with keys in the order shown below and
+following contract §2 rule 11: ids and hashes as 16 lowercase hex digits, integers as JSON numbers
+far below 2^53, no NaN. The three new documents carry `schema` and `schema_version`; the older
+§6.2 document keeps its WP4.1 shape. Source files, entry files and imports alike, are read with a
+limit of 1 MiB (`cli::MAX_SOURCE_BYTES`) and must be UTF-8. `sigilc` compiles on the calling thread
+only and reads no clock (contract §3): its output bytes depend only on its inputs.
+
+### 13.2 Content root and canonical content path
+
+`check` and `build` form each source's canonical content path (contract §11.1) from the content
+root and the file. Both are resolved on disk first (symbolic links followed, `.` and `..`
+resolved). The file's path relative to the root is then joined with `/` and must be a valid
+`AssetPath` (contract §12: ASCII `[a-z0-9_.-]` and `/`, 1 to 255 bytes, no leading or trailing
+`/`, no empty, `.` or `..` segment) ending in `<name>.sigil`. The unit id is
+`derive_unit_id(<canonical content path>)`.
+
+`sigilc` never normalises (contract §11.1). A file outside the root, an uppercase letter, a
+backslash or another extension is `SIG0025`, and no unit is written; the file is still compiled
+under its bare file name, so its other diagnostics are reported in the same run. A file that
+cannot be read is `SIG0026`. Normalising paths is the asset compiler's job (project ADR-0010).
+
+Imports resolve against the same root. An import path must itself be a canonical content path, so
+no import reaches outside the root; any other path is `SIG0012`, like a missing file. Diagnostics
+name the entry file exactly as given on the command line and an imported file as
+`<root as given>/<import path>`.
+
+### 13.3 Behaviour manifest (`--behaviors <file>`)
+
+`behaviour = <name>` resolves against a name-to-`BehaviorId` table, because ids are assigned by
+the Rust code that registers the behaviours (contract §11.5; [§11.4](#114-open-points-for-the-product-owner)
+point 4). On the command line that table is this JSON file:
+
+```json
+{
+  "schema": "grimoire.sigilc.behaviors",
+  "schema_version": 1,
+  "behaviors": [
+    { "name": "orbit_parent", "id": 1 }
+  ]
+}
+```
+
+`name` is a Sigil identifier of at most 64 bytes, `id` the `BehaviorId` as a JSON number
+(`0`–`4294967295`). Names are unique and ids are unique; a manifest has at most 4096 entries and
+1 MiB; an unknown key, a missing key, another `schema` or another `schema_version` is an error.
+The decoder is `grimoire_sigilc::behaviors::parse_behavior_manifest`, which returns an error for
+any malformed input and never panics (contract §2 rule 9). Without `--behaviors` the table is empty
+and every `behaviour = <name>` is `SIG0014`.
+
+### 13.4 `check --json` and `build --json`
+
+Example: `sigilc build --json --root tests/corpus/valid --out out tests/corpus/valid/01-ring-burst.sigil`
+in `crates/grimoire_sigilc` (the id and hash are this file's at the time of writing).
+
+```json
+{
+  "schema": "grimoire.sigilc.build",
+  "schema_version": 1,
+  "command": "build",
+  "ok": true,
+  "units": [
+    {
+      "source": "tests/corpus/valid/01-ring-burst.sigil",
+      "unit_path": "01-ring-burst.sigil",
+      "output": "out/01-ring-burst.unit",
+      "unit_id": "0bf46d12ddd3b2f6",
+      "content_hash": "45da9dace158e815",
+      "size": 222,
+      "diagnostics": []
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `command` | `"check"` or `"build"`. |
+| `ok` | `true` iff no unit has a diagnostic (then the exit code is `0`). |
+| `units` | One entry per file argument, in argument order. |
+| `source` | The file as given on the command line. |
+| `unit_path` | The canonical content path ([§13.2](#132-content-root-and-canonical-content-path)), or `null` if it could not be formed (`SIG0025`, `SIG0026`). |
+| `output` | Where `build` wrote the unit (`<out as given>/<unit path>.unit`); `null` for `check` and for every unit not written. |
+| `unit_id`, `content_hash` | The unit header's `unit_id` and `content_hash` ([§10.1](#101-header-40-bytes)), or `null` unless the unit compiled. |
+| `size` | The unit's length in bytes, or `null` unless it compiled. |
+| `diagnostics` | [§6.2](#62-json-form) diagnostic objects, from every file involved. |
+
+### 13.5 `parse --json --values`
+
+The [§6.2](#62-json-form) diagnostics document plus every value of the file, in source order, a
+list or record before its own elements. Example, from `tests/corpus/valid/01-ring-burst.values.json`:
+
+```json
+{
+  "schema": "grimoire.sigilc.values",
+  "schema_version": 1,
+  "file": "valid/01-ring-burst.sigil",
+  "diagnostics": [],
+  "values": [
+    {
+      "node_path": "meta.difficulty[0]",
+      "kind": "ref",
+      "text": "easy",
+      "number": null,
+      "unit": null,
+      "line": 8,
+      "column": 17,
+      "end_line": 8,
+      "end_column": 21
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `node_path` | The value path ([§5](#5-node-paths)); exactly what `sigilc set` accepts. |
+| `kind` | `int`, `float`, `quantity`, `string`, `ref`, `trigger`, `list` or `record` ([§4](#4-syntactic-grammar)). |
+| `text` | The exact source text of the value, without surrounding whitespace or a trailing comment (it can span lines for a list or record). |
+| `number` | For `int`, `float` and `quantity`: the numeric literal as written (`"-0.5"` for `-0.5u`), else `null`. Kept as a string so no consumer ever sees a rounded number. |
+| `unit` | For `quantity`: the unit suffix as written (`"u/t"`), else `null`. |
+| `line`, `column` | Position of the first character (1-based; columns in Unicode scalar values, as in [§2](#2-lexical-grammar)). |
+| `end_line`, `end_column` | Position just past the last character. |
+
+A file with parse diagnostics still lists what the parser could make sense of (an item with a
+missing name uses the placeholder `?` in its paths) and exits with `1`.
+
+### 13.6 `set`
+
+`sigilc set <file> <node-path>=<value>` replaces the source text of one existing value and nothing
+else (library: `grimoire_sigilc::edit::set_value`). It refuses, exits with `1` and leaves the file
+untouched unless all of these hold:
+
+- the node path is a syntactically valid value path;
+- the value is exactly one Sigil value on one line, with no surrounding whitespace and no comment;
+- the file parses with no diagnostics;
+- the path names exactly one value in the file (fields are never inserted; a value inherited
+  through `from` but not written in this file cannot be set);
+- with the new text in place the file still parses with no diagnostics and lists the new text at
+  that path, at that position, exactly once.
+
+Then the file is rewritten as `old[..start] + value + old[end..]`, where `start..end` is the old
+value's span: every byte outside it (comments, blank lines, indentation, member order, line
+endings) stays identical. `tests/set_lossless.rs` checks this for every value of every corpus file
+and fixture and as property tests with arbitrarily nested random values. Replacing a list or
+record replaces its whole text, including any comment inside it. Setting a value to its current
+text writes nothing. `set` does not run the schema pass: `set <file> bullets.orb.glow=2.0` succeeds,
+and a following `check` reports `SIG0016`.
+
+```json
+{
+  "schema": "grimoire.sigilc.set",
+  "schema_version": 1,
+  "file": "aimed.sigil",
+  "node_path": "emitters.jitter.nope",
+  "value": "1",
+  "ok": false,
+  "changed": false,
+  "old_value": null,
+  "error": {
+    "code": "not_found",
+    "message": "no value at node path `emitters.jitter.nope`"
+  },
+  "diagnostics": []
+}
+```
+
+`ok` is `true` when the value is in place (then `error` is `null`, `old_value` the previous text and
+`changed` whether the file changed). Otherwise `error.code` is one of the following, `message` a
+human-readable explanation and `diagnostics` the relevant parse diagnostics:
+
+| `error.code` | Cause |
+|---|---|
+| `invalid_node_path` | The path does not follow the value path grammar ([§5](#5-node-paths)). |
+| `invalid_value` | The value is empty, spans lines, has surrounding whitespace, contains a comment or is not exactly one Sigil value. |
+| `source_has_errors` | The file has parse diagnostics (listed in `diagnostics`). |
+| `not_found` | No value has this path. |
+| `ambiguous` | More than one value has this path (for example a field written twice, which the schema pass rejects). |
+| `result_has_errors` | The value is valid on its own but not at this position, for example because it would merge with a directly following comment or nest too deeply (any resulting parse diagnostics are listed). |
+
+### 13.7 `fmt` and the canonical layout
+
+`sigilc fmt` (library: `grimoire_sigilc::format_canonical`) changes whitespace only:
+
+- two spaces of indentation per open `{`, `(` and `[` at the start of a line; a line starting with
+  a closing delimiter is indented one level less;
+- one space between tokens, except none inside `(...)` and `[...]` next to the delimiters, around
+  `.`, before `,`, between a path and its `[index]` and inside an empty `{}`; one space before a
+  trailing comment;
+- line breaks exactly where the source has them, including inside lists and records; runs of blank
+  lines collapse to one, and there is no blank line directly after a line ending in an opening
+  delimiter or directly before a line starting with a closing one;
+- `\n` line endings, no trailing whitespace (also none at the end of a comment) and exactly one
+  final newline.
+
+It never adds, removes or reorders a significant token or a comment and never changes the text of a
+string. Every run re-parses its own output and refuses to write if the significant tokens or
+comments differ or a diagnostic appears. A file with parse diagnostics is not formatted: its
+diagnostics are printed, the file stays untouched and the exit code is `1`. The layout is
+idempotent, and formatting never changes the compiled unit; `tests/fmt_canonical.rs` checks both
+with whitespace-perturbed variants of every corpus file and fixture, all of which are already in
+the canonical layout.
