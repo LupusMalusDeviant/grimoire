@@ -456,7 +456,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-17 | §13 (TCP-IO-Thread setzt „TCP“ um: Tor vor dem Handshake, `TooLarge` vor dem ersten Nutzlast-Byte, Frist, `Busy`, Gegendruck statt stillem Verwerfen; Anzahlprüfung der generierten Decoder gegen die Resteingabe nach §2 Regel 9; Hot-Swap von Nicht-Sigil-Assets bleibt in v1 reserviert; Konformanz-Suite läuft in der CI), §9.7 (Reihenfolge in `run_headless`, `Stats`-Takt, Ack-Reihenfolge und Felder bei Status 1 und 2), §12 (Konformanz-Suite läuft in der CI), §2 Regel 14 (paketgewählter Clippy-Schritt der Auslieferungskonfiguration und die Feature-Schritte in der CI) | #57 | K | — | nein |
 | 2026-09-17 | Formatdoku `sigil.md` §15 (Gruppe `bench` im Plattform-Identitäts-Gate: die drei Vollvorhang-Units aus `grimoire_bench`) | #58 | K | — | nein (drei neue Unit-Fixtures `full_curtain_flow/weave/shatter_unit_v1.bin`, keine Erneuerung) |
 | 2026-09-17 | §1 (`grimoire_schemagen` erzeugt zusätzlich die C#-Codecs der Werkzeug-Suite; Umsetzungsvermerk `tools/`: Aufbau der Solution, sinngemäße Anwendung der §2-Regeln 1, 2, 4, 9 und 10 auf C#, SDK- und Paket-Pin, Engine-Version und Build-Hash, CI-Workflow `tools.yml` und Standalone-Gate), §12, §13 (Ort der C#-Konformanztests) | #59 | K | — | nein |
-| 2026-09-17 | §6 (Skelettanimation: Modul `grimoire_render::figure_clip`, Art `FNP_CLIP`), §9.1, §9.10 (`figure_assets::load_clip`), Formatdoku `figure-clip.md` neu, §2 Regel 10 (Liste der Formatdokumente) | #64 | A (PO-Freigabe offen) | Spiel (Figuren-Konverter: Clips als `FNP_CLIP` exportieren), Render-A/B | nein (neue Golden-Fixture `figure_clip_v1.bin` samt Herleitung, neue goldene Posen-Hashes) |
+| 2026-09-18 | §6 (Skelettanimation: Modul `grimoire_render::figure_clip`, Art `FNP_CLIP`), §9.1, §9.10 (`figure_assets::load_clip`), Formatdoku `figure-clip.md` neu, §2 Regel 10 (Liste der Formatdokumente) | #64 | A (PO-Freigabe 2026-09-18, gebündelt) | Spiel (Figuren-Konverter: Clips als `FNP_CLIP` exportieren), Render-A/B | nein (neue Golden-Fixture `figure_clip_v1.bin` samt Herleitung, neue goldene Posen-Hashes) |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -1015,7 +1015,10 @@ pub struct SkinBinding {                 // Debug, Clone, Copy, PartialEq, Eq, D
 
 **Skelettanimation: Clips abtasten (Ergänzung, Engine-ADR-0017, Stufe A)**
 
-*Stufe A, PO-Freigabe offen.* Umsetzung des PO-Entscheids zu
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe),
+einschließlich des Magic `FNP_CLIP` im Kopf (§2 Regel 10, abweichend von der Feldliste der ADR),
+des numerischen Gegenfalls statt neuer Referenzbilder und der Entscheidung, die Grenzen der
+Zeit-Verzerrung dem Konverter zu überlassen.* Umsetzung des PO-Entscheids zu
 [ADR-0017](../adr/0017-skelettanimation-abtastung-in-der-praesentation.md) (Option A2). Additiv zur
 Knochenverformung oben: kein bestehendes Feld, kein bestehender Typ und kein Zähler ändert sich, der
 Skinning-Pfad der GPU bleibt unangetastet, und eine Figur ohne Clip verhält sich exakt wie zuvor.
@@ -2852,7 +2855,7 @@ pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub 
 // grimoire::adapters::figure_assets zusätzlich:
 //     load_figure_into(&mut AssetStore, &mut dyn RenderAssets, figure_name: &str) -> Result<LoadedFigure, FigureLoadError>
 //     (load_figure bleibt unverändert und ruft load_figure_into mit dem Renderer auf)
-// grimoire::adapters::figure_assets, Engine-ADR-0017 (Stufe A, PO-Freigabe offen):
+// grimoire::adapters::figure_assets, Engine-ADR-0017 (Stufe A, PO-Freigabe 2026-09-18):
 //     pub const FNP_CLIP: AssetKind = AssetKind(0x8005)
 //     load_clip(&mut AssetStore, figure_name: &str, clip_name: &str, &SkeletonData)
 //         -> Result<ClipData, FigureLoadError>
