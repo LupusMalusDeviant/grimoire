@@ -20,8 +20,16 @@
 //! millisecond budget is never a CI gate on shared runners (engine ADR-0010).
 
 use std::collections::BTreeMap;
+use std::hint::black_box;
 use std::process::ExitCode;
 use std::time::Instant;
+
+use grimoire_bench::curtain::{
+    CURTAIN_BULLETS, CURTAIN_COLLIDE_BUDGET_MS, CURTAIN_COLLIDE_SCENARIO,
+    CURTAIN_EXTRACT_BUDGET_MS, CURTAIN_EXTRACT_SCENARIO, CURTAIN_RENDER_CPU_BUDGET_MS,
+    CURTAIN_RENDER_CPU_SCENARIO, CURTAIN_RENDER_HEIGHT, CURTAIN_RENDER_WIDTH,
+    CURTAIN_SIM_BUDGET_MS, CURTAIN_SIM_SCENARIO, CURTAIN_WALLCLOCK_TICKS, FullCurtain,
+};
 
 use grimoire_bench::scenarios::{
     BULLET_UPLOAD_SCENARIO, COLLIDE_BULLETS, COLLIDE_CLUSTER_SCENARIO, COLLIDE_ENEMIES,
@@ -199,6 +207,81 @@ fn measure_collide(layout: CollideLayout, executor: &dyn Executor) -> Vec<f64> {
         samples.push(start.elapsed().as_nanos() as f64);
     }
     samples
+}
+
+/// Wall-clock samples of the four full-curtain phases (plan 0002 WP6.6): simulation, extraction,
+/// collision and, with an adapter, render CPU. Every sample sums one phase over
+/// [`CURTAIN_WALLCLOCK_TICKS`] ticks of the same run.
+struct CurtainSamples {
+    sim: Vec<f64>,
+    extract: Vec<f64>,
+    collide: Vec<f64>,
+    render: Option<Vec<f64>>,
+    adapter: Option<String>,
+}
+
+/// Measures the full curtain. Without an adapter the render phase is left out, unless
+/// `GRIMOIRE_REQUIRE_GPU_ADAPTER` is `1`, which makes a missing adapter an error (CI sets it, so the
+/// trend never silently loses the render phase).
+fn measure_curtain() -> Result<CurtainSamples, String> {
+    let require_adapter = matches!(
+        std::env::var("GRIMOIRE_REQUIRE_GPU_ADAPTER").as_deref(),
+        Ok("1" | "true")
+    );
+    let mut curtain =
+        FullCurtain::build(true).map_err(|err| format!("full-curtain renderer: {err}"))?;
+    if require_adapter && !curtain.has_renderer() {
+        return Err("no GPU adapter although GRIMOIRE_REQUIRE_GPU_ADAPTER=1".to_string());
+    }
+    let run_sample = |curtain: &mut FullCurtain| -> Result<[u128; 4], String> {
+        let mut phases = [0u128; 4];
+        for _ in 0..CURTAIN_WALLCLOCK_TICKS {
+            let start = Instant::now();
+            curtain.step_sim();
+            phases[0] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            black_box(curtain.extract());
+            phases[1] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            black_box(curtain.collide(&SequentialExecutor));
+            phases[2] += start.elapsed().as_nanos();
+
+            let start = Instant::now();
+            let drawn = curtain.render();
+            phases[3] += start.elapsed().as_nanos();
+            if let Some(drawn) = drawn {
+                black_box(drawn.map_err(|err| format!("full-curtain render: {err}"))?);
+                curtain
+                    .sync_gpu()
+                    .map_err(|err| format!("full-curtain readback: {err}"))?;
+            }
+        }
+        Ok(phases)
+    };
+    for _ in 0..WARMUP_SAMPLES {
+        run_sample(&mut curtain)?;
+    }
+    let mut samples = CurtainSamples {
+        sim: Vec::with_capacity(SAMPLES as usize),
+        extract: Vec::with_capacity(SAMPLES as usize),
+        collide: Vec::with_capacity(SAMPLES as usize),
+        render: curtain
+            .has_renderer()
+            .then(|| Vec::with_capacity(SAMPLES as usize)),
+        adapter: curtain.adapter_report_line(),
+    };
+    for _ in 0..SAMPLES {
+        let [sim, extract, collide, render] = run_sample(&mut curtain)?;
+        samples.sim.push(sim as f64);
+        samples.extract.push(extract as f64);
+        samples.collide.push(collide as f64);
+        if let Some(render_samples) = samples.render.as_mut() {
+            render_samples.push(render as f64);
+        }
+    }
+    Ok(samples)
 }
 
 fn measure_sigil_ticks(mut sim: Simulation, ticks: u32) -> Vec<f64> {
@@ -457,7 +540,83 @@ fn main() -> ExitCode {
         }
     }
 
-    for result in results.iter().chain(&collide_results) {
+    // Plan 0002 WP6.6 (PRD-0004 "Vollvorhang"): the full curtain's four phases per tick against
+    // the P1 stress-test budgets.
+    let curtain = match measure_curtain() {
+        Ok(curtain) => curtain,
+        Err(err) => {
+            eprintln!("wallclock: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let curtain_params = BTreeMap::from([
+        ("bullets".to_string(), int(CURTAIN_BULLETS)),
+        ("ticks".to_string(), int(CURTAIN_WALLCLOCK_TICKS)),
+    ]);
+    let mut curtain_results = Vec::new();
+    let mut phases = vec![
+        (
+            CURTAIN_SIM_SCENARIO,
+            curtain.sim,
+            CURTAIN_SIM_BUDGET_MS,
+            "simulation tick",
+            curtain_params.clone(),
+        ),
+        (
+            CURTAIN_EXTRACT_SCENARIO,
+            curtain.extract,
+            CURTAIN_EXTRACT_BUDGET_MS,
+            "extraction",
+            curtain_params.clone(),
+        ),
+        (
+            CURTAIN_COLLIDE_SCENARIO,
+            curtain.collide,
+            CURTAIN_COLLIDE_BUDGET_MS,
+            "collision tick (1 thread)",
+            curtain_params.clone(),
+        ),
+    ];
+    match curtain.render {
+        Some(render) => {
+            let mut render_params = curtain_params.clone();
+            render_params.insert("width".to_string(), int(CURTAIN_RENDER_WIDTH));
+            render_params.insert("height".to_string(), int(CURTAIN_RENDER_HEIGHT));
+            phases.push((
+                CURTAIN_RENDER_CPU_SCENARIO,
+                render,
+                CURTAIN_RENDER_CPU_BUDGET_MS,
+                "render_stage call, offscreen",
+                render_params,
+            ));
+            eprintln!(
+                "{CURTAIN_RENDER_CPU_SCENARIO}: {}",
+                curtain.adapter.as_deref().unwrap_or("adapter unknown")
+            );
+        }
+        None => eprintln!(
+            "{CURTAIN_RENDER_CPU_SCENARIO}: skipped, no GPU adapter (set GRIMOIRE_GPU_ADAPTER=software)"
+        ),
+    }
+    for (scenario, samples, budget_ms, what, params) in phases {
+        let result = result_for(&meta, scenario, samples, params);
+        let per_tick_ms = result.median / f64::from(CURTAIN_WALLCLOCK_TICKS) / 1.0e6;
+        let verdict = if per_tick_ms <= budget_ms {
+            "within"
+        } else {
+            "OVER"
+        };
+        eprintln!(
+            "{scenario}: median {per_tick_ms:.4} ms per {what}, about {CURTAIN_BULLETS} bullets from every modifier type (budget {budget_ms:.1} ms: {verdict}; wall clock, trend only)"
+        );
+        curtain_results.push(result);
+    }
+
+    for result in results
+        .iter()
+        .chain(&collide_results)
+        .chain(&curtain_results)
+    {
         match result.to_json_line() {
             Ok(line) => println!("{line}"),
             Err(err) => {

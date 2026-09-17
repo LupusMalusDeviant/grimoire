@@ -16,6 +16,12 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
   - Das Hash-Gate in `grimoire_exec` fährt mit 1, 2 und N Threads die goldene Abfrageszene und eine neue, feste Blockszene (`GOLDEN_BLOCK_QUERY_HASH`, 3.000 Objekte, 64 Anfragen, mehrere Blöcke auf beiden datenparallelen Wegen).
   - Neu sind außerdem `tests/conformance.rs`, ein Proptest `overlapping_batch` gegen Einzelabfragen, `tests/alloc.rs` mit zählendem Allokator und das Konsolenbeispiel `collide_query` (in der CI nur gebaut).
   - Vertrag §14: nur Stufe K.
+- `grimoire_bench`: Benchmark-Szene „Vollvorhang“ (Plan 0002 WP6.6, PRD-0004), nur im Wanduhr-Trend.
+  - Drei mit `sigilc` übersetzte Units unter `fixtures/` (Quellen daneben, von `grimoire_sigilc/tests/unit_fixtures.rs` aktuell gehalten und im Plattform-Identitäts-Gate WP4.4 als Gruppe `bench`). Sie nutzen jeden Modifikator-Typ, die Bausteine ring, spiral, fan, wave, line und scatter und die Transformationen burst, reverse und change_type. Drei Units, weil eine Unit jede gezeichnete Silhouette nur einmal verwenden darf (PRD-0003 Regel 3).
+  - Jeder Emitter feuert endlos von drei Ursprüngen; der Bestand bleibt nach 600 Ticks bei etwa 10.000 lebenden Bullets (per Test geprüft), dazu die 100 Gegner der Kollisions-Benches.
+  - `wallclock` misst je Tick vier Phasen: Simulation, Extraktion, Kollision (so, wie der Adapter aus Vertrag §9.6 das Gitter aufbauen wird) und Render-CPU (`render_stage` offscreen, in der CI auf dem Software-Adapter). Jede Phase wird gegen ihr Budget aus dem P1-Stresstest gedruckt (1,0 / 0,5 / 1,5 / 3 ms).
+  - Der Job `gate` installiert dafür lavapipe; fehlt der Adapter, scheitert der Schritt, statt die Render-Phase still wegzulassen.
+  - Kein neues Gate-Szenario, keine Basis nötig. Vertrag unverändert.
 
 ### Changed
 - `grimoire_assets`: `PackReader` und `PackWriter` kodieren und dekodieren das Manifest jetzt über den generierten Codec `PackManifestBody` (Projekt-ADR-0011, WP8.3) statt über eigenen Code; Byte-Layout, Fehlervarianten und Grenzen bleiben gleich, beide Golden-Fixtures bleiben byte-gleich. Eine Manifest-Eintragsanzahl, die nicht zum Inhaltsverzeichnis passt, wird vor dem Dekodieren als `ManifestMismatch` erkannt, sodass der Pfad-Vektor nie über die bereits geprüfte Eintragsanzahl hinaus alloziert.
