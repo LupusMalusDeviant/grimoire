@@ -9,15 +9,15 @@
 //! - `Programs` (kind 2, block + modifier stack), `Emitters` (kind 3) and `Curves` (kind 5,
 //!   keyframes for the `speed_curve` modifier) get their real v1 record layouts in this work
 //!   package, replacing the WP1.3 placeholder that stored only a bare count.
-//! - `Transforms` (kind 4, the per-bullet-type `change_type`/`become_emitter`/`burst`/`reverse`
-//!   programs) and `Names` (kind 7, diagnostics only) stay opaque bytes, exactly as WP1.3 left
-//!   them: their interior layout is deliberately deferred until `grimoire_sigil`'s interpreter
-//!   (Plan 0002 WP5) fixes what it actually needs to read from a bullet-type's transform list, so
-//!   v1 does not lock in a shape nothing consumes yet. Static cascade-depth and no-recursion
-//!   checks (contract §11.1's "was der Compiler zusichert") are enforced by `grimoire_sigilc` on
-//!   the source graph instead (Plan 0002 WP4.2); see that crate's `compiler` module. This is a
-//!   deliberate, documented scope decision, not an oversight — the pull request that landed this
-//!   module records it as an open point for a future work package.
+//! - `Transforms` (kind 4) gets its interior layout in Plan 0002 WP5.2, once the interpreter knew
+//!   what it has to read: one record per bullet type that has a runtime script, carrying the
+//!   type's optional `BulletBehavior` binding (id plus constant parameters) and its ordered
+//!   transform list (`reverse`, `change_type`, `burst`, `become_emitter`, each with a `time`,
+//!   `distance` or `event` trigger). The behavior binding lives here because the `BulletTypes`
+//!   record is frozen at 20 bytes and `BehaviorRefs` (kind 6) is only the set of referenced ids;
+//!   this closes the WP5.1 gap that a behavior could not be called from a tick phase. The decoder
+//!   now also re-checks the cascade depth and the absence of sub-emitter recursion (contract
+//!   §11.1) on this section's graph. `Names` (kind 7, diagnostics only) stays opaque bytes.
 
 use std::fmt;
 
@@ -132,11 +132,9 @@ pub enum UnitError {
     },
     /// A cascade depth exceeded [`SigilUnit::MAX_CASCADE_DEPTH`].
     ///
-    /// Not produced by this crate's decoder in v1 (the `Transforms` section that would carry
-    /// cascade-creating programs stays opaque bytes here, see the module docs); kept as a valid
-    /// variant of this `#[non_exhaustive]` enum for the validator that will use it once that
-    /// section's interior format is decided (Plan 0002 WP5), and for `BulletPool::spawn`'s own
-    /// runtime check (contract §11.3).
+    /// Produced since Plan 0002 WP5.2 when a primary emitter's bullet type reaches, through the
+    /// `Transforms` section's `burst`/`become_emitter` edges, a depth beyond the maximum; a
+    /// recursion through those edges always does. `depth` is the first depth that is too deep.
     #[error("cascade depth {depth} exceeds the maximum")]
     CascadeTooDeep {
         /// The offending cascade depth.
@@ -172,7 +170,7 @@ pub struct SigilUnit {
     programs: Vec<ProgramRecord>,
     emitters: Vec<EmitterRecord>,
     behavior_refs: Option<Vec<BehaviorId>>,
-    transforms: Option<Vec<u8>>,
+    scripts: Vec<BulletScript>,
     curves: Vec<CurveRecord>,
     names: Option<Vec<u8>>,
 }
@@ -186,7 +184,8 @@ const SECTION_BULLET_TYPES: u32 = 1;
 const SECTION_PROGRAMS: u32 = 2;
 /// Section kind: emitter definitions (required).
 const SECTION_EMITTERS: u32 = 3;
-/// Section kind: opaque, undecided per-bullet-type transform data (module docs).
+/// Section kind: per-bullet-type runtime scripts, i.e. behavior binding and transform list
+/// (module docs, `docs/formats/sigil.md` §10.9).
 const SECTION_TRANSFORMS: u32 = 4;
 /// Section kind: keyframe curves referenced by the `speed_curve` modifier.
 const SECTION_CURVES: u32 = 5;
@@ -259,6 +258,50 @@ impl EmitterRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CurveRecord {
     pub(crate) keys: Vec<(u32, f32)>,
+}
+
+/// When a [`TransformDef`] fires (`docs/formats/sigil.md` §10.9, contract §11.4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Trigger {
+    /// In the update in which the bullet's age since it took its current type reaches this many
+    /// ticks (at least the first update).
+    Time(u32),
+    /// In the update in which the distance travelled since the bullet took its current type
+    /// reaches this many units (a value `<= 0` fires in the first update).
+    Distance(f32),
+    /// In every update of a tick in which this event id was raised (`crate::EventId`).
+    Event(u32),
+}
+
+/// One transform of a bullet type's ordered transform list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TransformDef {
+    /// One of the [`TransformKind`] tags.
+    pub(crate) kind: u8,
+    pub(crate) trigger: Trigger,
+    /// `change_type`/`burst`: bullet-type index; `become_emitter`: emitter index; `reverse`: `0`.
+    pub(crate) target: u16,
+    /// `burst`: index into [`SigilUnit::programs`] (zero-based); every other kind:
+    /// [`EmitterRecord::NO_PROGRAM`].
+    pub(crate) program: u16,
+    /// `burst`: base speed of the sub-bullets; every other kind: `+0.0`.
+    pub(crate) speed: f32,
+}
+
+/// A bullet type's `BulletBehavior` binding: the registered id plus the constant parameters handed
+/// to it as `BehaviorInput::params` (contract §11.5).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BehaviorBinding {
+    pub(crate) id: BehaviorId,
+    pub(crate) params: Vec<f32>,
+}
+
+/// One `Transforms`-section record: the runtime script of one bullet type.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BulletScript {
+    pub(crate) bullet_type: u16,
+    pub(crate) behavior: Option<BehaviorBinding>,
+    pub(crate) transforms: Vec<TransformDef>,
 }
 
 impl SigilUnit {
@@ -348,7 +391,7 @@ impl SigilUnit {
         let mut programs: Option<Vec<ProgramRecord>> = None;
         let mut emitters: Option<Vec<EmitterRecord>> = None;
         let mut behavior_refs: Option<Vec<BehaviorId>> = None;
-        let mut transforms: Option<Vec<u8>> = None;
+        let mut scripts: Option<Vec<BulletScript>> = None;
         let mut curves: Option<Vec<CurveRecord>> = None;
         let mut names: Option<Vec<u8>> = None;
 
@@ -377,10 +420,10 @@ impl SigilUnit {
                     emitters = Some(decode_emitters(bytes, base)?);
                 }
                 SECTION_TRANSFORMS => {
-                    if transforms.is_some() {
+                    if scripts.is_some() {
                         return Err(UnitError::SectionLayout { kind: section.kind });
                     }
-                    transforms = Some(bytes.to_vec());
+                    scripts = Some(decode_scripts(bytes, base)?);
                 }
                 SECTION_CURVES => {
                     if curves.is_some() {
@@ -412,6 +455,7 @@ impl SigilUnit {
         })?;
         let programs = programs.unwrap_or_default();
         let curves = curves.unwrap_or_default();
+        let scripts = scripts.unwrap_or_default();
 
         // Structural re-validation the compiler already guaranteed (contract §11.1): every
         // `EmitterRecord::program`/`bullet_type` index lies in range.
@@ -446,6 +490,13 @@ impl SigilUnit {
                 }
             }
         }
+        validate_scripts(
+            &scripts,
+            &bullet_types,
+            &emitters,
+            &programs,
+            behavior_refs.as_deref().unwrap_or(&[]),
+        )?;
 
         Ok(Self {
             id: UnitId(raw_id),
@@ -454,7 +505,7 @@ impl SigilUnit {
             programs,
             emitters,
             behavior_refs,
-            transforms,
+            scripts,
             curves,
             names,
         })
@@ -476,8 +527,8 @@ impl SigilUnit {
             contents.push((SECTION_PROGRAMS, encode_programs(&self.programs)));
         }
         contents.push((SECTION_EMITTERS, encode_emitters(&self.emitters)));
-        if let Some(transforms) = &self.transforms {
-            contents.push((SECTION_TRANSFORMS, transforms.clone()));
+        if !self.scripts.is_empty() {
+            contents.push((SECTION_TRANSFORMS, encode_scripts(&self.scripts)));
         }
         if !self.curves.is_empty() {
             contents.push((SECTION_CURVES, encode_curves(&self.curves)));
@@ -582,6 +633,13 @@ impl SigilUnit {
     /// §10.6); indexed by a `speed_curve` modifier's `extra` field.
     pub(crate) fn curves(&self) -> &[CurveRecord] {
         &self.curves
+    }
+
+    /// Runtime scripts (behavior binding and transform list) of this unit's bullet types,
+    /// ascending by bullet type; a type without an entry has neither (`docs/formats/sigil.md`
+    /// §10.9).
+    pub(crate) fn scripts(&self) -> &[BulletScript] {
+        &self.scripts
     }
 }
 
@@ -872,7 +930,7 @@ fn encode_modifier_def(out: &mut Vec<u8>, modifier: &ModifierDef) {
 /// by `modifier_count: u16` [`ModifierDef`]s.
 fn decode_programs(bytes: &[u8], base: usize) -> Result<Vec<ProgramRecord>, UnitError> {
     let mut cursor = Cursor::new(bytes, base);
-    let count = cursor.read_u16()?;
+    let count = read_section_count(&mut cursor)?;
     let mut programs = Vec::new();
     for _ in 0..count {
         let block = decode_block_def(&mut cursor)?;
@@ -902,6 +960,19 @@ fn encode_programs(programs: &[ProgramRecord]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Reads the `count: u16` of an optional section whose records the encoder only ever writes when
+/// there is at least one (`Programs`, `Curves`, `Transforms`). A present section with count `0`
+/// decodes to the same value as an absent one, so it is rejected as `NonCanonical`; otherwise
+/// `to_bytes(from_bytes(b)) == b` would not hold (contract §11.1).
+fn read_section_count(cursor: &mut Cursor<'_>) -> Result<u16, UnitError> {
+    let offset = cursor.abs();
+    let count = cursor.read_u16()?;
+    if count == 0 {
+        return Err(UnitError::NonCanonical { offset });
+    }
+    Ok(count)
 }
 
 /// Byte size of one [`EmitterRecord`].
@@ -980,7 +1051,7 @@ const MAX_CURVE_KEYS: u16 = 256;
 /// by `key_count` × (`at_ticks: u32`, `mul: f32`).
 fn decode_curves(bytes: &[u8], base: usize) -> Result<Vec<CurveRecord>, UnitError> {
     let mut cursor = Cursor::new(bytes, base);
-    let count = cursor.read_u16()?;
+    let count = read_section_count(&mut cursor)?;
     let mut curves = Vec::new();
     for _ in 0..count {
         let key_count = cursor.read_u16()?;
@@ -1046,6 +1117,327 @@ fn encode_behavior_refs(refs: &[BehaviorId]) -> Vec<u8> {
         out.extend_from_slice(&id.0.to_le_bytes());
     }
     out
+}
+
+/// Known [`TransformDef::kind`] tags (`docs/formats/sigil.md` §10.9).
+pub(crate) struct TransformKind;
+impl TransformKind {
+    pub(crate) const REVERSE: u8 = 1;
+    pub(crate) const CHANGE_TYPE: u8 = 2;
+    pub(crate) const BURST: u8 = 3;
+    pub(crate) const BECOME_EMITTER: u8 = 4;
+    const MAX: u8 = 4;
+}
+
+/// Known trigger tags of a [`TransformDef`] (`docs/formats/sigil.md` §10.9).
+struct TriggerKind;
+impl TriggerKind {
+    const TIME: u8 = 1;
+    const DISTANCE: u8 = 2;
+    const EVENT: u8 = 3;
+}
+
+/// Largest number of constant parameters one behavior binding may carry.
+pub(crate) const MAX_BEHAVIOR_PARAMS: u16 = 8;
+/// Largest number of transforms one bullet type may carry.
+pub(crate) const MAX_TRANSFORMS_PER_TYPE: u16 = 8;
+/// Byte size of one [`TransformDef`] record.
+const TRANSFORM_RECORD_LEN: usize = 24;
+
+/// Decodes the `Transforms` section: `count: u16` (at least `1`, an empty section is not
+/// canonical), then `count` script records, strictly ascending by `bullet_type`. Checks every
+/// in-section rule; cross-section references are [`validate_scripts`]'s job.
+fn decode_scripts(bytes: &[u8], base: usize) -> Result<Vec<BulletScript>, UnitError> {
+    let mut cursor = Cursor::new(bytes, base);
+    let count = read_section_count(&mut cursor)?;
+    let mut scripts: Vec<BulletScript> = Vec::new();
+    for _ in 0..count {
+        let entry_offset = cursor.abs();
+        let bullet_type = cursor.read_u16()?;
+        if let Some(previous) = scripts.last()
+            && bullet_type <= previous.bullet_type
+        {
+            return Err(UnitError::NonCanonical {
+                offset: entry_offset,
+            });
+        }
+        let has_behavior = cursor.read_u8()?;
+        if has_behavior > 1 {
+            return Err(UnitError::Limit {
+                what: "transforms.has_behavior",
+                value: u64::from(has_behavior),
+                max: 1,
+            });
+        }
+        let reserved = cursor.read_u8()?;
+        if reserved != 0 {
+            return Err(UnitError::ReservedFlags(u32::from(reserved)));
+        }
+        let behavior_offset = cursor.abs();
+        let behavior = cursor.read_u32()?;
+        let param_count = cursor.read_u16()?;
+        if param_count > MAX_BEHAVIOR_PARAMS {
+            return Err(UnitError::Limit {
+                what: "transforms.param_count",
+                value: u64::from(param_count),
+                max: u64::from(MAX_BEHAVIOR_PARAMS),
+            });
+        }
+        let transform_count = cursor.read_u16()?;
+        if transform_count > MAX_TRANSFORMS_PER_TYPE {
+            return Err(UnitError::Limit {
+                what: "transforms.transform_count",
+                value: u64::from(transform_count),
+                max: u64::from(MAX_TRANSFORMS_PER_TYPE),
+            });
+        }
+        if has_behavior == 0 && (behavior != 0 || param_count != 0) {
+            return Err(UnitError::NonCanonical {
+                offset: behavior_offset,
+            });
+        }
+        if has_behavior == 0 && transform_count == 0 {
+            return Err(UnitError::NonCanonical {
+                offset: entry_offset,
+            });
+        }
+        let mut params = Vec::new();
+        for _ in 0..param_count {
+            params.push(cursor.read_finite_f32()?);
+        }
+        let mut transforms = Vec::new();
+        for _ in 0..transform_count {
+            transforms.push(decode_transform(&mut cursor)?);
+        }
+        scripts.push(BulletScript {
+            bullet_type,
+            behavior: (has_behavior == 1).then_some(BehaviorBinding {
+                id: BehaviorId(behavior),
+                params,
+            }),
+            transforms,
+        });
+    }
+    if cursor.pos != bytes.len() {
+        return Err(UnitError::SectionLayout {
+            kind: SECTION_TRANSFORMS,
+        });
+    }
+    Ok(scripts)
+}
+
+/// Decodes one 24-byte [`TransformDef`], rejecting unknown tags and every non-zero field the
+/// record's kind and trigger do not use (canonical encoding, contract §11.1).
+fn decode_transform(cursor: &mut Cursor<'_>) -> Result<TransformDef, UnitError> {
+    let record_offset = cursor.abs();
+    let kind = cursor.read_u8()?;
+    if kind == 0 || kind > TransformKind::MAX {
+        return Err(UnitError::UnknownTag {
+            what: "transform.kind",
+            tag: u32::from(kind),
+        });
+    }
+    let trigger_kind = cursor.read_u8()?;
+    let reserved = cursor.read_u16()?;
+    if reserved != 0 {
+        return Err(UnitError::ReservedFlags(u32::from(reserved)));
+    }
+    let at_ticks = cursor.read_u32()?;
+    let distance = cursor.read_finite_f32()?;
+    let event = cursor.read_u32()?;
+    let target = cursor.read_u16()?;
+    let program = cursor.read_u16()?;
+    let speed = cursor.read_finite_f32()?;
+    debug_assert_eq!(cursor.abs() - record_offset, TRANSFORM_RECORD_LEN);
+
+    let non_canonical = UnitError::NonCanonical {
+        offset: record_offset,
+    };
+    let trigger = match trigger_kind {
+        TriggerKind::TIME if distance == 0.0 && event == 0 => Trigger::Time(at_ticks),
+        TriggerKind::DISTANCE if at_ticks == 0 && event == 0 => Trigger::Distance(distance),
+        TriggerKind::EVENT if at_ticks == 0 && distance == 0.0 => Trigger::Event(event),
+        TriggerKind::TIME | TriggerKind::DISTANCE | TriggerKind::EVENT => {
+            return Err(non_canonical);
+        }
+        other => {
+            return Err(UnitError::UnknownTag {
+                what: "transform.trigger",
+                tag: u32::from(other),
+            });
+        }
+    };
+    let is_burst = kind == TransformKind::BURST;
+    if kind == TransformKind::REVERSE && target != 0 {
+        return Err(non_canonical);
+    }
+    if !is_burst && (program != EmitterRecord::NO_PROGRAM || speed != 0.0) {
+        return Err(non_canonical);
+    }
+    Ok(TransformDef {
+        kind,
+        trigger,
+        target,
+        program,
+        speed,
+    })
+}
+
+/// Encodes script records back into the `Transforms` layout (inverse of [`decode_scripts`]).
+fn encode_scripts(scripts: &[BulletScript]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(scripts.len() as u16).to_le_bytes());
+    for script in scripts {
+        out.extend_from_slice(&script.bullet_type.to_le_bytes());
+        match &script.behavior {
+            Some(binding) => {
+                out.push(1);
+                out.push(0); // reserved
+                out.extend_from_slice(&binding.id.0.to_le_bytes());
+                out.extend_from_slice(&(binding.params.len() as u16).to_le_bytes());
+            }
+            None => {
+                out.push(0);
+                out.push(0); // reserved
+                out.extend_from_slice(&0u32.to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&(script.transforms.len() as u16).to_le_bytes());
+        if let Some(binding) = &script.behavior {
+            for param in &binding.params {
+                out.extend_from_slice(&param.to_le_bytes());
+            }
+        }
+        for transform in &script.transforms {
+            let (trigger_kind, at_ticks, distance, event) = match transform.trigger {
+                Trigger::Time(ticks) => (TriggerKind::TIME, ticks, 0.0f32, 0u32),
+                Trigger::Distance(units) => (TriggerKind::DISTANCE, 0, units, 0),
+                Trigger::Event(id) => (TriggerKind::EVENT, 0, 0.0, id),
+            };
+            out.push(transform.kind);
+            out.push(trigger_kind);
+            out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+            out.extend_from_slice(&at_ticks.to_le_bytes());
+            out.extend_from_slice(&distance.to_le_bytes());
+            out.extend_from_slice(&event.to_le_bytes());
+            out.extend_from_slice(&transform.target.to_le_bytes());
+            out.extend_from_slice(&transform.program.to_le_bytes());
+            out.extend_from_slice(&transform.speed.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Cross-section checks of the `Transforms` section (contract §11.1): every bullet-type, emitter
+/// and program reference in range, every bound behavior id listed in `BehaviorRefs`, and — on
+/// the graph whose `burst`/`become_emitter` edges add one cascade level while `change_type` keeps
+/// it — no bullet type reachable from a primary emitter beyond [`SigilUnit::MAX_CASCADE_DEPTH`].
+/// A recursion through a level-adding edge therefore always fails with `CascadeTooDeep`. This
+/// mirrors the compiler's own walk (`grimoire_sigilc`, `SIG0018`), which also starts only at
+/// primary (non-`sub`) emitters.
+fn validate_scripts(
+    scripts: &[BulletScript],
+    bullet_types: &[BulletType],
+    emitters: &[EmitterRecord],
+    programs: &[ProgramRecord],
+    behavior_refs: &[BehaviorId],
+) -> Result<(), UnitError> {
+    let type_count = bullet_types.len() as u64;
+    for script in scripts {
+        if u64::from(script.bullet_type) >= type_count {
+            return Err(UnitError::IndexOutOfRange {
+                what: "transforms.bullet_type",
+                index: u64::from(script.bullet_type),
+                len: type_count,
+            });
+        }
+        if let Some(binding) = &script.behavior
+            && !behavior_refs.contains(&binding.id)
+        {
+            return Err(UnitError::UnknownTag {
+                what: "transforms.behavior",
+                tag: binding.id.0,
+            });
+        }
+        for transform in &script.transforms {
+            match transform.kind {
+                TransformKind::CHANGE_TYPE | TransformKind::BURST
+                    if u64::from(transform.target) >= type_count =>
+                {
+                    return Err(UnitError::IndexOutOfRange {
+                        what: "transform.bullet_type",
+                        index: u64::from(transform.target),
+                        len: type_count,
+                    });
+                }
+                TransformKind::BECOME_EMITTER
+                    if usize::from(transform.target) >= emitters.len() =>
+                {
+                    return Err(UnitError::IndexOutOfRange {
+                        what: "transform.emitter",
+                        index: u64::from(transform.target),
+                        len: emitters.len() as u64,
+                    });
+                }
+                _ => {}
+            }
+            if transform.kind == TransformKind::BURST
+                && usize::from(transform.program) >= programs.len()
+            {
+                return Err(UnitError::IndexOutOfRange {
+                    what: "transform.program",
+                    index: u64::from(transform.program),
+                    len: programs.len() as u64,
+                });
+            }
+        }
+    }
+    if scripts.is_empty() {
+        return Ok(());
+    }
+
+    // Depth walk over (bullet type, level) states. `seen[type]` is a bit set of the levels
+    // already visited, so every state is expanded at most once and a `change_type` cycle (which
+    // never adds a level) terminates.
+    let max = SigilUnit::MAX_CASCADE_DEPTH;
+    let mut seen = vec![0u8; bullet_types.len()];
+    let mut stack: Vec<(u16, u8)> = emitters
+        .iter()
+        .filter(|emitter| emitter.role == 0)
+        .map(|emitter| (emitter.bullet_type, 0))
+        .collect();
+    while let Some((bullet_type, level)) = stack.pop() {
+        let bit = 1u8 << level;
+        let slot = &mut seen[usize::from(bullet_type)];
+        if *slot & bit != 0 {
+            continue;
+        }
+        *slot |= bit;
+        let Ok(position) = scripts.binary_search_by_key(&bullet_type, |s| s.bullet_type) else {
+            continue;
+        };
+        for transform in &scripts[position].transforms {
+            let next = match transform.kind {
+                TransformKind::CHANGE_TYPE => (transform.target, level),
+                TransformKind::BURST | TransformKind::BECOME_EMITTER => {
+                    let next_level = level + 1;
+                    if next_level > max {
+                        return Err(UnitError::CascadeTooDeep { depth: next_level });
+                    }
+                    let next_type = if transform.kind == TransformKind::BURST {
+                        transform.target
+                    } else {
+                        emitters[usize::from(transform.target)].bullet_type
+                    };
+                    (next_type, next_level)
+                }
+                _ => continue,
+            };
+            stack.push(next);
+        }
+    }
+    Ok(())
 }
 
 /// Negative-zero bit pattern, used by [`Cursor::read_finite_f32`] to reject the non-canonical
@@ -1552,6 +1944,430 @@ mod tests {
         bytes[24..32].copy_from_slice(&hash.to_le_bytes());
     }
 
+    // ---- `Transforms` section (kind 4, Plan 0002 WP5.2) ------------------------------------
+
+    /// One raw 24-byte transform record, every field given explicitly so tests can break any one.
+    #[allow(clippy::too_many_arguments)]
+    fn raw_transform(
+        kind: u8,
+        trigger: u8,
+        at_ticks: u32,
+        distance: f32,
+        event: u32,
+        target: u16,
+        program: u16,
+        speed: f32,
+    ) -> Vec<u8> {
+        let mut out = vec![kind, trigger, 0, 0];
+        out.extend_from_slice(&at_ticks.to_le_bytes());
+        out.extend_from_slice(&distance.to_le_bytes());
+        out.extend_from_slice(&event.to_le_bytes());
+        out.extend_from_slice(&target.to_le_bytes());
+        out.extend_from_slice(&program.to_le_bytes());
+        out.extend_from_slice(&speed.to_le_bytes());
+        out
+    }
+
+    fn raw_time_transform(
+        kind: u8,
+        at_ticks: u32,
+        target: u16,
+        program: u16,
+        speed: f32,
+    ) -> Vec<u8> {
+        raw_transform(kind, 1, at_ticks, 0.0, 0, target, program, speed)
+    }
+
+    /// One raw script record.
+    fn raw_script(
+        bullet_type: u16,
+        behavior: Option<(u32, &[f32])>,
+        transforms: &[Vec<u8>],
+    ) -> Vec<u8> {
+        let mut out = bullet_type.to_le_bytes().to_vec();
+        let (flag, id, params): (u8, u32, &[f32]) =
+            behavior.map_or((0, 0, &[]), |(id, p)| (1, id, p));
+        out.push(flag);
+        out.push(0);
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&(params.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(transforms.len() as u16).to_le_bytes());
+        for param in params {
+            out.extend_from_slice(&param.to_le_bytes());
+        }
+        for transform in transforms {
+            out.extend_from_slice(transform);
+        }
+        out
+    }
+
+    fn counted(records: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = (records.len() as u16).to_le_bytes().to_vec();
+        for record in records {
+            out.extend_from_slice(record);
+        }
+        out
+    }
+
+    /// A unit with four plain bullet types, one ring program, a primary emitter of type `0` and a
+    /// sub emitter (index `1`) of type `1`, `BehaviorRefs` `[5]`, and `transforms` (the raw section
+    /// body) as its `Transforms` section.
+    fn unit_with_transforms(transforms: Vec<u8>) -> Vec<u8> {
+        let bullet_types = vec![plain_bullet_type(); 4];
+        let program = ProgramRecord {
+            block: BlockDef {
+                kind: BlockKind::RING,
+                count: 2,
+                params: [0.0; 6],
+                seed_hash: 0,
+            },
+            modifiers: vec![],
+        };
+        let primary = EmitterRecord {
+            bullet_type: 0,
+            program: EmitterRecord::NO_PROGRAM,
+            role: 0,
+            delay_ticks: 0,
+            repeat: 1,
+            interval_ticks: 1,
+            speed: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        let sub = EmitterRecord {
+            bullet_type: 1,
+            program: 0,
+            role: 1,
+            ..primary
+        };
+        let mut contents = vec![
+            (SECTION_BULLET_TYPES, encode_bullet_types(&bullet_types)),
+            (SECTION_PROGRAMS, encode_programs(&[program])),
+            (SECTION_EMITTERS, encode_emitters(&[primary, sub])),
+            (
+                SECTION_BEHAVIOR_REFS,
+                encode_behavior_refs(&[BehaviorId(5)]),
+            ),
+        ];
+        contents.push((SECTION_TRANSFORMS, transforms));
+        assemble_for_test(1, contents)
+    }
+
+    fn assemble_for_test(id: u64, mut contents: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+        contents.sort_by_key(|&(kind, _)| kind);
+        let table_len = 4u64 + contents.len() as u64 * SECTION_ENTRY_LEN;
+        let mut payload = (contents.len() as u32).to_le_bytes().to_vec();
+        let mut body = Vec::new();
+        let mut offset = table_len;
+        for (kind, bytes) in &contents {
+            payload.extend_from_slice(&kind.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&offset.to_le_bytes());
+            payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            offset += bytes.len() as u64;
+            body.extend_from_slice(bytes);
+        }
+        payload.extend_from_slice(&body);
+        let mut out = SigilUnit::MAGIC.to_vec();
+        out.extend_from_slice(&SigilUnit::FORMAT_VERSION.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        out.extend_from_slice(&payload);
+        recompute_hash(&mut out);
+        out
+    }
+
+    fn decode_transforms(records: &[Vec<u8>]) -> Result<SigilUnit, UnitError> {
+        SigilUnit::from_bytes(&unit_with_transforms(counted(records)))
+    }
+
+    #[test]
+    fn decodes_and_round_trips_every_transform_and_trigger_kind() {
+        let records = [
+            raw_script(
+                0,
+                Some((5, &[0.5, -2.0])),
+                &[
+                    raw_transform(TransformKind::REVERSE, 3, 0, 0.0, 77, 0, 0xFFFF, 0.0),
+                    raw_transform(TransformKind::CHANGE_TYPE, 2, 0, 4.5, 0, 2, 0xFFFF, 0.0),
+                ],
+            ),
+            raw_script(
+                2,
+                None,
+                &[
+                    raw_time_transform(TransformKind::BURST, 40, 3, 0, 0.06),
+                    raw_time_transform(TransformKind::BECOME_EMITTER, 50, 1, 0xFFFF, 0.0),
+                ],
+            ),
+            raw_script(3, Some((5, &[])), &[]),
+        ];
+        let bytes = unit_with_transforms(counted(&records));
+        let unit = SigilUnit::from_bytes(&bytes).expect("must decode");
+        assert_eq!(unit.to_bytes(), bytes);
+        let scripts = unit.scripts();
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(
+            scripts[0].behavior,
+            Some(BehaviorBinding {
+                id: BehaviorId(5),
+                params: vec![0.5, -2.0],
+            })
+        );
+        assert_eq!(scripts[0].transforms[0].trigger, Trigger::Event(77));
+        assert_eq!(scripts[0].transforms[1].trigger, Trigger::Distance(4.5));
+        assert_eq!(scripts[0].transforms[1].target, 2);
+        assert_eq!(scripts[1].transforms[0].trigger, Trigger::Time(40));
+        assert_eq!(scripts[1].transforms[0].speed, 0.06);
+        assert_eq!(scripts[1].transforms[1].kind, TransformKind::BECOME_EMITTER);
+        assert!(scripts[2].transforms.is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_transform_and_trigger_tags() {
+        let bad_kind = raw_time_transform(9, 1, 0, 0xFFFF, 0.0);
+        assert_eq!(
+            decode_transforms(&[raw_script(0, None, &[bad_kind])]).unwrap_err(),
+            UnitError::UnknownTag {
+                what: "transform.kind",
+                tag: 9,
+            }
+        );
+        let bad_trigger = raw_transform(TransformKind::REVERSE, 4, 0, 0.0, 0, 0, 0xFFFF, 0.0);
+        assert_eq!(
+            decode_transforms(&[raw_script(0, None, &[bad_trigger])]).unwrap_err(),
+            UnitError::UnknownTag {
+                what: "transform.trigger",
+                tag: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_canonical_transform_records() {
+        let cases = [
+            // A time trigger with a distance, an event trigger with ticks.
+            raw_transform(TransformKind::REVERSE, 1, 5, 1.0, 0, 0, 0xFFFF, 0.0),
+            raw_transform(TransformKind::REVERSE, 3, 5, 0.0, 1, 0, 0xFFFF, 0.0),
+            // `reverse` with a target, `change_type` with a program or a speed.
+            raw_time_transform(TransformKind::REVERSE, 5, 1, 0xFFFF, 0.0),
+            raw_time_transform(TransformKind::CHANGE_TYPE, 5, 1, 0, 0.0),
+            raw_time_transform(TransformKind::BECOME_EMITTER, 5, 1, 0xFFFF, 0.5),
+        ];
+        for case in cases {
+            match decode_transforms(&[raw_script(0, None, &[case])]) {
+                Err(UnitError::NonCanonical { .. }) => {}
+                other => panic!("expected NonCanonical, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_non_canonical_script_records() {
+        let reverse = raw_time_transform(TransformKind::REVERSE, 5, 0, 0xFFFF, 0.0);
+        // Out of order, duplicated, empty section, entry with nothing in it.
+        let out_of_order = counted(&[
+            raw_script(1, None, std::slice::from_ref(&reverse)),
+            raw_script(0, None, std::slice::from_ref(&reverse)),
+        ]);
+        let duplicated = counted(&[
+            raw_script(0, None, std::slice::from_ref(&reverse)),
+            raw_script(0, None, std::slice::from_ref(&reverse)),
+        ]);
+        let empty = counted(&[]);
+        let nothing = counted(&[raw_script(0, None, &[])]);
+        let mut hidden_behavior = raw_script(0, None, std::slice::from_ref(&reverse));
+        hidden_behavior[4..8].copy_from_slice(&5u32.to_le_bytes());
+        for body in [
+            out_of_order,
+            duplicated,
+            empty,
+            nothing,
+            counted(&[hidden_behavior]),
+        ] {
+            match SigilUnit::from_bytes(&unit_with_transforms(body)) {
+                Err(UnitError::NonCanonical { .. }) => {}
+                other => panic!("expected NonCanonical, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_script_limits() {
+        let reverse = raw_time_transform(TransformKind::REVERSE, 5, 0, 0xFFFF, 0.0);
+        let too_many = vec![reverse; usize::from(MAX_TRANSFORMS_PER_TYPE) + 1];
+        match decode_transforms(&[raw_script(0, None, &too_many)]) {
+            Err(UnitError::Limit {
+                what: "transforms.transform_count",
+                ..
+            }) => {}
+            other => panic!("expected a transform_count Limit, got {other:?}"),
+        }
+        let params = vec![0.0f32; usize::from(MAX_BEHAVIOR_PARAMS) + 1];
+        match decode_transforms(&[raw_script(0, Some((5, &params)), &[])]) {
+            Err(UnitError::Limit {
+                what: "transforms.param_count",
+                ..
+            }) => {}
+            other => panic!("expected a param_count Limit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_script_references_out_of_range() {
+        let reverse = raw_time_transform(TransformKind::REVERSE, 5, 0, 0xFFFF, 0.0);
+        let cases: [(Vec<u8>, &str, u64, u64); 4] = [
+            (
+                raw_script(4, None, &[reverse]),
+                "transforms.bullet_type",
+                4,
+                4,
+            ),
+            (
+                raw_script(
+                    0,
+                    None,
+                    &[raw_time_transform(
+                        TransformKind::CHANGE_TYPE,
+                        5,
+                        4,
+                        0xFFFF,
+                        0.0,
+                    )],
+                ),
+                "transform.bullet_type",
+                4,
+                4,
+            ),
+            (
+                raw_script(
+                    0,
+                    None,
+                    &[raw_time_transform(
+                        TransformKind::BECOME_EMITTER,
+                        5,
+                        2,
+                        0xFFFF,
+                        0.0,
+                    )],
+                ),
+                "transform.emitter",
+                2,
+                2,
+            ),
+            (
+                raw_script(
+                    0,
+                    None,
+                    &[raw_time_transform(TransformKind::BURST, 5, 1, 1, 0.1)],
+                ),
+                "transform.program",
+                1,
+                1,
+            ),
+        ];
+        for (record, what, index, len) in cases {
+            assert_eq!(
+                decode_transforms(&[record]).unwrap_err(),
+                UnitError::IndexOutOfRange { what, index, len }
+            );
+        }
+        assert_eq!(
+            decode_transforms(&[raw_script(0, Some((6, &[])), &[])]).unwrap_err(),
+            UnitError::UnknownTag {
+                what: "transforms.behavior",
+                tag: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_cascades_deeper_than_the_maximum_from_a_primary_emitter() {
+        // 0 -burst-> 1 -become_emitter(sub emitter 1, type 1)... build a straight chain instead:
+        // 0 -burst-> 1 -burst-> 2 -burst-> 3 is depth 3 and legal; 3 -burst-> 0 is depth 4.
+        let burst_to = |to: u16| raw_time_transform(TransformKind::BURST, 5, to, 0, 0.1);
+        let legal = [
+            raw_script(0, None, &[burst_to(1)]),
+            raw_script(1, None, &[burst_to(2)]),
+            raw_script(2, None, &[burst_to(3)]),
+        ];
+        assert!(decode_transforms(&legal).is_ok());
+
+        let recursive = [
+            raw_script(0, None, &[burst_to(1)]),
+            raw_script(1, None, &[burst_to(2)]),
+            raw_script(2, None, &[burst_to(3)]),
+            raw_script(3, None, &[burst_to(0)]),
+        ];
+        assert_eq!(
+            decode_transforms(&recursive).unwrap_err(),
+            UnitError::CascadeTooDeep { depth: 4 }
+        );
+
+        // `become_emitter` adds a level too: 0 -> 1 -> 2 -> 3 via emitter 1 (type 1) and bursts.
+        let via_emitter = [
+            raw_script(
+                0,
+                None,
+                &[raw_time_transform(
+                    TransformKind::BECOME_EMITTER,
+                    5,
+                    1,
+                    0xFFFF,
+                    0.0,
+                )],
+            ),
+            raw_script(1, None, &[burst_to(2)]),
+            raw_script(2, None, &[burst_to(3)]),
+            raw_script(3, None, &[burst_to(1)]),
+        ];
+        assert_eq!(
+            decode_transforms(&via_emitter).unwrap_err(),
+            UnitError::CascadeTooDeep { depth: 4 }
+        );
+    }
+
+    #[test]
+    fn accepts_type_change_cycles_and_chains_no_primary_emitter_reaches() {
+        let change_to =
+            |to: u16| raw_time_transform(TransformKind::CHANGE_TYPE, 5, to, 0xFFFF, 0.0);
+        assert!(
+            decode_transforms(&[
+                raw_script(0, None, &[change_to(1)]),
+                raw_script(1, None, &[change_to(0)]),
+            ])
+            .is_ok()
+        );
+        // Type 2 bursts into itself, but only the primary emitter's type 0 is a starting point.
+        assert!(
+            decode_transforms(&[raw_script(
+                2,
+                None,
+                &[raw_time_transform(TransformKind::BURST, 5, 2, 0, 0.1)]
+            )])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_empty_optional_sections_as_non_canonical() {
+        let bullet_types = vec![plain_bullet_type()];
+        let base = vec![
+            (SECTION_BULLET_TYPES, encode_bullet_types(&bullet_types)),
+            (SECTION_EMITTERS, encode_emitters(&[])),
+        ];
+        for kind in [SECTION_PROGRAMS, SECTION_CURVES, SECTION_TRANSFORMS] {
+            let mut contents = base.clone();
+            contents.push((kind, 0u16.to_le_bytes().to_vec()));
+            match SigilUnit::from_bytes(&assemble_for_test(1, contents)) {
+                Err(UnitError::NonCanonical { .. }) => {}
+                other => panic!("section kind {kind}: expected NonCanonical, got {other:?}"),
+            }
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -1602,6 +2418,40 @@ mod tests {
             if mutate_index < bytes.len() {
                 bytes[mutate_index] = mutate_value;
             }
+            let _ = SigilUnit::from_bytes(&bytes);
+
+            let cut = truncate_to.min(bytes.len());
+            bytes.truncate(cut);
+            let _ = SigilUnit::from_bytes(&bytes);
+        }
+
+        /// Same no-panic property against a unit with a real `Transforms` section (WP5.2),
+        /// including its cascade walk.
+        #[test]
+        fn from_bytes_never_panics_on_mutated_unit_with_transforms(
+            mutate_index in 0usize..512,
+            mutate_value in any::<u8>(),
+            truncate_to in 0usize..512,
+        ) {
+            let records = [
+                raw_script(0, Some((5, &[1.0])), &[
+                    raw_time_transform(TransformKind::BECOME_EMITTER, 9, 1, 0xFFFF, 0.0),
+                ]),
+                raw_script(1, None, &[
+                    raw_transform(TransformKind::CHANGE_TYPE, 2, 0, 2.0, 0, 2, 0xFFFF, 0.0),
+                ]),
+                raw_script(2, None, &[
+                    raw_transform(TransformKind::REVERSE, 3, 0, 0.0, 42, 0, 0xFFFF, 0.0),
+                    raw_time_transform(TransformKind::BURST, 3, 3, 0, 0.5),
+                ]),
+            ];
+            let mut bytes = unit_with_transforms(counted(&records));
+            prop_assert!(SigilUnit::from_bytes(&bytes).is_ok());
+            if mutate_index < bytes.len() {
+                bytes[mutate_index] = mutate_value;
+            }
+            let _ = SigilUnit::from_bytes(&bytes);
+            recompute_hash(&mut bytes);
             let _ = SigilUnit::from_bytes(&bytes);
 
             let cut = truncate_to.min(bytes.len());

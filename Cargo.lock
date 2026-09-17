@@ -839,6 +839,7 @@ dependencies = [
  "grimoire",
  "grimoire_core",
  "grimoire_ecs",
+ "grimoire_sigil",
  "grimoire_sim",
  "proptest",
  "rayon",

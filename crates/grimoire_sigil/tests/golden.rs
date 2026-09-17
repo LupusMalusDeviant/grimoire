@@ -20,11 +20,17 @@
 //!   section (one `ring` block plus an `accelerate` modifier, mirroring
 //!   `tests/corpus/valid/01-ring-burst.sigil`'s `emitter burst`), a real `Emitters` record
 //!   referencing that program, and a `BehaviorRefs` section.
+//! - `transforms_unit_v1.bin` (Plan 0002 WP5.2): a `Transforms` section (`docs/formats/sigil.md`
+//!   §10.9) with a behavior binding carrying two parameters and all four transform kinds under
+//!   all three trigger kinds, next to `Programs`, a sub emitter and `BehaviorRefs`. The script
+//!   that derived it also computes the `event` trigger's id from the name `phase_end` with its
+//!   own `StableHasher` re-implementation, so `EventId::from_name` is checked against it too.
 
-use grimoire_sigil::{BehaviorId, SigilUnit};
+use grimoire_sigil::{BehaviorId, BulletFlags, EventId, SigilUnit, UnitId};
 
 const MINIMAL_UNIT: &[u8] = include_bytes!("golden/minimal_unit_v1.bin");
 const RING_BURST_UNIT: &[u8] = include_bytes!("golden/ring_burst_unit_v1.bin");
+const TRANSFORMS_UNIT: &[u8] = include_bytes!("golden/transforms_unit_v1.bin");
 
 #[test]
 fn minimal_unit_decodes_as_hand_derived() {
@@ -80,4 +86,51 @@ fn ring_burst_unit_decodes_with_a_program_and_a_behavior_ref() {
 fn ring_burst_unit_round_trips_byte_identically() {
     let unit = SigilUnit::from_bytes(RING_BURST_UNIT).expect("must decode");
     assert_eq!(unit.to_bytes(), RING_BURST_UNIT);
+}
+
+#[test]
+fn transforms_unit_decodes_as_hand_derived() {
+    let unit = SigilUnit::from_bytes(TRANSFORMS_UNIT).expect("hand-derived fixture must decode");
+    assert_eq!(unit.id(), UnitId(0x5157_5049_4744_2a01));
+    assert_eq!(unit.content_hash(), 0x79e1_18d6_7779_7b79);
+    assert_eq!(unit.bullet_types().len(), 3);
+    assert_eq!(
+        unit.bullet_types()[2].flags,
+        BulletFlags(BulletFlags::REFLECTABLE.0 | BulletFlags::ENV_ACTIVE.0)
+    );
+    assert_eq!(unit.program_count(), 2);
+    assert_eq!(unit.emitter_count(), 2);
+    assert_eq!(unit.behavior_refs(), &[BehaviorId(7)]);
+}
+
+#[test]
+fn transforms_unit_round_trips_byte_identically() {
+    let unit = SigilUnit::from_bytes(TRANSFORMS_UNIT).expect("must decode");
+    assert_eq!(unit.to_bytes(), TRANSFORMS_UNIT);
+}
+
+#[test]
+fn event_ids_match_the_hand_derived_fixture() {
+    // Offset of the `reverse` record's `event` field: header 40, table 4 + 5 * 24, BulletTypes
+    // 2 + 3 * 20, Programs 2 + 2 * 34, Emitters 2 + 2 * 30, Transforms count 2, first script head
+    // 12 plus two parameters 8, the `become_emitter` record 24, then 12 bytes into `reverse`.
+    let offset = 40 + 124 + 62 + 70 + 62 + 2 + 12 + 8 + 24 + 12;
+    let stored = u32::from_le_bytes(TRANSFORMS_UNIT[offset..offset + 4].try_into().unwrap());
+    assert_eq!(stored, 0x04c5_2141);
+    assert_eq!(EventId::from_name("phase_end"), EventId(stored));
+}
+
+#[test]
+fn transforms_unit_truncations_and_bit_flips_never_panic_and_never_wrongly_decode() {
+    for cut in 0..TRANSFORMS_UNIT.len() {
+        assert!(
+            SigilUnit::from_bytes(&TRANSFORMS_UNIT[..cut]).is_err(),
+            "a truncation to {cut} bytes must not decode as valid"
+        );
+    }
+    for index in 0..TRANSFORMS_UNIT.len() {
+        let mut mutated = TRANSFORMS_UNIT.to_vec();
+        mutated[index] ^= 0xFF;
+        let _ = SigilUnit::from_bytes(&mutated);
+    }
 }

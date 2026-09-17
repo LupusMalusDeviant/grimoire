@@ -1,13 +1,9 @@
 //! Installation and the five `sigil.*` tick-phase systems (contract §11.6/§11.7, PRD-0004).
 //!
-//! **Scope of WP5.1** (see the crate's WP5.1 pull request for the full list): the seven blocks
-//! (`crate::blocks`) and six stackable modifiers (`crate::runtime`) run here, end to end, from
-//! [`install`] through all five phases. Sub-spawns and per-bullet-type transforms
-//! (`Transforms`/§10.4's `change_type`/`become_emitter`/`burst`/`reverse`) are not: nothing in the
-//! wire format yet ties a bullet type to either a transform program or a behavior
-//! (`docs/formats/sigil.md` §11.4, open points 1 and 4), so [`ResolveSystem`] only ever folds
-//! despawns in this work package — the sub-spawn fold contract §11.6 describes stays a documented
-//! hook for WP5.2, which is also where a `BehaviorFn` first gets called from a tick phase.
+//! The seven blocks (`crate::blocks`) and six stackable modifiers (`crate::runtime`) run here,
+//! end to end, from [`install`] through all five phases (WP5.1). Since WP5.2 `sigil.update` also
+//! raises the tick's [`EventRequest`]s, calls each bullet type's bound `BulletBehavior` and runs
+//! its transforms, and [`ResolveSystem`] folds the resulting sub-spawns after the despawns.
 
 use std::sync::Arc;
 
@@ -18,21 +14,21 @@ use grimoire_sim::{SimSeed, Simulation, Tick, derive_block_rng};
 use crate::behavior::BehaviorRegistry;
 use crate::blocks::{self, Shot};
 use crate::content::{SigilContent, SigilLibrary};
-use crate::emitter::{AimTarget, ClearFilter, ClearRequest, Emitter};
+use crate::emitter::{AimTarget, ClearFilter, ClearRequest, Emitter, EventRequest};
 use crate::error::SigilError;
-use crate::pool::{BulletPool, BulletSpawn, DespawnCause, PendingDespawn};
-use crate::runtime::{self, RuntimeCache};
-use crate::unit::{EmitterRecord, ModifierKind};
+use crate::pool::{BulletPool, BulletSpawn, DespawnCause, PendingDespawn, PendingSpawn};
+use crate::runtime::{self, BlockOutcome, RuntimeCache, UpdateContext};
+use crate::unit::{EmitterRecord, SigilUnit};
 
 /// Names of the five stages [`install`] appends, in schedule order (contract §11.6). Appear in
 /// [`grimoire_ecs::Schedule::stages`]/`system_names` and in every `SystemObserver` callback.
 pub mod system_names {
     /// Resets despawn events, checks the behavior-registry fingerprint (contract §8.4).
     pub const BEGIN: &str = "sigil.begin";
-    /// Advances every live bullet: block motion, the modifier stack, then the bounds/lifetime
-    /// check.
+    /// Raises the tick's events, then advances every live bullet: block motion, the modifier
+    /// stack, the bullet type's behavior and transforms, then the lifetime/bounds check.
     pub const UPDATE: &str = "sigil.update";
-    /// Applies despawns collected by `UPDATE`, in block order.
+    /// Applies despawns, then sub-spawns, collected by `UPDATE`, in block order.
     pub const RESOLVE: &str = "sigil.resolve";
     /// Fires due emitters.
     pub const EMIT: &str = "sigil.emit";
@@ -52,9 +48,9 @@ pub mod stream {
     /// `sigil.emit`'s stream, keyed by `Entity::to_bits()` (contract §11.4/§11.7): `scatter`'s
     /// jitter, and any future emitter-level randomness.
     pub const EMIT: u64 = engine_stream(owner::SIGIL, 1);
-    /// `sigil.update`'s stream, keyed by pool block index (contract §11.7). Unused by WP5.1's six
-    /// modifiers (all deterministic given a bullet's own state) but reserved: a future
-    /// `BulletBehavior` (contract §11.5) draws from exactly this stream, per block, in slot order.
+    /// `sigil.update`'s stream, keyed by pool block index (contract §11.7): drawn from, per block
+    /// in slot order, by `BulletBehavior`s (contract §11.5) and by the `scatter` blocks of
+    /// `burst`/`become_emitter` volleys. The six modifiers never draw from it.
     pub const UPDATE: u64 = engine_stream(owner::SIGIL, 2);
 }
 
@@ -86,17 +82,24 @@ impl SigilConfig {
     }
 }
 
-/// Despawns [`crate::systems::UpdateSystem`] decided but could not apply itself (its blocks only
+/// Despawns and sub-spawns [`UpdateSystem`] decided but could not apply itself (its blocks only
 /// ever own a disjoint sub-slice of the pool, contract §11.7), staged here for
-/// [`ResolveSystem`]. Always empty except momentarily between those two stages of one tick; not
-/// part of the public contract, so this stays `pub(crate)`.
+/// [`ResolveSystem`]. Both lists are working buffers: always empty except momentarily between
+/// those two stages of one tick, so they never carry state across a tick boundary. Not part of the
+/// public contract, so this stays `pub(crate)`.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct PendingDespawns(Vec<PendingDespawn>);
+pub(crate) struct PendingOutcomes {
+    despawns: Vec<PendingDespawn>,
+    spawns: Vec<PendingSpawn>,
+}
 
-impl StableHash for PendingDespawns {
+impl StableHash for PendingOutcomes {
+    /// Feeds the despawn list exactly as the WP5.1 resource did (its registration slot and layout
+    /// are part of every installed session's `World::stable_hash`). The sub-spawn list is not fed:
+    /// it is empty whenever a hash can be taken, and feeding it would change that layout.
     fn stable_hash(&self, hasher: &mut StableHasher) {
-        hasher.write_usize(self.0.len());
-        for despawn in &self.0 {
+        hasher.write_usize(self.despawns.len());
+        for despawn in &self.despawns {
             hasher.write_u32(despawn.index);
             despawn.cause.stable_hash(hasher);
         }
@@ -143,12 +146,13 @@ pub fn install(
     if world.resource::<AimTarget>().is_none() {
         world.insert_resource(AimTarget::default());
     }
-    world.insert_resource(PendingDespawns::default());
+    world.insert_resource(PendingOutcomes::default());
 
     sim.schedule_mut()
         .add_system(BeginSystem { registry })
         .add_system(UpdateSystem {
             cache: RuntimeCache::default(),
+            events: Vec::new(),
         })
         .add_system(ResolveSystem)
         .add_system(EmitSystem)
@@ -184,10 +188,14 @@ impl System for BeginSystem {
     }
 }
 
-/// `sigil.update` (contract §11.6/§11.7): advances every live bullet through
-/// [`runtime::update_block`], one data-parallel block at a time through the world's executor.
+/// `sigil.update` (contract §11.6/§11.7): raises the tick's [`EventRequest`]s, then advances
+/// every live bullet through [`runtime::update_block`], one data-parallel block at a time through
+/// the world's executor.
 struct UpdateSystem {
     cache: RuntimeCache,
+    /// Working buffer: the event ids raised this tick, ascending and deduplicated. Filled and
+    /// consumed within one run, so it is never state.
+    events: Vec<u32>,
 }
 
 impl System for UpdateSystem {
@@ -204,34 +212,63 @@ impl System for UpdateSystem {
             return;
         };
         let (bounds_min, bounds_max) = bounds;
+
+        // Contract §11.9: every live request raises its event for this tick, in query order, and
+        // its entity is despawned in that order. An unregistered `EventRequest` (no game ever
+        // spawned one) simply matches nothing.
+        self.events.clear();
+        let requests: Vec<(Entity, u32)> = world
+            .query::<(Entity, &EventRequest)>()
+            .map(|(entity, request)| (entity, request.event.0))
+            .collect();
+        for (entity, event) in requests {
+            self.events.push(event);
+            world.despawn(entity);
+        }
+        self.events.sort_unstable();
+        self.events.dedup();
+
+        let tick = world.resource::<Tick>().copied().unwrap_or_default().0;
+        let seed = world.resource::<SimSeed>().copied().unwrap_or_default().0;
+        let aim = world.resource::<AimTarget>().copied().unwrap_or_default().0;
         let mut pool = world
             .resource_mut::<BulletPool>()
             .map(std::mem::take)
             .unwrap_or_default();
 
         let blocks = pool.update_blocks_mut();
-        let library = content.library();
-        let cache = &self.cache;
-        let results: Vec<Vec<PendingDespawn>> =
-            run_blocks(world.executor(), blocks, |mut block| {
-                runtime::update_block(&mut block, library, cache, bounds_min, bounds_max)
-            });
+        let ctx = UpdateContext {
+            library: content.library(),
+            cache: &self.cache,
+            bounds_min,
+            bounds_max,
+            tick,
+            seed,
+            aim,
+            events: &self.events,
+        };
+        let results: Vec<BlockOutcome> = run_blocks(world.executor(), blocks, |mut block| {
+            runtime::update_block(&mut block, &ctx)
+        });
 
         world.insert_resource(pool);
         let mut pending = world
-            .resource_mut::<PendingDespawns>()
+            .resource_mut::<PendingOutcomes>()
             .map(std::mem::take)
             .unwrap_or_default();
-        for mut block_despawns in results {
-            pending.0.append(&mut block_despawns);
+        for mut outcome in results {
+            pending.despawns.append(&mut outcome.despawns);
+            pending.spawns.append(&mut outcome.spawns);
         }
         world.insert_resource(pending);
     }
 }
 
-/// `sigil.resolve` (contract §11.6): applies every despawn `sigil.update`'s blocks collected, in
-/// block order (the order [`PendingDespawns`] were appended in). Sub-spawn folding is WP5.2 scope
-/// (module docs).
+/// `sigil.resolve` (contract §11.6): applies every despawn `sigil.update`'s blocks collected, then
+/// every sub-spawn, each in block order (the order [`PendingOutcomes`] were appended in). A
+/// sub-spawn is one cascade level deeper than its parent; one that would exceed
+/// [`SigilUnit::MAX_CASCADE_DEPTH`], or finds the pool full, is dropped and counted in
+/// [`BulletPool::dropped_spawns`].
 struct ResolveSystem;
 
 impl System for ResolveSystem {
@@ -240,17 +277,55 @@ impl System for ResolveSystem {
     }
 
     fn run(&mut self, world: &mut World) {
-        let Some(mut pending) = world.resource_mut::<PendingDespawns>().map(std::mem::take) else {
+        let Some(mut pending) = world.resource_mut::<PendingOutcomes>().map(std::mem::take) else {
             return;
         };
-        if !pending.0.is_empty()
-            && let Some(pool) = world.resource_mut::<BulletPool>()
-        {
-            for despawn in pending.0.drain(..) {
-                pool.despawn_pending(despawn.index, despawn.cause);
+        if !pending.despawns.is_empty() || !pending.spawns.is_empty() {
+            let content = world.resource::<SigilContent>().cloned();
+            if let Some(pool) = world.resource_mut::<BulletPool>() {
+                for despawn in pending.despawns.drain(..) {
+                    pool.despawn_pending(despawn.index, despawn.cause);
+                }
+                if let Some(content) = &content {
+                    for spawn in pending.spawns.drain(..) {
+                        apply_sub_spawn(pool, content, spawn);
+                    }
+                }
             }
+            pending.despawns.clear();
+            pending.spawns.clear();
         }
         world.insert_resource(pending);
+    }
+}
+
+/// Spawns one sub-bullet for `sigil.resolve` (contract §11.6): the depth is the parent's plus one,
+/// computed without overflowing; too deep or a full pool drops the spawn deterministically.
+fn apply_sub_spawn(pool: &mut BulletPool, content: &SigilContent, spawn: PendingSpawn) {
+    let Some(cascade) = spawn
+        .parent_cascade
+        .checked_add(1)
+        .filter(|&depth| depth <= SigilUnit::MAX_CASCADE_DEPTH)
+    else {
+        pool.record_dropped_spawn();
+        return;
+    };
+    let Some(unit) = content.library().units().get(usize::from(spawn.unit_index)) else {
+        return; // unreachable: the parent bullet's unit index was valid this tick.
+    };
+    let request = BulletSpawn::new(
+        unit.id(),
+        spawn.bullet_type,
+        spawn.position,
+        spawn.angle,
+        spawn.speed,
+    )
+    .with_program(spawn.program)
+    .with_cascade(cascade);
+    // As in `fire_emitter`: only a full pool is a runtime condition; every other error is
+    // excluded by the decoder's range checks of the unit the sub-spawn comes from.
+    if let Err(SigilError::PoolFull) = pool.spawn(content, request) {
+        pool.record_dropped_spawn();
     }
 }
 
@@ -360,21 +435,15 @@ fn fire_emitter(
         Some((program, _)) => {
             let block_key = entity.to_bits() ^ u64::from(program.block.seed_hash);
             let mut rng = derive_block_rng(seed, tick, stream::EMIT, block_key);
-            let mut shots = blocks::generate_shots(
-                &program.block,
+            blocks::program_shots(
+                program,
                 base_speed,
                 base_angle,
                 aim,
                 origin,
                 volley_index,
                 &mut rng,
-            );
-            for modifier in &program.modifiers {
-                if modifier.kind == ModifierKind::MIRROR {
-                    shots = blocks::apply_mirror(&shots, modifier, base_angle);
-                }
-            }
-            shots
+            )
         }
         // No program at all (`record.program == NO_PROGRAM`, or — unreachable for a decoded
         // unit, since the decoder already range-checks `EmitterRecord::program` — a stale
