@@ -10,6 +10,8 @@
 //! - [`Simulation`], [`SimSnapshot`], [`replay`]: stepping, state hashes, snapshots and replays.
 //! - [`Replay`], [`ReplayHeader`]: the additive version-2 replay format on top of [`InputLog`].
 //! - [`stream`]: bit layout of random-stream numbers shared by every engine crate.
+//! - [`trace`], [`HashTrace`], [`first_divergence`]: state and per-system hashes of a run and the
+//!   first tick and system in which two runs diverge (OF-18.1).
 //!
 //! [`Simulation::step`] runs the schedule stage by stage through the world's executor
 //! (engine ADR-0006); every state hash is independent of the executor and its thread count.
@@ -43,6 +45,7 @@ mod rng;
 mod simulation;
 pub mod stream;
 mod time;
+mod trace;
 
 pub use error::SimError;
 pub use input::{InputFrame, InputLog, MAX_INPUT_SLOTS, TickInput};
@@ -54,3 +57,7 @@ pub use replay::{
 pub use rng::{SimRng, derive_block_rng, derive_rng};
 pub use simulation::{SimSnapshot, Simulation, replay};
 pub use time::{FixedTimestep, SimSeed, StepPlan, Tick};
+pub use trace::{
+    Divergence, DivergentSystem, HashTrace, SystemHasher, TraceCheckpoint, TraceGranularity,
+    first_divergence, system_hash, trace,
+};
