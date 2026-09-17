@@ -6,7 +6,7 @@
 //! - [`the_curtain_scene_renders_offscreen`] renders a few small frames on the GPU (skipped without
 //!   an adapter, failing instead with `GRIMOIRE_REQUIRE_GPU_ADAPTER=1`);
 //! - [`render_sigil_curtain_png_sequence`] (`#[ignore]`, run explicitly) writes the showcase frame
-//!   sequence as numbered PNGs, which the CI job `sigil-curtain-gif` assembles into the GIF:
+//!   sequence as numbered PNGs, which the CI job `showcase-gif` assembles into the GIF:
 //!   `GRIMOIRE_GPU_ADAPTER=software cargo test -p grimoire --test sigil_curtain_showcase --locked --
 //!   --ignored --nocapture render_sigil_curtain_png_sequence`. Frames go to
 //!   `GRIMOIRE_SIGIL_CURTAIN_GIF_OUT_DIR` (default `target/wp57-sigil-curtain`, ignored by git).

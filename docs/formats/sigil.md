@@ -1197,7 +1197,8 @@ with permuted system and block orders (`PermutedExecutor`) must give the same ha
   `cargo test -p grimoire_sigilc --test reference_goldens -- --ignored --nocapture print_reference_golden_table`.
 - **Showcase.** The facade's example `sigil_curtain` plays `02-spiral-curtain` with a counter-turning
   orb spiral beneath it (`crates/grimoire/tests/fixtures/sigil_curtain.sigil`) over the lit stage;
-  the CI job `sigil-curtain-gif` renders the same scene offscreen into the M2 showcase GIF.
+  the CI job `showcase-gif` renders the same scene offscreen into the M2 showcase GIF
+  (artifact `sigil_curtain-showcase-gif`).
 
 ## 15. Platform identity of compiled units
 

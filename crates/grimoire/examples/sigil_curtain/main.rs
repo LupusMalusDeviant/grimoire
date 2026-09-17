@@ -5,7 +5,7 @@
 //! `scene.rs` next to this file.
 //!
 //! **CI only ever builds this example, never runs it** (`.github/workflows/ci.yml`'s "Build
-//! examples" step; examples open windows). The job `sigil-curtain-gif` renders the same scene
+//! examples" step; examples open windows). The job `showcase-gif` renders the same scene
 //! offscreen into the M2 showcase GIF through `tests/sigil_curtain_showcase.rs`, which includes
 //! `scene.rs`. Run it locally with
 //!
