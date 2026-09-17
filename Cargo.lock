@@ -787,8 +787,10 @@ name = "grimoire_bench"
 version = "0.4.0"
 dependencies = [
  "grimoire",
+ "grimoire_collide",
  "grimoire_core",
  "grimoire_ecs",
+ "grimoire_exec",
  "grimoire_sigil",
  "grimoire_sim",
  "proptest",
@@ -837,6 +839,7 @@ name = "grimoire_exec"
 version = "0.4.0"
 dependencies = [
  "grimoire",
+ "grimoire_collide",
  "grimoire_core",
  "grimoire_ecs",
  "grimoire_sigil",

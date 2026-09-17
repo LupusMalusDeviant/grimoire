@@ -3926,7 +3926,9 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     bleibt das Gitter unverändert, `out` wird geleert.
 - **Leistung:** `overlapping` und `graze_ring` allokieren nicht, sobald `out` ausreichend Kapazität hat; `rebuild`
   allokiert nach dem Einschwingen nicht. `BatchHits` behält seine Kapazität; `overlapping_batch` darf je Aufruf
-  abhängig von der Blockanzahl allokieren, nie je Treffer.
+  abhängig von der Blockanzahl allokieren, nie je Treffer. *Stufe K (Klarstellung, WP6.5):* `tests/alloc.rs` belegt
+  diese Zusagen mit einem zählenden Allokator, auch für den Debug-Build (dessen Schlüsselprüfung nutzt einen
+  wiederverwendeten Puffer).
 - **Konformanz (WP1.3):**
   - `tests/conformance.rs` ruft `grimoire_collide::conformance` generisch über einen Erzeuger
     `impl CollisionQuery` gegen `NullCollision`, `BruteForceQuery` und `SpatialGrid` auf. Geprüft wird: `out` wird
@@ -3937,6 +3939,16 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     mit `SequentialExecutor`, `PermutedExecutor::new(1..=3)` und `reversed()`.
   - Goldener Hash `GOLDEN_QUERY_HASH` über die Treffer einer festen Szene. In `grimoire_exec/tests/hash_gate.rs`
     folgt dieselbe Szene mit 1, 2 und N Threads (Dev-Kante nach §1, PO-Entscheid V-1, §11.7).
+  - *Stufe K (Klarstellung, WP6.5):*
+    - Die Suite ist hinter dem Feature `conformance`, das kein Workspace-Mitglied einschaltet. CI führt sie deshalb
+      im eigenen Schritt „Test (grimoire_collide, feature conformance)“ aus.
+    - Ein weiterer Proptest prüft `overlapping_batch` gegen Einzelabfragen mit denselben Executoren und einem
+      wiederverwendeten `BatchHits`.
+    - Die Szene zu `GOLDEN_QUERY_HASH` passt in einen einzigen Block, erreicht die Thread-Pools also nie. Dazu
+      kommt die feste Blockszene `GOLDEN_BLOCK_QUERY_HASH` mit 3.000 Objekten und 64 Anfragen, die auf beiden
+      datenparallelen Wegen mehrere Blöcke bildet.
+    - Beide Szenen liegen in `grimoire_collide/tests/golden_scene/mod.rs` und laufen im Hash-Gate über
+      `rebuild_par`, `overlapping_batch` und `graze_ring`.
 - **Bench (WP6.5, PO-Entscheid P-3 A):** In `grimoire_bench` laufen die Szenarien `collide_uniform` und
   `collide_cluster`. Beide haben dieselbe Last: 10.000 Bullet-Kreise, 100 Dummy-Gegner mit `Collider`, je Tick
   `rebuild_par`, `overlapping_batch` der 100 Gegner und eine `graze_ring`-Abfrage. In `collide_cluster` liegen alle
@@ -3945,6 +3957,13 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
   `collide_uniform`; `collide_cluster` wird als Trend geführt, und eine Überschreitung ergibt ein Folge-Issue für die
   P2-Entscheidung über hierarchische oder adaptive Gitter (PO-Entscheid V-17). Dazu das Beispiel
   `collide_query` (Konsole, nur gebaut).
+  *Stufe K (Klarstellung, WP6.5), Szenenparameter:*
+  - Gitter wie die Vorgabe des Adapters (§9.6).
+  - Bullets: Radius 0,3, auf `ColliderKey::pool` in Slot-Reihenfolge. Sie bewegen sich je Tick mit festen Geschwindigkeiten und bleiben in ihrem Quadrat: in `collide_uniform` 64 × 64 Einheiten um den Ursprung, in `collide_cluster` so, dass jede Hülle in den vier Zellen um den Ursprung liegt.
+  - Gegner: 100 Entities mit `Collider` auf einem 10 × 10-Raster, jede fünfte eine Kapsel. Sie folgen den Bullets in Query-Reihenfolge und stellen je eine Anfrage mit der Bullet-Maske.
+  - Graze-Ring: um den Ursprung mit 0,5 und 2,5.
+  - Gemessen wird `Ir` nur mit einem Thread (§15.1). N Threads (`ThreadPoolExecutor`, N = Kernzahl des Runners) messen nur Wanduhr.
+  - `collide_uniform` bekommt ein Urteil, sobald `bench-accept-baseline` einen Commit mit dem Szenario annimmt.
 - **Nicht in v0:** kontinuierliche Kollision — ein Objekt, das sich je Tick weiter als seinen Durchmesser bewegt,
   kann eine Überlappung überspringen. Außerdem nicht enthalten: Strahlabfragen, Parade-Bogen, Trefferantworten,
   hierarchisches Gitter.

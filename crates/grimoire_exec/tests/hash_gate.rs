@@ -10,11 +10,16 @@
 //! - (e) in debug builds, an undeclared read on a pool worker panics with the system name, and
 //!   context-free blocks of a second world on a shared pool are never checked;
 //! - (f) the Sigil pool scenario of contract §11.7 (more than three pool blocks, behaviors, scatter,
-//!   transforms, events and clears) against its sequential run and `GOLDEN_POOL_FINAL_HASH`.
+//!   transforms, events and clears) against its sequential run and `GOLDEN_POOL_FINAL_HASH`;
+//! - (g) the collision query scenes of contract §14 through `rebuild_par`, `overlapping_batch` and
+//!   `graze_ring` against `GOLDEN_QUERY_HASH` and `GOLDEN_BLOCK_QUERY_HASH` (the block scene spans
+//!   several blocks on both data-parallel paths).
 //!
 //! The scenarios are included from the other crates' test directories, so no determinism crate
 //! needs a dependency on this crate or on rayon.
 
+#[path = "../../grimoire_collide/tests/golden_scene/mod.rs"]
+mod collide_scene;
 #[path = "../../grimoire/tests/common/mod.rs"]
 mod common;
 #[path = "../../grimoire_sim/tests/parallel_scenario/mod.rs"]
@@ -169,6 +174,37 @@ fn sigil_pool_scenario_threads_2() {
 #[test]
 fn sigil_pool_scenario_threads_n() {
     pool_gate(N);
+}
+
+// ------------------------------------------------------------------ (g) collision query scenes
+
+fn collide_gate(index: usize) {
+    let (label, executor) = gate_executor(index);
+    assert_eq!(
+        collide_scene::parallel_query_hash(executor.as_ref()),
+        collide_scene::GOLDEN_QUERY_HASH,
+        "collision golden scene with {label}"
+    );
+    assert_eq!(
+        collide_scene::block_parallel_query_hash(executor.as_ref()),
+        collide_scene::GOLDEN_BLOCK_QUERY_HASH,
+        "collision block scene with {label}"
+    );
+}
+
+#[test]
+fn collide_query_scenes_threads_1() {
+    collide_gate(ONE);
+}
+
+#[test]
+fn collide_query_scenes_threads_2() {
+    collide_gate(TWO);
+}
+
+#[test]
+fn collide_query_scenes_threads_n() {
+    collide_gate(N);
 }
 
 // ------------------------------------------------------------------ (c) facade scenarios

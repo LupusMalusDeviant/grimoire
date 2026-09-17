@@ -11,7 +11,8 @@
 //! `sigil_update` (`sigil_update_6k`, the WP5.1 micro-bench, now measured), `sigil_update_10k`
 //! (10,000 active bullets) and `sigil_churn` (`sigil_churn_2k`: 2,000 spawns and 2,000 despawns
 //! per tick). Plan 0002 WP3.6 adds the render CPU bodies `bullet_upload` (`render_bullet_upload_10k`)
-//! and `light_cluster` (`render_light_cluster_256`).
+//! and `light_cluster` (`render_light_cluster_256`), WP6.5 the collision body `collide_uniform`
+//! (10,000 bullets and 100 enemies per tick on one thread).
 //!
 //! Usage:
 //!   `ir_probe <ecs|sim|sigil_extract> baseline` — the real, uninjected candidate measurement.
@@ -31,18 +32,20 @@ use std::hint::black_box;
 use std::process::ExitCode;
 
 use grimoire_bench::scenarios::{
-    ECS_ENTITIES, ECS_IR_ROUNDS, EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, RENDER_BULLETS,
-    RENDER_IR_FRAMES, RENDER_POINT_LIGHTS, SIGIL_CHURN_BULLETS, SIGIL_CHURN_IR_TICKS,
-    SIGIL_CHURN_PER_TICK, SIGIL_ENTITIES, SIGIL_IR_TICKS, SIGIL_UPDATE_10K_BULLETS,
-    SIGIL_UPDATE_10K_IR_TICKS, SIM_ENTITIES, SIM_IR_TICKS, build_ecs_world, build_render_cpu,
-    build_sigil_churn, build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
-    run_bullet_upload_frames, run_calibration_units, run_ecs_rounds, run_light_cluster_frames,
-    run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks, sigil_update_fill_ticks,
+    COLLIDE_BULLETS, COLLIDE_ENEMIES, COLLIDE_IR_TICKS, CollideLayout, ECS_ENTITIES, ECS_IR_ROUNDS,
+    EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, RENDER_BULLETS, RENDER_IR_FRAMES, RENDER_POINT_LIGHTS,
+    SIGIL_CHURN_BULLETS, SIGIL_CHURN_IR_TICKS, SIGIL_CHURN_PER_TICK, SIGIL_ENTITIES,
+    SIGIL_IR_TICKS, SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_IR_TICKS, SIM_ENTITIES,
+    SIM_IR_TICKS, build_collide, build_ecs_world, build_render_cpu, build_sigil_churn,
+    build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
+    run_bullet_upload_frames, run_calibration_units, run_collide_ticks, run_ecs_rounds,
+    run_light_cluster_frames, run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks,
+    sigil_update_fill_ticks,
 };
 
 /// Every bench body `baseline` and `params` accept.
 const BENCHES: &str = "'ecs', 'sim', 'sigil_extract', 'sigil_update', 'sigil_update_10k', \
-                       'sigil_churn', 'bullet_upload' or 'light_cluster'";
+                       'sigil_churn', 'bullet_upload', 'light_cluster' or 'collide_uniform'";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -90,6 +93,11 @@ fn print_params(bench: &str) -> ExitCode {
         "light_cluster" => println!(
             "lights={RENDER_POINT_LIGHTS},bullets={RENDER_BULLETS},frames={RENDER_IR_FRAMES}"
         ),
+        "collide_uniform" => {
+            println!(
+                "bullets={COLLIDE_BULLETS},enemies={COLLIDE_ENEMIES},ticks={COLLIDE_IR_TICKS}"
+            );
+        }
         other => {
             eprintln!("unknown bench {other:?}, expected {BENCHES}");
             return ExitCode::FAILURE;
@@ -135,6 +143,17 @@ fn run_baseline(bench: &str) -> ExitCode {
         "light_cluster" => {
             let mut bench = build_render_cpu();
             black_box(run_light_cluster_frames(&mut bench, RENDER_IR_FRAMES, 0));
+        }
+        // Plan 0002 WP6.5: single-threaded only, as the Callgrind gate requires (engine ADR-0010);
+        // `collide_cluster` and the N-thread runs stay wall-clock trends (contract §14).
+        "collide_uniform" => {
+            let mut bench = build_collide(CollideLayout::Uniform);
+            black_box(run_collide_ticks(
+                &mut bench,
+                &grimoire_ecs::SequentialExecutor,
+                COLLIDE_IR_TICKS,
+                0,
+            ));
         }
         other => {
             eprintln!("unknown bench {other:?}, expected {BENCHES}");
