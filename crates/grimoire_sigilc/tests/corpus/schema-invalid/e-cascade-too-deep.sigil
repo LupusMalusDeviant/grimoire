@@ -4,7 +4,7 @@ sigil 1
 // past `SigilUnit::MAX_CASCADE_DEPTH` (3). Covers SIG0018.
 
 bullet b0 {
-  silhouette = orb0
+  silhouette = orb
   palette = enemy.crimson
   glow = 0.5
   radius = 0.2u
@@ -17,7 +17,7 @@ bullet b0 {
 }
 
 bullet b1 {
-  silhouette = orb1
+  silhouette = rice
   palette = enemy.crimson
   glow = 0.5
   radius = 0.2u
@@ -30,7 +30,7 @@ bullet b1 {
 }
 
 bullet b2 {
-  silhouette = orb2
+  silhouette = diamond
   palette = enemy.crimson
   glow = 0.5
   radius = 0.2u
@@ -43,7 +43,7 @@ bullet b2 {
 }
 
 bullet b3 {
-  silhouette = orb3
+  silhouette = blade
   palette = enemy.crimson
   glow = 0.5
   radius = 0.2u
@@ -56,7 +56,7 @@ bullet b3 {
 }
 
 bullet b4 {
-  silhouette = orb4
+  silhouette = crescent
   palette = enemy.crimson
   glow = 0.5
   radius = 0.2u

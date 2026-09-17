@@ -3,8 +3,9 @@ sigil 1
 // tables hold (plan 0002 WP3.5: 3 silhouettes, 2 hostile palettes). Compiled by sigilc into
 // unmapped_visual_unit_v1.bin; used by crates/grimoire/tests/sigil_render.rs to prove that the
 // Sigil -> Render adapter counts and skips visuals it cannot map (contract §6 "Kennungen").
-// Per-unit alphabetical indices: silhouettes orb 0, rice 1, shard 2, wisp 3 (unmapped);
-// palettes hex_magenta 0, poison_lime 1, violet 2 (unmapped).
+// Visual catalogue indices (docs/formats/sigil.md, section 10.9): silhouettes orb 0, rice 1,
+// diamond 2, blade 3 (reserved, not drawn: unmapped); palettes hex_magenta 0, poison_lime 1,
+// amber 2 (reserved, not drawn: unmapped).
 
 meta {
   name = "Unmapped Visual"
@@ -32,8 +33,8 @@ bullet rice {
 
 // Maps silhouette-wise (index 2) but its palette index 2 is outside the table.
 bullet shard {
-  silhouette = shard
-  palette = enemy.violet
+  silhouette = diamond
+  palette = enemy.amber
   glow = 0.5
   radius = 0.3u
   damage = 1
@@ -42,7 +43,7 @@ bullet shard {
 
 // Silhouette index 3 is outside the table.
 bullet wisp {
-  silhouette = wisp
+  silhouette = blade
   palette = enemy.hex_magenta
   glow = 0.5
   radius = 0.3u

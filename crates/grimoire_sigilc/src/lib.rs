@@ -22,8 +22,9 @@
 //! `from`-composition, static validation and the `SigilUnit` encoder land in WP4.2 ([`compiler`]);
 //! the command-line interface lands in WP4.3 ([`cli`], with value listing and lossless `set` in
 //! [`edit`], the canonical layout in [`fmt::format_canonical`], content paths in
-//! [`content_path`] and the behaviour manifest in [`behaviors`]); `sigilc simulate` remains Plan
-//! 0002 WP5.6.
+//! [`content_path`] and the behaviour manifest in [`behaviors`]); silhouette and palette names
+//! compile to rows of the shared visual catalogue ([`catalog`], PO decision 2026-09-17);
+//! `sigilc simulate` remains Plan 0002 WP5.6.
 //! [`derive_unit_id`] predates WP4.1 (added in WP1.3, once `grimoire_sigil::UnitId`, contract
 //! §11.1, existed) and is unrelated to parsing.
 //!
@@ -43,6 +44,7 @@ use grimoire_core::StableHasher;
 use grimoire_sigil::UnitId;
 
 pub mod behaviors;
+pub mod catalog;
 pub mod cli;
 pub mod compiler;
 pub mod content_path;

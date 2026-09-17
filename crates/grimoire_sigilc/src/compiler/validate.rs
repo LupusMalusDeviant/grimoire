@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::catalog;
 use crate::compiler::diagnose::diagnostic;
 use crate::compiler::model::{BlockView, FieldValue, Located, ModifierView, TransformView};
 use crate::compiler::resolve::{ResolvedUnit, Workspace};
@@ -199,6 +200,30 @@ fn nan_risk_error(
 
 // ---- Bullets -----------------------------------------------------------------------------
 
+/// `SIG0027`: a silhouette or enemy palette name that is not in the visual catalogue
+/// (`crate::catalog`, `docs/formats/sigil.md` §10.9). Without a catalogue row the name has no
+/// index that means the same thing in every unit, so it cannot be compiled.
+fn unknown_visual(
+    file: &str,
+    located: &Located<FieldValue>,
+    what: &str,
+    name: &str,
+    table: &[&str],
+    out: &mut Vec<Diagnostic>,
+) {
+    out.push(diagnostic(
+        "SIG0027",
+        file,
+        located.position,
+        located.node_path.clone(),
+        debug_token(&located.value),
+        format!(
+            "{what} `{name}` is not in the visual catalogue (docs/formats/sigil.md section 10.9)."
+        ),
+        format!("Use one of: {}.", table.join(", ")),
+    ));
+}
+
 fn validate_bullet(
     workspace: &Workspace,
     file: &str,
@@ -207,26 +232,50 @@ fn validate_bullet(
     out: &mut Vec<Diagnostic>,
 ) {
     let fields = &bullet.fields;
-    expect(fields, "silhouette", Expect::Ident, true, file, out);
+    if let Some(silhouette) = expect(fields, "silhouette", Expect::Ident, true, file, out)
+        && let FieldValue::Ident(name) = &silhouette.value
+        && catalog::silhouette_index(name).is_none()
+    {
+        unknown_visual(
+            file,
+            silhouette,
+            "Silhouette",
+            name,
+            catalog::SILHOUETTES,
+            out,
+        );
+    }
 
     if let Some(palette) = expect(fields, "palette", Expect::Ref(2), true, file, out)
         && let FieldValue::Ref(segments) = &palette.value
-        && segments[0] != "enemy"
     {
-        out.push(diagnostic(
-            "SIG0021",
-            file,
-            palette.position,
-            palette.node_path.clone(),
-            segments.join("."),
-            format!(
-                "Sigil bullets may only reference the enemy palette space, found \
+        if segments[0] == "enemy" {
+            if catalog::enemy_palette_index(&segments[1]).is_none() {
+                unknown_visual(
+                    file,
+                    palette,
+                    "Enemy palette",
+                    &segments[1],
+                    catalog::ENEMY_PALETTES,
+                    out,
+                );
+            }
+        } else {
+            out.push(diagnostic(
+                "SIG0021",
+                file,
+                palette.position,
+                palette.node_path.clone(),
+                segments.join("."),
+                format!(
+                    "Sigil bullets may only reference the enemy palette space, found \
                          `{}` (PRD-0003 rule 4: enemy and player projectiles are told apart by \
                          separate, unmistakable palette spaces).",
-                segments[0]
-            ),
-            "Use an `enemy.<color>` palette reference.",
-        ));
+                    segments[0]
+                ),
+                "Use an `enemy.<color>` palette reference.",
+            ));
+        }
     }
 
     if let Some(glow) = expect(fields, "glow", Expect::Float, true, file, out) {

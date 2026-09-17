@@ -24,6 +24,7 @@ use grimoire_core::StableHasher;
 use grimoire_core::math::dmath;
 
 use crate::DeriveUnitIdError;
+use crate::catalog;
 use crate::compiler::model::{EmitterView, FieldValue, Located};
 use crate::compiler::resolve::ResolvedUnit;
 
@@ -75,18 +76,6 @@ pub(crate) fn lower(
 ) -> Result<Vec<u8>, DeriveUnitIdError> {
     let unit_id = crate::derive_unit_id(&resolved.entry_path)?;
 
-    let silhouettes = index_of_all(resolved.bullets.iter().filter_map(|(_, b)| {
-        match b.fields.get("silhouette").map(|l| &l.value) {
-            Some(FieldValue::Ident(name)) => Some(name.clone()),
-            _ => None,
-        }
-    }));
-    let palettes = index_of_all(resolved.bullets.iter().filter_map(|(_, b)| {
-        match b.fields.get("palette").map(|l| &l.value) {
-            Some(FieldValue::Ref(segments)) if segments.len() == 2 => Some(segments[1].clone()),
-            _ => None,
-        }
-    }));
     let bullet_index: BTreeMap<(String, String), u16> = resolved
         .bullets
         .iter()
@@ -94,7 +83,7 @@ pub(crate) fn lower(
         .map(|(i, (file, view))| ((file.clone(), view.name.clone()), i as u16))
         .collect();
 
-    let bullet_types = encode_bullet_types(resolved, &silhouettes, &palettes);
+    let bullet_types = encode_bullet_types(resolved);
 
     let mut curves: Vec<(u32, f32)> = Vec::new(); // flattened below; see `curve_records`.
     let mut curve_records: Vec<Vec<(u32, f32)>> = Vec::new();
@@ -138,30 +127,21 @@ pub(crate) fn lower(
     Ok(assemble(unit_id.0, &sections))
 }
 
-fn index_of_all(names: impl Iterator<Item = String>) -> BTreeMap<String, u16> {
-    let distinct: BTreeSet<String> = names.collect();
-    distinct
-        .into_iter()
-        .enumerate()
-        .map(|(i, name)| (name, i as u16))
-        .collect()
-}
-
-fn encode_bullet_types(
-    resolved: &ResolvedUnit,
-    silhouettes: &BTreeMap<String, u16>,
-    palettes: &BTreeMap<String, u16>,
-) -> Vec<u8> {
+/// Encodes the `BulletTypes` section. `silhouette` and `palette` are visual catalogue indices
+/// (`crate::catalog`, `docs/formats/sigil.md` §10.9), identical for a name in every unit.
+/// `validate` has already rejected every name outside the catalogue (`SIG0027`), so the `0`
+/// fallbacks below are never written for a unit that reaches this function.
+fn encode_bullet_types(resolved: &ResolvedUnit) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(resolved.bullets.len() as u16).to_le_bytes());
     for (_, bullet) in &resolved.bullets {
         let silhouette = match bullet.fields.get("silhouette").map(|l| &l.value) {
-            Some(FieldValue::Ident(name)) => silhouettes.get(name).copied().unwrap_or(0),
+            Some(FieldValue::Ident(name)) => catalog::silhouette_index(name).unwrap_or(0),
             _ => 0,
         };
         let palette = match bullet.fields.get("palette").map(|l| &l.value) {
             Some(FieldValue::Ref(segments)) if segments.len() == 2 => {
-                palettes.get(&segments[1]).copied().unwrap_or(0)
+                catalog::enemy_palette_index(&segments[1]).unwrap_or(0)
             }
             _ => 0,
         };
