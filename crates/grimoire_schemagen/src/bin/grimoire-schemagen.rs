@@ -40,7 +40,7 @@ const TARGETS: &[Target] = &[
     Target {
         schema_path: "schema/pack_manifest_v1.gschema",
         rust_output: "crates/grimoire_assets/src/generated/pack_manifest.rs",
-        docs_output: "docs/formats/pack.md",
+        docs_output: "docs/formats/pack-manifest.md",
     },
 ];
 

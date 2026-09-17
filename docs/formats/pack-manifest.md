@@ -4,8 +4,8 @@
 
 # Pack Manifest V1
 
-The pack v1 manifest body (engine contract §12), standalone from `grimoire_assets::PackError`
-until Plan-0002 WP8.3 (see this file's header comment).
+The pack v1 manifest body (engine contract §12); the complete pack layout is documented in
+`docs/formats/pack.md`.
 
 Format version **1**.
 
