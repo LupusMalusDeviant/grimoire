@@ -1,0 +1,47 @@
+sigil 1
+// 12-finale-composite: the boss finale reuses the opening ring of 01 with a denser block and a
+// rotation added, and surrounds it with satellites whose motion comes from a registered behaviour.
+// Covers: import and `from` composition (field override, `block.count` override, appended
+//         modifier), behaviour reference (PRD-0004 FR-10), meta patron.
+
+import "01-opening-ring.sigil" as opening
+
+meta {
+  name = "Finale Composite"
+  difficulty = [hard, finale]
+  density = 320
+  patron = ember_court
+}
+
+// Satellite; its motion comes from the Rust behaviour registered as `drift_orbit`.
+bullet satellite {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.9
+  radius = 0.18u
+  damage = 1
+  flags = [grazeable]
+  behaviour = drift_orbit
+}
+
+// The ring of 01-opening-ring, denser, repeated more often and turning.
+emitter finale from opening.ring {
+  delay = 0t
+  repeat = 6
+  block.count = 36
+  modifier rotate {
+    rate = 0.5deg/t
+  }
+}
+
+emitter satellites {
+  bullet = satellite
+  offset = (x = 0u, y = 1.5u)
+  delay = 20t
+  repeat = 3
+  interval = 90t
+  speed = 0.03u/t
+  block ring {
+    count = 6
+  }
+}

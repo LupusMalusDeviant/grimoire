@@ -1,0 +1,35 @@
+sigil 1
+// 02-spiral-curtain: a five-armed spiral that never stops, turned slowly as a whole, so the safe
+// lanes drift and the player has to keep moving (PRD-0004 US-01).
+// Covers: block spiral, modifier rotate, repeat forever.
+
+meta {
+  name = "Spiral Curtain"
+  difficulty = [normal, curtain]
+  density = 450 // five arms every 3 ticks, about 90 ticks on screen
+}
+
+// Rice grain: long along its flight, so each arm reads as a stream.
+bullet grain {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 1.0
+  radius = 0.14u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter curtain {
+  bullet = grain
+  repeat = forever
+  interval = 3t
+  speed = 0.08u/t
+  block spiral {
+    arms = 5
+    step = 7deg // added every volley
+    start = 90deg
+  }
+  modifier rotate {
+    rate = 0.2deg/t // the whole figure drifts
+  }
+}
