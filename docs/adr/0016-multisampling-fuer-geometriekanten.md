@@ -130,7 +130,7 @@ vorgesehene Messsitzung (Plan 0002 WP3.3).
 ## Entscheidung
 
 **Vorschlag: Option C, 4×-Multisampling im Mesh-Pass.** `StageRendererConfig` wächst additiv um
-`msaa: Msaa` (`Off`/`X4`, Vorgabe `X4`) — Stufe A nach V-20, gebündelte PO-Freigabe offen (siehe
+`msaa: Msaa` (`Off`/`X4`, Vorgabe `X4`) — Stufe A nach V-20, gebündelte PO-Freigabe am 2026-09-17 erteilt (siehe
 „Kontext" oben zur Abgrenzung von PO-Entscheid und Vorschlag). Der Mesh-Pass rendert in ein
 4×-Farb- und -Tiefenziel und löst vor dem Sprite-Pass in das bisherige Ziel auf; Schattenpass und
 Cluster-Compute bleiben bei 1×. Referenzbilder von `pbr_materials`, `shadows` und `camera_tilt`
