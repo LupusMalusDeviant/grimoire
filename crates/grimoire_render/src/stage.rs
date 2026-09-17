@@ -86,6 +86,11 @@ pub const BULLET_PASS_PALETTE_SPACE: u8 = palette_space::HOSTILE;
 /// distance atlas instead of from geometry (engine ADR-0014, "Textur-Atlas statt Geometrie"). The
 /// three shapes are the stylebook's v0 base forms; a new bullet type needs a new, clearly
 /// distinguishable silhouette here before it gets another colour.
+///
+/// [`NAMES`](bullet_silhouette::NAMES) gives every row its stable name in the shared visual
+/// catalogue (`docs/formats/sigil.md` §10.9): Sigil sources name a silhouette, `sigilc` compiles the
+/// name to the catalogue index, and the catalogue's drawn rows are exactly this table, in this
+/// order. A new silhouette is added as the next catalogue row, never in between.
 pub mod bullet_silhouette {
     /// Round orb: a disc filling the visible radius.
     pub const ORB: u16 = 0;
@@ -95,12 +100,18 @@ pub mod bullet_silhouette {
     pub const DIAMOND: u16 = 2;
     /// Number of silhouettes in the table; valid indices are `0..COUNT`.
     pub const COUNT: u16 = 3;
+    /// Catalogue name of every row, indexed by the constants above.
+    pub const NAMES: [&str; COUNT as usize] = ["orb", "rice", "diamond"];
 }
 
 /// Palette table of the bullet pass's palette space, [`BULLET_PASS_PALETTE_SPACE`] (plan 0002
 /// WP3.5, stylebook v0 "Bullets", table "Gegnerisch (HOSTILE)"): the values of
 /// [`BulletInstance::palette`]. Every entry has a body colour, a white-hot core and the shared dark
 /// rim; the colours themselves are provisional until the look review (P-11).
+///
+/// [`NAMES`](bullet_palette::NAMES) gives every row its stable name in the shared visual catalogue
+/// (`docs/formats/sigil.md` §10.9, `enemy.<name>` in Sigil sources), exactly as for
+/// [`bullet_silhouette`].
 pub mod bullet_palette {
     /// H0 "Hexenmagenta": body `#FF2FB4`, core `#FFE3F4`.
     pub const HEX_MAGENTA: u16 = 0;
@@ -108,6 +119,8 @@ pub mod bullet_palette {
     pub const POISON_LIME: u16 = 1;
     /// Number of palettes in the table; valid indices are `0..COUNT`.
     pub const COUNT: u16 = 2;
+    /// Catalogue name of every row, indexed by the constants above.
+    pub const NAMES: [&str; COUNT as usize] = ["hex_magenta", "poison_lime"];
 }
 
 /// Fixed draw order of the stage renderer (contract §6). Not configurable: [`RenderLayer::ORDER`]
@@ -810,6 +823,42 @@ mod tests {
     }
 
     // --- WP3.5: silhouette and palette tables, accepted-bullet classification -----------------
+
+    #[test]
+    fn table_names_follow_the_constants_and_are_unique_identifiers() {
+        assert_eq!(
+            bullet_silhouette::NAMES[usize::from(bullet_silhouette::ORB)],
+            "orb"
+        );
+        assert_eq!(
+            bullet_silhouette::NAMES[usize::from(bullet_silhouette::RICE)],
+            "rice"
+        );
+        assert_eq!(
+            bullet_silhouette::NAMES[usize::from(bullet_silhouette::DIAMOND)],
+            "diamond"
+        );
+        assert_eq!(
+            bullet_palette::NAMES[usize::from(bullet_palette::HEX_MAGENTA)],
+            "hex_magenta"
+        );
+        assert_eq!(
+            bullet_palette::NAMES[usize::from(bullet_palette::POISON_LIME)],
+            "poison_lime"
+        );
+        for names in [&bullet_silhouette::NAMES[..], &bullet_palette::NAMES[..]] {
+            for (index, name) in names.iter().enumerate() {
+                let mut bytes = name.bytes();
+                let first = bytes.next().expect("names are not empty");
+                assert!(first.is_ascii_lowercase(), "{name}");
+                assert!(
+                    bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                    "{name} is not a lowercase Sigil identifier"
+                );
+                assert!(!names[..index].contains(name), "{name} is listed twice");
+            }
+        }
+    }
 
     #[test]
     fn extract_bullets_accepts_every_table_entry() {
