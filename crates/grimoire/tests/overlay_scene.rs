@@ -9,7 +9,8 @@
 //!   instead with `GRIMOIRE_REQUIRE_GPU_ADAPTER=1`).
 //! - [`overlay_scene`] (`#[ignore]`, run by the CI step for the WP2.8 render test scenes) compares
 //!   the image against `tests/snapshots/<platform>/overlay.png` with the tolerance metric and
-//!   warning mode of `grimoire_render`'s `tests/snapshot_scenes.rs`, and prints the same
+//!   blocking rule of `grimoire_render`'s `tests/snapshot_scenes.rs` (a mismatch or a missing
+//!   reference fails on Windows and Linux and only warns on macOS), and prints the same
 //!   `grimoire-snapshot-*` lines, so `.github/scripts/report-snapshot-diff.sh` reports it too.
 //!   `GRIMOIRE_SNAPSHOT_UPDATE=1` writes this platform's reference instead.
 
@@ -39,9 +40,6 @@ use snapshot_support::Image;
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
 const MS: Duration = Duration::from_millis(1);
-
-/// Warning mode, exactly like `grimoire_render/tests/snapshot_scenes.rs` until WP3.6 decides.
-const FAIL_ON_MISMATCH: bool = false;
 
 static GPU_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -246,16 +244,24 @@ fn overlay_scene() {
         );
         return;
     }
+    let blocks = snapshot_support::blocks_on_mismatch(platform);
+    let level = if blocks { "error" } else { "warning" };
     let candidate = candidate_dir().join(platform).join("overlay.png");
     if !path.exists() {
         image.write_png(&candidate).expect("writes the candidate");
         let _ = writeln!(
             stdout,
             "grimoire-snapshot-no-reference: name=overlay platform={platform} candidate={}\n\
-             ::warning title=WP2.8 snapshot has no reference yet::scene \"overlay\" on {platform} \
+             ::{level} title=Render test scene has no reference::scene \"overlay\" on {platform} \
              has no committed reference image; a candidate was written to {}",
             candidate.display(),
             candidate.display()
+        );
+        assert!(
+            !blocks,
+            "scene \"overlay\" has no reference on {platform}, where rendering blocks: review the \
+             candidate (CI artifact snapshot-candidates-<runner>) and commit it as \
+             tests/snapshots/{platform}/overlay.png"
         );
         return;
     }
@@ -280,12 +286,19 @@ fn overlay_scene() {
         let _ = Image::beside(&[&reference, &image]).write_png(&comparison);
         let _ = writeln!(
             stdout,
-            "\n::warning title=WP2.8 snapshot mismatch::scene \"overlay\" on {platform} exceeds \
+            "\n::{level} title=Render test scene mismatch::scene \"overlay\" on {platform} exceeds \
              tolerance; candidate written to {}",
             candidate.display()
         );
-        if FAIL_ON_MISMATCH {
-            panic!("scene \"overlay\" mismatches its reference beyond tolerance");
-        }
+        assert!(
+            !blocks,
+            "scene \"overlay\" on {platform} mismatches its reference beyond tolerance: \
+             mean_abs_diff={:.3} (tolerance {:.3}), max_abs_diff={} (tolerance {}); rendering on \
+             {platform} blocks",
+            metric.mean_abs_diff,
+            snapshot_support::MEAN_ABS_DIFF_TOLERANCE,
+            metric.max_abs_diff,
+            snapshot_support::MAX_ABS_DIFF_TOLERANCE
+        );
     }
 }
