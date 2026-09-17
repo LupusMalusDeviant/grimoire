@@ -374,11 +374,19 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-15 | §11.1, §11.2 | #3 | A (PO-Entscheid V-20) | — | nein |
 | 2026-09-15 | §8.4, §11.5 | #3 | A (PO-Entscheid V-20) | — | nein (WP5 noch nicht umgesetzt) |
 | 2026-09-15 | §6 (Kamera-, Mesh-, Material- und Licht-Kanäle) | #6 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
+| 2026-09-16 | §1 (Werkzeug-Crate `grimoire_schemagen` ohne Engine-Kante, Nachtrag zu Engine-ADR-0008) | #8 | A (PO-Entscheid V-20) | Pipeline-Rust (WP8.2, WP8.3) | nein |
+| 2026-09-16 | §12, §13 (Manifest-Codec und Nutzlasttypen aus `schema/*.gschema` erzeugt, Projekt-ADR-0011; Byte-Layout unverändert) | #8 | K | — | nein |
 | 2026-09-16 | §6 (Zähler `meshes_rejected_unregistered`) | #9 | A (PO-Entscheid V-20) | Render-A (WP2.3–WP2.6), Render-B (WP3) | nein |
 | 2026-09-16 | §6 (Registrierung bleibt renderer-spezifisch) | #9 | K | — | nein |
 | 2026-09-16 | §6 (Vorausschau: Fokus-Geschwindigkeit mal 1 s, begrenzt) | #11 | A (PO-Entscheid V-20) | Render-A (WP2.5 ff.) | nein |
 | 2026-09-16 | §6, §9.5 (Kamera nur nach Anmeldung; Marker-Werte vorlaeufig) | #11 | K | — | nein |
 | 2026-09-16 | §6 (Knochenverformung: `MeshVertex` um `joints`/`weights`, `SkinBinding`, `StageFrame::joint_matrices`) | #23 | A (PO-Entscheid V-20) | Render-A/B (P1 „Figuren in der Engine") | nein |
+| 2026-09-16 | §6 (Clustered Forward+: `StageRendererConfig`/`LightBudget` mit Vorgabe `Low`, Zähler `point_lights_over_budget`, `clusters_with_lights`, `light_cluster_index_entries`, Vorgabe `BulletLightCap` 0,25) | #26 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.5) | nein |
+| 2026-09-16 | §6 (`point_light_from_bullet` als einziger Erzeugungsweg für Geschoss-Lichter; Klarstellung im Licht-Kanal) | #26 | A (PO-Entscheid 2026-09-16) | Render-B (WP3.5) | nein |
+| 2026-09-16 | §6 (Multisampling: `Msaa`, `StageRendererConfig::msaa` mit Vorgabe `X4`, Engine-ADR-0016) | #27 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-A/B (Paket „Texturqualität") | ja (sieben Windows-Referenzbilder der Render-Testszenen; Abweichungen an Kanten gemessen) |
+| 2026-09-16 | §6 (echte Tangenten: `MeshVertex::tangent`, 72 statt 56 Byte; `decode_mesh` liest `FNP_MESH` Fassung 1 und 2) | #28 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-A/B (Paket „Texturqualität") | nein |
+| 2026-09-17 | §6 (Bullet-Pass: `bullet_silhouette`, `bullet_palette`, `WgpuRenderer::last_stage_pass_order`, abgeleitete Geschoss-Lichter), §9.1, §9.9 (Adapter `grimoire::adapters::sigil_render`) | #29 | A (PO-Freigabe 2026-09-17, gebündelt) | Render-B (WP3.6, WP3.7), Sigil-Laufzeit (WP5.4 ff.) | nein |
+| 2026-09-17 | §6 (Tabellengrenzen in `bullets_rejected_invalid`; fester Pass-Graph; Marker- und Debug-Sprites werden gezeichnet) | #29 | K | — | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -936,7 +944,13 @@ pub struct SkinBinding {                 // Debug, Clone, Copy, PartialEq, Eq, D
   Pull-Request-Text für die dort verwendeten `AssetKind`-Werte.
 
 **Clustered Forward+ und Lichtbudget (Ergänzung P1, Plan 0002 WP3.4, Engine-ADR-0015
-„Compute-Clustering", Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-16)**
+„Compute-Clustering")**
+
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich
+`StageRendererConfig` als neuem Konfigurationstyp, der Vorgabe `LightBudget::Low` für die bestehenden
+Konstruktoren, der Vorgabe 0,25 für `BulletLightCap` (Stilbibel-Wert, weiter vorläufig bis zum Look-Review P-11)
+und der um etwa ein Bild verzögerten Zähler `clusters_with_lights`/`light_cluster_index_entries`. Die
+Platzhalterwerte für Position, Reichweite und Stärke der Geschoss-Lichter bestätigt erst das Look-Review.*
 
 Additiv zum Licht-Kanal oben (WP2.2) und zu `grimoire_render::cluster_layout` (WP3.1, Engine-ADR-0013,
 bis hierhin nicht verdrahtet). Kein bestehendes Feld ändert Typ oder Bedeutung; `cluster_layout`s
@@ -1026,7 +1040,10 @@ impl WgpuRenderer {
   konfigurierten Budget (dieser Vertrag, WP2.2).
 
 **Multisampling im Mesh-Pass (Ergänzung P1, Paket „Texturqualität" Strang B1, engine ADR-0016
-„Multisampling für Geometriekanten", Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-16)**
+„Multisampling für Geometriekanten")**
+
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+Vorgabe `Msaa::X4`; Engine-ADR-0016 ist am selben Tag angenommen.*
 
 Additiv zu `StageRendererConfig` (oben, WP3.4): ein weiteres Konstruktionsfeld, kein neues
 `RendererConfig`-Feld — derselbe additive Weg, aus demselben Grund (§2b Stufe A, kein
@@ -1061,8 +1078,8 @@ pub struct StageRendererConfig {
   wählen die Einstellung explizit über `StageRendererConfig::msaa`.
 - **Vorgabe `X4`, nicht `Off`:** anders als bei `LightBudget` (wo `Low` die bisherige interne
   Obergrenze fortschreibt) gab es vor diesem Paket keine Multisampling-Vorgabe, gegen die
-  fortzuschreiben wäre — die Vorgabe `X4` ist der Vorschlag dieses Pull Requests zur gebündelten
-  Freigabe (siehe engine ADR-0016 für die gemessenen Kosten), nicht selbst ein PO-Entscheid.
+  fortzuschreiben wäre — die Vorgabe `X4` kam als Vorschlag dieses Pull Requests (siehe engine
+  ADR-0016 für die gemessenen Kosten) und ist mit der gebündelten Freigabe vom 2026-09-17 angenommen.
 - **Größenänderung:** [`WgpuRenderer::resize`] erneuert unter `Msaa::X4` sowohl den Tiefenpuffer als
   auch das multisample Farbziel auf die neue Größe; unter `Msaa::Off` entfällt Letzteres vollständig
   (kein Speicher dafür reserviert).
@@ -1072,15 +1089,16 @@ pub struct StageRendererConfig {
   sich dadurch nicht — reine Implementierungsdetails von `grimoire_render::mesh_pass`, wie schon vor
   diesem Paket (WP2.5s Abschnitt oben nennt `TextureData` als einzigen Vertragstyp).
 
-**Echte Tangenten (Ergänzung P1, Paket „Texturqualität" Strang B2, Stufe A nach V-20, gebündelte
-PO-Freigabe offen, 2026-09-16)**
+**Echte Tangenten (Ergänzung P1, Paket „Texturqualität" Strang B2)**
+
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich Feld,
+Typ und Vorgabewert.*
 
 Additiv zum Mesh-Kanal oben und zur Knochenverformung (P1-Skinning-Ergänzung, dieser Abschnitt
 oben): ein weiteres `MeshVertex`-Feld, kein bestehendes Feld ändert Typ oder Bedeutung. Der
 PO-Entscheid deckt, **dass** Blender Tangenten exportiert und die Engine sie nutzt (Festlegung
-„Texturqualität", 2026-09-16); das konkrete Feld, sein Typ und sein Vorgabewert sind der Vorschlag
-dieses Pull Requests zur gebündelten Freigabe — genau die Unterscheidung, die WP3.4s Abschnitt
-oben nach der Berichtigung in `bede011` jetzt schon vormacht.
+„Texturqualität", 2026-09-16); das konkrete Feld, sein Typ und sein Vorgabewert kamen als Vorschlag
+dieses Pull Requests und sind mit der gebündelten Freigabe vom 2026-09-17 angenommen.
 
 ```rust
 // grimoire_render::mesh — MeshVertex wächst additiv (72 statt 56 Byte, repr(C), kein Padding):
@@ -1124,7 +1142,13 @@ pub struct MeshVertex {
   `max_abs_diff` = 0, im Pull-Request-Text nachgewiesen).
 
 **Bullet-Pass, fester Pass-Graph und Geschoss-Lichter (Ergänzung P1, Plan 0002 WP3.5, Engine-ADR-0014
-„Billboard-Impostor", Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-17)**
+„Billboard-Impostor")**
+
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+Silhouetten- und Palettentabelle, des Diagnose-Hakens `last_stage_pass_order`, der Zählung der abgeleiteten
+Geschoss-Lichter und des berechneten Distanzfeld-Atlas als Umsetzung des Atlas aus Engine-ADR-0014. Zellgröße,
+Rastergröße und Höchstzahl der Geschoss-Lichter sind als vorläufige Werte angenommen und werden im Look-Review
+nachgemessen.*
 
 Additiv zum Bullet-Kanal (oben, WP1.2) und zum Lichtkanal (WP2.2/WP3.4). `BulletInstance` bleibt unverändert (24 Byte,
 Layout eingefroren); kein bestehendes Feld ändert Typ oder Bedeutung. Szenen ohne Bullets, Marker- und Debug-Sprites
@@ -1155,7 +1179,8 @@ impl WgpuRenderer {
   Passes") gilt jetzt mit `bullet_silhouette::COUNT` und `bullet_palette::COUNT`. Eine solche Instanz zählt in
   `bullets_rejected_invalid`, in `NullRenderer` und `WgpuRenderer` gleich. Die Palettenraum-Prüfung geht weiterhin
   voraus. Umgesetzt ist nur die Tabelle des einzigen Raums, den der Pass zeichnet (`HOSTILE`); eigene Projektile laufen
-  weiter über Sprite- und Mesh-Kanäle. Farbwerte und Formen sind vorläufig bis zum Look-Review (P-11).
+  weiter über Sprite- und Mesh-Kanäle. Farbwerte und Formen sind vorläufig bis zum Look-Review (P-11). Die Tabellen
+  werden vor der Content-Produktion erweitert (PO-Entscheid 2026-09-17; Umsetzung offen).
 - **Darstellung (Engine-ADR-0014):** Jede Instanz ist ein kamerazugewandtes Billboard, dessen Mitte exakt auf der
   Bodenebene (`Z = 0`) an `position` liegt, damit die gezeichnete Mitte der Trefferposition entspricht. Mit
   `StageFrame::camera_25d` projiziert der Pass mit derselben Kamera und denselben Clip-Ebenen wie der Mesh-Pass,
@@ -1183,7 +1208,9 @@ impl WgpuRenderer {
   `render_stage_with_specular_aa`: das Protokoll des letzten `render_stage`, leer vor dem ersten Frame und nach einem
   wegen Nullgröße übersprungenen Frame. Nicht Teil des `Renderer`-Traits.
 - **Marker- und Debug-Kanal werden gezeichnet:** `marker_sprites` und `debug_sprites` zeichnet die Sprite-Pipeline
-  jetzt tatsächlich, mit `base.camera` wie die Welt-Sprites. Bisher wurden sie nur gezählt.
+  jetzt tatsächlich, mit `base.camera` wie die Welt-Sprites. Bisher wurden sie nur gezählt. Unter `Camera25D` sitzt
+  der Spieler-Marker damit nicht auf seiner Bodenposition; ein Folge-Vertrags-PR projiziert ihn wie die Bullets auf
+  die Bodenebene (PO-Entscheid 2026-09-17; Umsetzung offen).
 - **Geschoss-Lichter aus dem Bullet-Kanal (PO-Entscheid 2026-09-16, WP3.4 oben):** Der Renderer leitet aus
   `StageFrame::bullets` selbst Lichter ab, ausschließlich über `point_light_from_bullet`. Jede akzeptierte Instanz mit
   `glow > 0` fällt in ein weltfestes Raster von Zellen mit 4 Welteinheiten Kantenlänge um das Kameraziel
@@ -2254,8 +2281,8 @@ oder Achse `>= 4` → Panic (unverändert).
 
 ### 9.9 Adapter Sigil → Render (`grimoire::adapters::sigil_render`)
 
-*Ergänzung P1, Plan 0002 WP5.3, Stufe A nach V-20, gebündelte PO-Freigabe offen, 2026-09-17.* §9.1 nennt Modul und
-Richtung; dieser Abschnitt legt die öffentliche API fest.
+*Freigegeben (PO, 2026-09-17; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe).* Ergänzung P1, Plan 0002
+WP5.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt die öffentliche API fest.
 
 ```rust
 pub const SIGIL_RENDER_PLUGIN_NAME: &str = "grimoire.sigil_render";
@@ -2296,7 +2323,9 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
   Zähler von `NullRenderer` und ein Offscreen-Bild über einer beleuchteten Bühne.
 - **Bekannte Lücke (sigil.md §11, offener Punkt 5):** `sigilc` vergibt Silhouetten- und Palettenindizes je Unit in
   alphabetischer Reihenfolge der Namen, nicht aus einem gemeinsamen Katalog. Unter der Identität landet eine Silhouette
-  deshalb nur dann auf der gleichnamigen Tabellenzeile, wenn die Namen zufällig passend sortieren.
+  deshalb nur dann auf der gleichnamigen Tabellenzeile, wenn die Namen zufällig passend sortieren. Entschieden
+  (PO, 2026-09-17): ein gemeinsamer Katalog für Silhouetten und Paletten mit festen Namen ersetzt die Nummerierung je
+  Unit, vor weiterem Sigil-Content; Umsetzung offen.
 
 ## 10. `grimoire_exec`
 

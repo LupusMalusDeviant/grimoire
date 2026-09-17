@@ -1,8 +1,8 @@
 # ADR-0016: Multisampling für Geometriekanten (Texturqualität, Strang B1)
 
-- **Status:** Vorgeschlagen (PO-Freigabe aussteht)
+- **Status:** Akzeptiert (PO, 2026-09-17)
 - **Datum:** 2026-09-16
-- **Entscheider:** Lupus Malus Deviant (PO), Entscheidung aussteht; vorbereitet durch Claude
+- **Entscheider:** Lupus Malus Deviant (PO), vorbereitet durch Claude
 - **Bezug:** Festlegung „Texturqualität" (PO-Entscheide 2026-09-16, Spiel-Repo-Scratchpad, Strang B1),
   Engine-Vertrag [`crate-vertraege.md`](../architektur/crate-vertraege.md) §6, engine
   [ADR-0011](0011-spekulares-anti-aliasing-statt-taa.md) (Spekular-Anti-Aliasing — siehe
