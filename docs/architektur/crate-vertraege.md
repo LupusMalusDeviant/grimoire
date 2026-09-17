@@ -3013,6 +3013,14 @@ pub mod stream {                                 // Einträge der Strom-Tabelle 
   Streuung anderer Emitter. Ein gemeinsam fortgeschalteter Generator ist verboten (§3). Ändert sich
   `QUERY_BLOCK_SIZE`, werden die Pattern-Goldens erneuert (§7); Referenz-Pattern-Goldens (WP5.7) werden erst nach der
   Festlegung durch den P1-Bench eingefroren.
+  *Umsetzung (WP5.7), Stufe A, PO-Freigabe offen:* Die Goldens der zwölf Referenz-Patterns
+  (`grimoire_sigilc/tests/reference_goldens.rs`, Formatdoku `sigil.md` §14.1) sind vor dieser Festlegung eingefroren,
+  weil sie nicht von `QUERY_BLOCK_SIZE` abhängen: Kein Referenz-Pattern zieht Blockzufall (die einzige Streuung sitzt
+  in einem primären Emitter und zieht aus `stream::EMIT`), und Despawns und Sub-Spawns werden bei jeder Blockgröße in
+  Slot-Reihenfolge gefaltet. Beim Einfrieren wurden sie zusätzlich mit den Blockgrößen 256 und 4096 gegengeprüft. Eine
+  Änderung von `QUERY_BLOCK_SIZE` erneuert sie deshalb nicht. Ein späteres Referenz-Pattern, das Blockzufall zieht
+  (Streuung in einem Sub-Emitter oder `burst`, ein Behavior, das seinen Generator nutzt), fällt weiter unter die
+  Regel oben.
 - **Panic:** Nach dem Ende aller Blöcke wird der Panic mit dem kleinsten Blockindex weitergereicht. Der Pool bleibt
   dann herausgenommen, und die Simulation ist nur per `restore` weiterverwendbar (§7, exklusive Systeme).
 - **Lesende Konsumenten** (Broadphase-Adapter, §9.6; Render-Extraktion, §9.1) nutzen `BulletPool::iter()` bzw.

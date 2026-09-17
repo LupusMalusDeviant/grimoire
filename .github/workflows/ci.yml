@@ -362,7 +362,7 @@ jobs:
         run: bash .github/scripts/compare-sigil-units.sh sigil-units "Debug-Build"
 
   showcase-gif:
-    name: Showcase GIFs (pbr_stage, lights_stage)
+    name: Showcase GIFs (pbr_stage, lights_stage, sigil_curtain)
     # Plan 0002 WP2.8 milestone showcase: renders the merged stage (meshes, PBR materials, lights,
     # the key-light shadow map, the tilted camera — the same cast as the `pbr_stage` example, which
     # this job never runs itself, only builds via the `test` job's "Build examples" step) offscreen
@@ -372,6 +372,10 @@ jobs:
     # clustered forward+ at the High budget, bullets with glow and the player marker on the ground,
     # rendered from the example's own `scene.rs` (`tests/lights_stage_showcase.rs`) into the
     # artifact `lights_stage-showcase-gif`.
+    # Plan 0002 WP5.7 adds the M2 showcase `sigil_curtain` the same way: a sigilc-compiled Sigil
+    # pattern run by the interpreter in the facade's main loop and drawn by the bullet pass, from the
+    # example's `scene.rs` (`crates/grimoire/tests/sigil_curtain_showcase.rs`) into the artifact
+    # `sigil_curtain-showcase-gif`.
     #
     # Kept cheap on purpose: one OS (`ubuntu-latest`, the cheapest GitHub-hosted
     # runner) instead of the three-OS matrix `test` uses — a GIF is a showcase artifact, not a
@@ -391,6 +395,7 @@ jobs:
     env:
       GRIMOIRE_PBR_STAGE_GIF_OUT_DIR: ${{ github.workspace }}/pbr-stage-gif
       GRIMOIRE_LIGHTS_STAGE_GIF_OUT_DIR: ${{ github.workspace }}/lights-stage-gif
+      GRIMOIRE_SIGIL_CURTAIN_GIF_OUT_DIR: ${{ github.workspace }}/sigil-curtain-gif
     steps:
       - uses: actions/checkout@v7
       - name: Install pinned toolchain (rust-toolchain.toml)
@@ -451,5 +456,28 @@ jobs:
         with:
           name: lights_stage-showcase-gif
           path: lights_stage.gif
+          if-no-files-found: error
+          retention-days: 30
+      # Plan 0002 WP5.7: the sigil_curtain showcase, same technique again. The sequence test panics
+      # without an adapter, and the last-frame check fails on a short or empty sequence.
+      - name: Render the sigil_curtain PNG sequence
+        env:
+          GRIMOIRE_GPU_ADAPTER: software
+        run: |
+          cargo test -p grimoire --test sigil_curtain_showcase --locked -- --ignored --nocapture render_sigil_curtain_png_sequence
+          test -f "$GRIMOIRE_SIGIL_CURTAIN_GIF_OUT_DIR/frame_0071.png"
+      - name: Assemble the sigil_curtain PNG sequence into a GIF
+        run: |
+          palette="$(mktemp --suffix=.png)"
+          ffmpeg -y -framerate 24 -i "$GRIMOIRE_SIGIL_CURTAIN_GIF_OUT_DIR/frame_%04d.png" \
+            -vf "palettegen" "$palette"
+          ffmpeg -y -framerate 24 -i "$GRIMOIRE_SIGIL_CURTAIN_GIF_OUT_DIR/frame_%04d.png" -i "$palette" \
+            -lavfi "paletteuse" sigil_curtain.gif
+          ls -la sigil_curtain.gif
+      - name: Upload the sigil_curtain showcase GIF
+        uses: actions/upload-artifact@v7
+        with:
+          name: sigil_curtain-showcase-gif
+          path: sigil_curtain.gif
           if-no-files-found: error
           retention-days: 30

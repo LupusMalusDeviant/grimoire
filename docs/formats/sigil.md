@@ -19,7 +19,8 @@ encoding, implemented in `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/sr
 [§13](#13-command-line-interface-sigilc) is WP4.3: the command-line interface `sigilc` (`check`,
 `build`, `parse --json`, `set`, `fmt`), its JSON documents, the behaviour manifest, value paths and
 the canonical layout; [§13.8](#138-simulate---json) adds `simulate` (WP5.6).
-[§14](#14-reference-patterns) is WP4.5: the reference patterns and their coverage table.
+[§14](#14-reference-patterns) is WP4.5: the reference patterns and their coverage table;
+[§14.1](#141-golden-hashes) adds their golden hashes (WP5.7).
 [§15](#15-platform-identity-of-compiled-units) is WP4.4: the gate that compiles them on Windows,
 Linux and macOS and compares the bytes. Not covered here: a `sigilc migrate` (there is no second
 source version yet) and the runtime interpreter itself (Plan 0002 WP5, engine contract §11). A file that
@@ -1139,7 +1140,8 @@ They name silhouettes and palettes only from the drawn rows of the visual catalo
   table below with the sources and checks that its union covers every kind the compiler accepts.
   The `set` and `fmt` gates (`tests/set_lossless.rs`, `tests/fmt_canonical.rs`) include them too.
 - The platform identity gate ([§15](#15-platform-identity-of-compiled-units)) compiles them on
-  Windows, Linux and macOS and compares the units byte for byte; WP5.7 freezes their golden hashes.
+  Windows, Linux and macOS and compares the units byte for byte; their golden hashes are frozen
+  as described in [§14.1](#141-golden-hashes).
 
 The coverage table lists what each pattern's own file uses (an imported pattern's contents count
 for the file that declares them). **Features** are further constructs the set must show at least
@@ -1170,6 +1172,33 @@ Every kind appears at least once: blocks `ring` (01, 08-12), `spiral` (02, 10), 
 `reverse` (08, 10), `burst` (09), `change_type` (10, 11), `become_emitter` (11); triggers `time` (08,
 11), `distance` (09, 11), `event` (10); flags `grazeable` (all), `smashable` (01, 09, 11), `env_active`
 (04), `reflectable` (05).
+
+### 14.1 Golden hashes
+
+Plan 0002 WP5.7. `tests/reference_goldens.rs` freezes, for every reference pattern, the content hash
+of its compiled unit and the simulation state hash after ticks 120, 240, 360 and 480 of one fixed
+scenario, the one `tests/reference_patterns.rs` checks the features in: seed 45, a pool of 16,384
+bullets inside ±60 units, aim target (0, −4), one `Emitter` entity per primary emitter at the
+origin from tick 0, the event `phase_end` raised once before tick 150, and the test's stand-in for
+`drift_orbit` (one degree of turn per tick, no draw from its block generator). `cargo test` runs it
+with every push on Windows, Linux and macOS, so a pattern that behaves differently on one platform,
+or after a change to the compiler, the unit format or the runtime, fails there. The same scenario
+with permuted system and block orders (`PermutedExecutor`) must give the same hashes.
+
+- **Independent of the block size.** No reference pattern draws randomness inside the update
+  blocks: the only `scatter` block belongs to a primary emitter, which draws from its per-emitter
+  stream, and despawns and sub-spawns fold in slot order for any block size. The hashes therefore
+  stay valid if the P1 bench changes `QUERY_BLOCK_SIZE` (contract §11.7); when they were frozen they
+  were also checked with block sizes 256 and 4096. A later pattern with `scatter` in a sub-emitter
+  or a `burst`, or a behaviour that draws from its generator, would tie its row to the block size.
+- **The table** in the test lists every pattern once, sorted by file name; a new pattern adds its
+  row in the same change. Changing a frozen row is a golden renewal: its own commit after a PO
+  decision (`CONTRIBUTING.md`). The current values are printed, in the test's syntax, by
+  `cargo test -p grimoire_sigilc --test reference_goldens -- --ignored --nocapture print_reference_golden_table`.
+- **Showcase.** The facade's example `sigil_curtain` plays `02-spiral-curtain` with a counter-turning
+  orb spiral beneath it (`crates/grimoire/tests/fixtures/sigil_curtain.sigil`) over the lit stage;
+  the CI job `showcase-gif` renders the same scene offscreen into the M2 showcase GIF
+  (artifact `sigil_curtain-showcase-gif`).
 
 ## 15. Platform identity of compiled units
 

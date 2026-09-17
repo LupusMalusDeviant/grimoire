@@ -37,6 +37,12 @@ const FIXTURES: &[Fixture] = &[
         source: "grimoire/tests/fixtures/unmapped_visual.sigil",
         unit: "grimoire/tests/fixtures/unmapped_visual_unit_v1.bin",
     },
+    Fixture {
+        // Plan 0002 WP5.7: the M2 showcase, example `sigil_curtain` and its offscreen GIF.
+        canonical_path: "fixtures/sigil_curtain.sigil",
+        source: "grimoire/tests/fixtures/sigil_curtain.sigil",
+        unit: "grimoire/tests/fixtures/sigil_curtain_unit_v1.bin",
+    },
 ];
 
 fn crates_dir() -> PathBuf {
