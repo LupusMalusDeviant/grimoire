@@ -17,10 +17,12 @@ rayon.workspace = true
 thiserror.workspace = true
 
 # The hash gate runs the engine's golden scenarios on real thread pools; they are included from
-# the other crates' test directories via #[path].
+# the other crates' test directories via #[path]. The dev edge to grimoire_sigil is the one contract
+# §11.7 names for its pool scenario (PO decision V-1).
 [dev-dependencies]
 grimoire.workspace = true
 grimoire_core.workspace = true
+grimoire_sigil.workspace = true
 grimoire_sim.workspace = true
 proptest.workspace = true
 

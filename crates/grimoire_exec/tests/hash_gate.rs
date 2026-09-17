@@ -8,7 +8,9 @@
 //! - (c) the facade scenarios through `run_headless` and the headless frame loop;
 //! - (d) random schedules on a 4-thread pool against isolated stages;
 //! - (e) in debug builds, an undeclared read on a pool worker panics with the system name, and
-//!   context-free blocks of a second world on a shared pool are never checked.
+//!   context-free blocks of a second world on a shared pool are never checked;
+//! - (f) the Sigil pool scenario of contract §11.7 (more than three pool blocks, behaviors, scatter,
+//!   transforms, events and clears) against its sequential run and `GOLDEN_POOL_FINAL_HASH`.
 //!
 //! The scenarios are included from the other crates' test directories, so no determinism crate
 //! needs a dependency on this crate or on rayon.
@@ -17,6 +19,8 @@
 mod common;
 #[path = "../../grimoire_sim/tests/parallel_scenario/mod.rs"]
 mod parallel_scenario;
+#[path = "../../grimoire_sigil/tests/pool_scenario/mod.rs"]
+mod pool_scenario;
 #[path = "../../grimoire_ecs/tests/support/random_schedule.rs"]
 mod random_schedule;
 #[path = "../../grimoire_sim/tests/scenario/mod.rs"]
@@ -122,6 +126,49 @@ fn parallel_scenario_threads_2() {
 #[test]
 fn parallel_scenario_threads_n() {
     parallel_gate(N);
+}
+
+// ------------------------------------------------------------------ (f) Sigil pool scenario
+
+fn pool_reference() -> &'static Vec<(u64, u64)> {
+    static REFERENCE: OnceLock<Vec<(u64, u64)>> = OnceLock::new();
+    REFERENCE.get_or_init(|| {
+        let mut sim = pool_scenario::build_simulation(pool_scenario::SEED);
+        sim.world_mut().set_executor(Arc::new(SequentialExecutor));
+        pool_scenario::run_until(&mut sim, pool_scenario::TOTAL_TICKS, |_| {})
+    })
+}
+
+fn pool_gate(index: usize) {
+    let (label, executor) = gate_executor(index);
+    let mut sim = pool_scenario::build_simulation(pool_scenario::SEED);
+    sim.world_mut().set_executor(executor);
+    let hashes = pool_scenario::run_until(&mut sim, pool_scenario::TOTAL_TICKS, |_| {});
+    assert_eq!(
+        &hashes,
+        pool_reference(),
+        "Sigil pool scenario with {label}"
+    );
+    assert_eq!(
+        hashes.last().map(|&(_, hash)| hash),
+        Some(pool_scenario::GOLDEN_POOL_FINAL_HASH),
+        "Sigil pool golden with {label}"
+    );
+}
+
+#[test]
+fn sigil_pool_scenario_threads_1() {
+    pool_gate(ONE);
+}
+
+#[test]
+fn sigil_pool_scenario_threads_2() {
+    pool_gate(TWO);
+}
+
+#[test]
+fn sigil_pool_scenario_threads_n() {
+    pool_gate(N);
 }
 
 // ------------------------------------------------------------------ (c) facade scenarios
