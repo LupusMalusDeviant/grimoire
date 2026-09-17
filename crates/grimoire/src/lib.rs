@@ -14,6 +14,10 @@
 //! Every frame of [`AppBuilder::run`] (and of [`AppBuilder::run_headless_frames`], which drives
 //! the same loop with a [`grimoire_render::NullRenderer`] and a manual clock):
 //!
+//! Once per run, after every plugin's [`GamePlugin::build`], each plugin registers its meshes and
+//! textures with the loop's renderer through [`GamePlugin::register_assets`] ([`RenderAssets`]),
+//! so a game never needs a loop of its own to load figures from a pack.
+//!
 //! 1. Platform events: resizes reach the renderer, raw input updates the held keys and buttons
 //!    and latches every press, focus loss releases everything held.
 //! 2. The frame time from the platform clock advances a [`grimoire_sim::FixedTimestep`]. The
@@ -98,11 +102,12 @@ pub mod fixtures;
 mod input;
 mod main_loop;
 mod plugin;
+mod render_assets;
 
 pub use aim::{AIM_MIN_DISTANCE, PointerState, quantize_aim, sample_aim};
 pub use app::{
     App, AppBuilder, DEFAULT_HASH_EVERY, DEFAULT_MAX_TICKS_PER_FRAME, DEFAULT_TICK_RATE_HZ,
-    HeadlessReport,
+    HeadlessReport, OffscreenRun,
 };
 pub use error::GrimoireError;
 pub use input::{
@@ -110,6 +115,7 @@ pub use input::{
 };
 pub use main_loop::LoopReport;
 pub use plugin::{FrameStats, GamePlugin};
+pub use render_assets::{HeadlessRenderAssets, PluginError, RenderAssets};
 
 pub use grimoire_collide as collide;
 pub use grimoire_core as core;

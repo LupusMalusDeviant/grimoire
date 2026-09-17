@@ -9,16 +9,17 @@ use grimoire_ecs::Executor;
 use grimoire_platform::{
     KeyCode, PlatformError, PlatformEvent, WindowConfig, run_desktop, run_headless,
 };
-use grimoire_render::{Camera25D, NullRenderer, RendererConfig, WgpuRenderer};
+use grimoire_render::{Camera25D, NullRenderer, RendererConfig, StageRendererConfig, WgpuRenderer};
 use grimoire_sim::{Simulation, TickInput};
 
 use crate::adapters::debug::ProfilerBudgets;
 use crate::error::GrimoireError;
 use crate::input::InputMap;
 use crate::main_loop::{
-    GameLoop, LoopReport, LoopSettings, Outcome, RendererFactory, ScriptedEvents,
+    GameLoop, LoopReport, LoopSettings, OffscreenFrames, Outcome, RendererFactory, ScriptedEvents,
 };
 use crate::plugin::GamePlugin;
+use crate::render_assets::LoopRenderer;
 
 /// Default simulation rate.
 pub const DEFAULT_TICK_RATE_HZ: u32 = 60;
@@ -53,7 +54,7 @@ impl App {
             max_ticks_per_frame: DEFAULT_MAX_TICKS_PER_FRAME,
             hash_every: DEFAULT_HASH_EVERY,
             input_map: InputMap::default(),
-            renderer_config: RendererConfig::default(),
+            renderer_config: StageRendererConfig::default(),
             plugins: Vec::new(),
             max_frames: None,
             exit_key: None,
@@ -61,6 +62,39 @@ impl App {
             camera_25d: None,
             profiler: true,
             profiler_budgets: ProfilerBudgets::default(),
+        }
+    }
+}
+
+/// Settings of an offscreen run ([`AppBuilder::run_offscreen`]).
+///
+/// Build it with [`OffscreenRun::new`] and field assignment (contract §2 rule 13).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OffscreenRun {
+    /// Width of the offscreen image in pixels.
+    pub width: u32,
+    /// Height of the offscreen image in pixels.
+    pub height: u32,
+    /// Frames to run.
+    pub frames: u64,
+    /// Manual clock advance before every frame.
+    pub frame_delta: Duration,
+    /// Every how many frames the image is read back for the capture callback, starting with frame
+    /// 0; `0` (the default of [`OffscreenRun::new`]) never reads back.
+    pub capture_every: u64,
+}
+
+impl OffscreenRun {
+    /// `frames` frames of `width` × `height` pixels, `frame_delta` apart, without capture.
+    #[must_use]
+    pub fn new(width: u32, height: u32, frames: u64, frame_delta: Duration) -> Self {
+        Self {
+            width,
+            height,
+            frames,
+            frame_delta,
+            capture_every: 0,
         }
     }
 }
@@ -85,7 +119,8 @@ pub struct AppBuilder {
     max_ticks_per_frame: u32,
     hash_every: u64,
     input_map: InputMap,
-    renderer_config: RendererConfig,
+    /// Window and offscreen renderer configuration; [`AppBuilder::renderer_config`] sets `base`.
+    renderer_config: StageRendererConfig,
     plugins: Vec<Box<dyn GamePlugin>>,
     max_frames: Option<u64>,
     exit_key: Option<KeyCode>,
@@ -173,9 +208,21 @@ impl AppBuilder {
         self
     }
 
-    /// Configuration of the window renderer used by [`AppBuilder::run`].
+    /// Configuration of the window renderer used by [`AppBuilder::run`] (and of the offscreen
+    /// renderer of [`AppBuilder::run_offscreen`]). Sets only the `base` of
+    /// [`AppBuilder::stage_renderer_config`]; light budget and multisampling keep their values.
     #[must_use]
     pub fn renderer_config(mut self, config: RendererConfig) -> Self {
+        self.renderer_config.base = config;
+        self
+    }
+
+    /// Full stage renderer configuration for [`AppBuilder::run`] and
+    /// [`AppBuilder::run_offscreen`]: the [`RendererConfig`] plus the point-light budget and
+    /// multisampling (default [`StageRendererConfig::default`], contract §6). Replaces an earlier
+    /// [`AppBuilder::renderer_config`].
+    #[must_use]
+    pub fn stage_renderer_config(mut self, config: StageRendererConfig) -> Self {
         self.renderer_config = config;
         self
     }
@@ -280,7 +327,10 @@ impl AppBuilder {
             let window = ctx.window().ok_or_else(|| {
                 PlatformError::WindowCreation(String::from("the runner provided no window"))
             })?;
-            Ok(WgpuRenderer::new_for_window(window, renderer_config)?)
+            Ok(WgpuRenderer::new_for_window_staged(
+                window,
+                renderer_config,
+            )?)
         });
         let window = self.window.clone();
         let outcome = Outcome::default();
@@ -375,7 +425,69 @@ impl AppBuilder {
         })
     }
 
-    fn into_loop<R: grimoire_render::Renderer>(
+    /// Drives the real main loop for `run.frames` frames into an offscreen image of
+    /// `run.width` × `run.height` pixels, with the same `WgpuRenderer` configuration
+    /// [`AppBuilder::run`] uses ([`AppBuilder::stage_renderer_config`]) and a manual clock advancing
+    /// by `run.frame_delta` before every frame. No window exists: `window_created` is never called.
+    ///
+    /// Plugins register their assets with that offscreen renderer
+    /// ([`GamePlugin::register_assets`]), so a test or a capture tool sees exactly what the desktop
+    /// run draws. Before frame `n` (0-based) the events `events(n, &mut buffer)` pushes are
+    /// delivered, as in [`AppBuilder::run_headless_frames_with_events`]; mouse-aim sampling sees a
+    /// viewport of the offscreen size. After every completed frame `n` with
+    /// `n % run.capture_every == 0` (never for `capture_every == 0`), `capture(n, rgba)` receives
+    /// the rendered image as tightly packed sRGB RGBA8 rows, top row first.
+    ///
+    /// Takes the GPU like [`AppBuilder::run`]: tests set `GRIMOIRE_GPU_ADAPTER=software`.
+    ///
+    /// # Errors
+    /// - [`GrimoireError::Render`] if the offscreen renderer cannot be created (for example
+    ///   [`grimoire_render::RenderError::NoAdapter`] or a zero size), rendering fails or an image
+    ///   cannot be read back.
+    /// - [`GrimoireError::Assets`] if a plugin's asset registration fails.
+    pub fn run_offscreen(
+        mut self,
+        run: OffscreenRun,
+        events: &mut dyn FnMut(u64, &mut Vec<PlatformEvent>),
+        capture: &mut dyn FnMut(u64, &[u8]),
+    ) -> Result<LoopReport, GrimoireError> {
+        let renderer_config = self.renderer_config.clone();
+        let (width, height) = (run.width, run.height);
+        let factory: RendererFactory<WgpuRenderer> = Box::new(move |_| {
+            Ok(WgpuRenderer::new_offscreen_staged(
+                width,
+                height,
+                renderer_config,
+            )?)
+        });
+        // Mouse-aim sampling sees the offscreen image as its viewport (contract §9.3).
+        self.window.width = width;
+        self.window.height = height;
+        let outcome = Outcome::default();
+        let mut game_loop = self.into_loop(factory, true, Rc::clone(&outcome));
+        let mut offscreen = OffscreenFrames {
+            scripted: ScriptedEvents {
+                inner: &mut game_loop,
+                script: events,
+                events: Vec::new(),
+                frame: 0,
+            },
+            capture_every: run.capture_every,
+            capture,
+        };
+        let result = run_headless(&mut offscreen, run.frames, run.frame_delta);
+        if let Some(error) = outcome.borrow_mut().take() {
+            return Err(error);
+        }
+        result?;
+        game_loop.report().ok_or_else(|| {
+            GrimoireError::Platform(PlatformError::AppInit(String::from(
+                "the main loop was not initialised",
+            )))
+        })
+    }
+
+    fn into_loop<R: LoopRenderer>(
         self,
         factory: RendererFactory<R>,
         record_hashes: bool,
