@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Plan 0002 WP2.8: meldet je Runner das Ergebnis der deterministischen Render-Testszenen
-# (`pbr_materials`, `shadows`, `camera_tilt`, seit WP6.4 auch `overlay` aus
-# crates/grimoire/tests/overlay_scene.rs) in den GitHub-Job-Summary — im Warnmodus: eine
-# Abweichung über der Toleranz oder eine fehlende Referenz lässt den Job nicht rot werden, steht
-# hier aber unübersehbar.
+# (`pbr_materials`, `shadows`, `camera_tilt`, seit WP3.6 `lights_256` und `bullets_on_top`, seit
+# WP6.4 auch `overlay` aus crates/grimoire/tests/overlay_scene.rs) in den GitHub-Job-Summary. Seit
+# M2 blockieren Windows und Linux: eine Abweichung über der Toleranz oder eine fehlende Referenz
+# lässt dort schon den Testschritt scheitern; macOS bleibt bis P3 im Warnmodus. Dieses Skript
+# fasst in beiden Fällen zusammen, was die Tests gemeldet haben, und nennt die Host-CPU des Runners
+# (lavapipe erzeugt seinen Code passend zur CPU, siehe OF-18.2).
 #
 # crates/grimoire_render/tests/snapshot_scenes.rs schreibt dafür greppbare Zeilen direkt auf
 # stdout (an libtest vorbei, wie schon die WP2.1-Adapterzeile in tests/offscreen.rs):
@@ -14,9 +16,8 @@
 #
 # Usage: report-snapshot-diff.sh <runner-label> <logdatei>...
 # Fehlende Logdateien werden übersprungen (z. B. ein Runner ohne den Software-Adapter-Schritt).
-# Beendet sich immer mit Status 0: dieses Skript selbst darf den Lauf nie röten, das ist gerade der
-# Punkt des Warnmodus (siehe snapshot_scenes.rs, Abschnitt "Warning mode", und wie er verbindlich
-# wird).
+# Beendet sich immer mit Status 0: ob ein Lauf rot wird, entscheiden die Tests selbst (siehe
+# snapshot_scenes.rs, Abschnitt "Blocking per platform"); dieses Skript berichtet nur.
 set -uo pipefail
 
 label="${1:?Runner-Label fehlt}"
@@ -31,8 +32,31 @@ done
 
 summary="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
+# Host-CPU des Runners, soweit das Betriebssystem sie ohne Zusatzwerkzeug nennt.
+host_cpu() {
+  if [ -r /proc/cpuinfo ]; then
+    sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -n1
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n machdep.cpu.brand_string 2>/dev/null
+  else
+    echo "${PROCESSOR_IDENTIFIER:-}"
+  fi
+}
+
+# Blockierende Plattformen, wie `BLOCKING_PLATFORMS` in crates/grimoire_render/tests/support/mod.rs.
+blocking_platform() {
+  case "$1" in
+    windows | linux) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+cpu="$(host_cpu | sed 's/[[:space:]]*$//')"
+echo "grimoire-snapshot-host-cpu: runner=${label} cpu=[${cpu:-unbekannt}]"
 {
   echo "## WP2.8 Render-Testszenen (${label})"
+  echo
+  echo "Host-CPU: ${cpu:-unbekannt}"
   echo
 } >> "$summary"
 
@@ -72,8 +96,12 @@ if [ -n "$diff_lines" ]; then
     mean_tol="$(sed -n 's/.*mean_tolerance=\([^ ]*\).*/\1/p' <<<"$line")"
     max_tol="$(sed -n 's/.*max_tolerance=\([^ ]*\).*/\1/p' <<<"$line")"
     within="$(sed -n 's/.*within_tolerance=\([^ ]*\).*/\1/p' <<<"$line")"
+    platform="$(sed -n 's/.*platform=\([^ ]*\).*/\1/p' <<<"$line")"
     if [ "$within" = "true" ]; then
       status="OK"
+    elif blocking_platform "$platform"; then
+      status="**MISMATCH** (blockierend, Lauf rot)"
+      mismatch_count=$((mismatch_count + 1))
     else
       status="**MISMATCH** (Warnmodus, Lauf bleibt grün)"
       mismatch_count=$((mismatch_count + 1))
@@ -85,8 +113,8 @@ if [ -n "$diff_lines" ]; then
     {
       echo "${mismatch_count} Szene(n) über der Toleranz — Kandidatenbild und \
 Referenz-neben-Kandidat-Streifen liegen im Artefakt \`snapshot-candidates-${label}\`, falls \
-hochgeladen. Warnmodus: sieh \`tests/snapshot_scenes.rs\` (\"Warning mode\") für die Umstellung \
-auf einen roten Lauf."
+hochgeladen. Windows und Linux blockieren, macOS warnt nur: sieh \`tests/snapshot_scenes.rs\` \
+(\"Blocking per platform\")."
       echo
     } >> "$summary"
   fi
@@ -94,9 +122,9 @@ fi
 
 if [ -n "$no_reference_lines" ]; then
   {
-    echo "Noch keine Referenz für diesen Runner (erwartet auf Plattformen, auf denen dieser \
-Änderungssatz keine Referenz mitliefert — siehe \`tests/snapshot_scenes.rs\`, Abschnitt \
-\"References per platform\"):"
+    echo "Noch keine Referenz für diesen Runner. Unter Windows und Linux lässt das den Testschritt \
+scheitern, unter macOS nur warnen (siehe \`tests/snapshot_scenes.rs\`, Abschnitte \
+\"Blocking per platform\" und \"References per platform\"):"
     echo '```'
     printf '%s\n' "$no_reference_lines"
     echo '```'

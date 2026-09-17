@@ -1308,7 +1308,8 @@ Verhaltensänderung ist hier ausdrücklich vermerkt.
 **Render-Testszenen `lights_256` und `bullets_on_top`, Messhaken für das Bench-Gate (Plan 0002 WP3.6)**
 
 *Stufe K (Klarstellung).* Die in §2a und oben genannte Szene `bullets_on_top` und die Szene `lights_256` liegen in
-`crates/grimoire_render/tests/snapshot_scenes.rs` (Warnmodus, Referenzen je Plattform). Beide prüfen ihre
+`crates/grimoire_render/tests/snapshot_scenes.rs` (Referenzen je Plattform; seit M2 blockierend unter Windows und
+Linux, unter macOS bis P3 im Warnmodus). Beide prüfen ihre
 Eigenschaft vor dem Referenzvergleich selbst: `lights_256` rendert 256 Punktlichter mit `LightBudget::High`, keines
 wird verworfen, die beleuchteten Flecken zeigen verschiedene Farbtöne; `bullets_on_top` legt Geschosse mit Glow und
 den Spieler-Marker auf eine von einem Punktlicht weiß gebrannte Bodenstelle, Körperfarbe und Rand bleiben dort
@@ -2477,8 +2478,9 @@ pub struct ScreenSpace;                                   // Copy, PartialEq, De
   `overlay.rs`: Reihenfolge, Fenster, Farben, Platz in 160×90), `tests/overlay.rs` (F3 schaltet um, andere oder
   keine Taste, nur Kopfzeile ohne Profiler, Hash-Neutralität, offscreen über `run_offscreen`: Overlay erscheint und
   verschwindet), `tests/overlay_scene.rs` (Testszene `overlay`: Farbprüfung je Zeile ohne Referenz in jedem
-  `cargo test`, dazu der Referenzvergleich mit Toleranzmetrik und Warnmodus aus WP2.8 im CI-Schritt der
-  Render-Testszenen; Referenzen für Windows und, seit WP3.6, Linux).
+  `cargo test`, dazu der Referenzvergleich mit Toleranzmetrik aus WP2.8 im CI-Schritt der Render-Testszenen,
+  seit M2 blockierend unter Windows und Linux und unter macOS im Warnmodus; Referenzen für Windows und, seit WP3.6,
+  Linux).
 
 ### 9.8 InputMap-Preset: Zielachsen 2/3 (Ergänzung P1)
 
@@ -2527,8 +2529,8 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
   (`last_stats`). Es registriert weder Systeme noch Ressourcen oder Entities und ändert keinen Stufenplan und keinen
   Hash. Empfohlene Position: nach dem Plugin, das `grimoire_sigil::install` aufruft.
 - **Leistung:** höchstens 0,5 ms für 10.000 Bullets (§6 „Leistung", PRD-0004 NFR). Das Bench-Szenario
-  `sigil_extract_10k` in `grimoire_bench` misst Wanduhr als Trend und Callgrind-`Ir` im Benchmark-Gate, im aktuellen
-  Warnmodus.
+  `sigil_extract_10k` in `grimoire_bench` misst Wanduhr als Trend und Callgrind-`Ir` im Benchmark-Gate, seit M2 im
+  scharfen Modus (Engine-ADR-0010, Nachtrag M2).
 - **Tests:** `crates/grimoire/tests/sigil_render.rs` fährt eine mit `sigilc` übersetzte Unit durch den Interpreter
   (Fixture `tests/fixtures/bullet_showcase_unit_v1.bin`, Aktualität geprüft in
   `grimoire_sigilc/tests/unit_fixtures.rs`, §1): Interpolation, Abbildung, nicht abbildbare Kennungen, Hash-Neutralität,

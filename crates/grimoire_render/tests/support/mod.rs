@@ -308,8 +308,8 @@ pub struct DiffMetric {
 
 impl DiffMetric {
     /// Whether this diff is small enough to be within the tolerance every reference is checked
-    /// against (see `snapshot_scenes.rs`'s module doc comment for the thresholds' rationale and
-    /// for how a mismatch is reported without failing the run while WP2.8's warning mode applies).
+    /// against (see `snapshot_scenes.rs`'s module doc comment for the thresholds' rationale, and
+    /// [`BLOCKING_PLATFORMS`] for where a mismatch fails the run).
     #[must_use]
     pub fn within_tolerance(&self) -> bool {
         self.mean_abs_diff <= MEAN_ABS_DIFF_TOLERANCE && self.max_abs_diff <= MAX_ABS_DIFF_TOLERANCE
@@ -364,6 +364,24 @@ pub fn platform_dir() -> &'static str {
     } else {
         "linux"
     }
+}
+
+/// Platforms ([`platform_dir`] names) on which a render test scene fails its test when it
+/// mismatches its reference beyond tolerance or has no reference at all (plan 0002 WP3.6, from M2
+/// on): Windows (WARP) and Linux (lavapipe), whose variance OF-18.2 measured within tolerance (see
+/// `snapshot_scenes.rs`, "Blocking per platform"). Everywhere else, today macOS until the P3 gate,
+/// a mismatch is only reported.
+pub const BLOCKING_PLATFORMS: [&str; 2] = ["windows", "linux"];
+
+/// Whether a mismatch or a missing reference fails the scene's test on `platform`
+/// ([`BLOCKING_PLATFORMS`]).
+///
+/// `#[allow(dead_code)]` for the same reason as [`Image::beside`]: the GIF showcases pull in this
+/// module but compare nothing.
+#[allow(dead_code)]
+#[must_use]
+pub fn blocks_on_mismatch(platform: &str) -> bool {
+    BLOCKING_PLATFORMS.contains(&platform)
 }
 
 #[cfg(test)]
@@ -437,6 +455,13 @@ mod tests {
         );
         assert!(metric.max_abs_diff > MAX_ABS_DIFF_TOLERANCE);
         assert!(!metric.within_tolerance());
+    }
+
+    #[test]
+    fn only_windows_and_linux_block_on_a_mismatch() {
+        assert!(blocks_on_mismatch("windows"));
+        assert!(blocks_on_mismatch("linux"));
+        assert!(!blocks_on_mismatch("macos"));
     }
 
     #[test]

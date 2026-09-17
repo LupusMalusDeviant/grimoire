@@ -2,20 +2,24 @@
 # (`ecs_query_10k`, `sim_step_600`), since Plan-0002 WP5.3 the Sigil -> Render extraction bench
 # (`sigil_extract_10k`) and since WP5.4 the Sigil tick benches (`sigil_update_6k`,
 # `sigil_update_10k`, `sigil_churn_2k`; their wall-clock medians per tick are printed against the
-# 1.0 ms budget as a trend line) under Callgrind on every push to main and every pull request,
+# 1.0 ms budget as a trend line) and since WP3.6 the render CPU benches (`render_bullet_upload_10k`,
+# `render_light_cluster_256`) under Callgrind on every push to main and every pull request,
 # compares the Callgrind `Ir` result against the accepted basis on the `bench-trends` branch
 # (P-12), and — on push to main only — appends the measurement to that same branch. Wall-clock
 # samples are measured too, but only as a trend (engine ADR-0010: measured 95-129% job-to-job
 # noise on shared Linux runners, unusable as a >10% gate); they are never compared or gated.
 #
-# WARN MODE (current): job `gate`'s "Evaluate gate verdict" step never fails the job on a red
-# verdict; it only annotates it (`::warning::`) and records it in the job summary. To switch to
-# HARD MODE (plan 0002 M1/M2, after the review window ADR-0010 names — at least 20 gate runs over
-# at least 14 days with no false alarm), change `env.BENCH_GATE_MODE` below from `warn` to `hard`.
-# That one line is the entire switch: the step already branches on it. A measurement error
-# (`compare` exit code 2 — e.g. a zero Ir reading, or a candidate whose own JSON is invalid)
-# always fails the job regardless of this switch, in both modes: that signals a broken
-# measurement, not a graded regression verdict, and warn mode was never meant to hide that.
+# HARD MODE (since plan 0002 M2, see engine ADR-0010's M2 addendum): a red verdict (`compare` exit
+# code 3, more than +10% Ir on any scenario with an accepted basis) fails job `gate`'s "Evaluate
+# gate verdict" step. `env.BENCH_GATE_MODE` below is the one switch; `warn` would only annotate a
+# red verdict again. A measurement error (`compare` exit code 2 — e.g. a zero Ir reading, or a
+# candidate whose own JSON is invalid) or any other unexpected exit code fails the job in both
+# modes. A scenario without an accepted basis gets no verdict and never fails (a new bench can only
+# be accepted from a commit on main); `bench-accept-baseline` brings it under the gate.
+#
+# Job `regression-proof` proves on every run, and nightly, that the switch works: a calibrated,
+# real +15% regression injected into two benches (GRIMOIRE_BENCH_INJECT_REGRESSION=1) fails the
+# exact evaluation the `gate` job runs in HARD MODE, while +5% and a repeat measurement do not.
 #
 # Every push that triggers this workflow is watched until it finishes:
 #   gh run watch --exit-status        (red run: gh run view --log-failed)
@@ -31,6 +35,11 @@ on:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+  # Nightly on main (plan 0002 WP6.2: the self-test job runs "manually and nightly"), so a runner
+  # change that breaks the measurement or the proof shows up without waiting for the next push.
+  # `publish-trend` stays push-only.
+  schedule:
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 # One gate run per ref at a time; PR runs are superseded by a newer push, main runs never are
@@ -48,8 +57,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # The WARN MODE -> HARD MODE switch (see header comment above). Valid values: "warn", "hard".
-  BENCH_GATE_MODE: warn
+  # The gate mode switch (see header comment above). Valid values: "warn", "hard".
+  BENCH_GATE_MODE: hard
 
 defaults:
   run:
@@ -124,28 +133,13 @@ jobs:
           else
             : >basis/accepted-basis.jsonl
           fi
-      - name: Evaluate gate verdict (WARN MODE; see header comment for the HARD MODE switch)
+      # The same script `regression-proof` runs on an injected regression, so what that job proves
+      # is exactly what this step does.
+      - name: Evaluate gate verdict (BENCH_GATE_MODE, see header comment)
         id: evaluate
         run: |
-          set +o pipefail
-          ./target/release/compare --candidate results/ir.jsonl --basis basis/accepted-basis.jsonl \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-          code="${PIPESTATUS[0]}"
-          set -o pipefail
-          echo "code=$code" >>"$GITHUB_OUTPUT"
-          echo "compare exit code: $code (mode: $BENCH_GATE_MODE)"
-          if [[ "$code" -eq 2 ]]; then
-            echo "::error title=Messfehler::compare meldete einen Messfehler (Exitcode 2); das gilt unabhängig vom Warn-/Hard-Modus immer als Fehlschlag."
-            exit 1
-          fi
-          if [[ "$code" -eq 3 && "$BENCH_GATE_MODE" == "hard" ]]; then
-            echo "::error title=Regressions-Gate (HARD MODE)::compare meldete Rot (Exitcode 3); HARD MODE lässt den Job fehlschlagen."
-            exit 1
-          fi
-          if [[ "$code" -eq 3 ]]; then
-            echo "::warning title=Regressions-Gate (WARN MODE)::compare meldete Rot (Exitcode 3); WARN MODE lässt den Job trotzdem grün."
-          fi
-          exit 0
+          bash .github/scripts/evaluate-bench-gate.sh results/ir.jsonl basis/accepted-basis.jsonl \
+            "$BENCH_GATE_MODE" ./target/release/compare
       - name: Upload bench results
         if: always()
         uses: actions/upload-artifact@v7
@@ -201,14 +195,77 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # The self-test job of plan 0002 WP6.2 ("negative proof") and M2 ("the self-test job proves the
+  # break"): proves end to end, on real Callgrind measurements of this very commit, that a
+  # regression fails the HARD MODE gate. It calibrates the injection fresh (like
+  # `calibration-proof`), measures every bench twice without injection (basis and repeat) and twice
+  # with GRIMOIRE_BENCH_INJECT_REGRESSION=1 (+5% and +15% on `ecs_query_10k` and `sim_step_600`),
+  # then runs `.github/scripts/evaluate-bench-gate.sh` — the script of the `gate` job — in HARD MODE
+  # against the uninjected basis (`.github/scripts/prove-bench-gate.sh`). The job is green only if
+  # +15% fails that evaluation with exactly the two injected scenarios red, while +5% (warnings)
+  # and the repeat (all green) pass. Runs on every trigger, so also manually and nightly.
+  regression-proof:
+    name: regression proof (injected +15% fails the hard gate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: .
+          save-if: false
+      - name: Build bench binaries
+        run: cargo build --release --locked -p grimoire_bench --bins
+      - name: Calibrate the injection (ecs_query_10k, sim_step_600)
+        run: |
+          mkdir -p proof
+          bash crates/grimoire_bench/scripts/calibrate_injection.sh ./target/release/ir_probe ecs \
+            proof/calibration-ecs.jsonl cg-out-calibration
+          bash crates/grimoire_bench/scripts/calibrate_injection.sh ./target/release/ir_probe sim \
+            proof/calibration-sim.jsonl cg-out-calibration
+      - name: Measure without injection (basis and repeat)
+        run: |
+          bash crates/grimoire_bench/scripts/measure_ir.sh ./target/release/ir_probe \
+            ./target/release/bench_result proof/basis.jsonl cg-out-basis
+          bash crates/grimoire_bench/scripts/measure_ir.sh ./target/release/ir_probe \
+            ./target/release/bench_result proof/repeat.jsonl cg-out-repeat
+      - name: Measure with GRIMOIRE_BENCH_INJECT_REGRESSION=1 (+5% and +15%)
+        env:
+          GRIMOIRE_BENCH_INJECT_REGRESSION: "1"
+          GRIMOIRE_BENCH_INJECT_CALIBRATION: proof
+        run: |
+          GRIMOIRE_BENCH_INJECT_PERCENT=5 bash crates/grimoire_bench/scripts/measure_ir.sh \
+            ./target/release/ir_probe ./target/release/bench_result proof/plus5.jsonl cg-out-plus5
+          GRIMOIRE_BENCH_INJECT_PERCENT=15 bash crates/grimoire_bench/scripts/measure_ir.sh \
+            ./target/release/ir_probe ./target/release/bench_result proof/plus15.jsonl cg-out-plus15
+      - name: Prove the HARD MODE verdicts (+15% fails; +5% and repeat pass)
+        run: bash .github/scripts/prove-bench-gate.sh ./target/release/compare proof
+      - name: Upload regression proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-gate-regression-proof
+          path: proof/
+          if-no-files-found: error
+          retention-days: 30
+
   # Appends this run's BenchResult lines (wall-clock trend + Ir) to bench-trends (P-12). Push to
-  # main only, and only once `gate` itself succeeded (a failed measurement must not enter the
-  # trend). The first push to main after this PR merges creates `bench-trends` (an orphan branch,
-  # never sharing history with main) — see `.github/scripts/append-bench-trend.sh`.
+  # main only, and only if `gate` produced a valid measurement: it succeeded, or it failed only
+  # because the verdict was red (compare exit code 3). A red verdict still enters the trend, so a
+  # regression merged on purpose can be accepted as the new basis (`bench-accept-baseline` needs
+  # the commit on bench-trends); a failed measurement never does. The first push to main after the
+  # gate was introduced created `bench-trends` (an orphan branch, never sharing history with main)
+  # — see `.github/scripts/append-bench-trend.sh`.
   publish-trend:
     name: publish trend (bench-trends, P-12)
     needs: gate
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !cancelled() && needs.gate.result == 'success' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !cancelled() && (needs.gate.result == 'success' || needs.gate.outputs.compare-exit-code == '3') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

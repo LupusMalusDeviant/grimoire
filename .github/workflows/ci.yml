@@ -221,16 +221,19 @@ jobs:
           RUNNER_LABEL: ${{ matrix.os }}
         run: bash .github/scripts/report-gpu-downlevel.sh "$RUNNER_LABEL" ci-logs/test.log ci-logs/test-downlevel-cpu.log
       # Plan 0002 WP2.8: the three deterministic render test scenes (`pbr_materials`, `shadows`,
-      # `camera_tilt`), rendered on the software adapter and compared against a per-platform
-      # reference in WARNING MODE (a mismatch is reported, never fails this step — see
-      # `crates/grimoire_render/tests/snapshot_scenes.rs`'s module doc comment, "Warning mode", for
-      # how that becomes failing). Run on every OS, including macOS: that runner currently resolves
+      # `camera_tilt`, since WP3.6 `lights_256` and `bullets_on_top`), rendered on the software
+      # adapter and compared against a per-platform reference. BLOCKING on Windows (WARP) and Linux
+      # (lavapipe) since plan 0002 M2: a mismatch beyond tolerance or a missing reference fails this
+      # step; macOS stays in warning mode until P3 (see
+      # `crates/grimoire_render/tests/snapshot_scenes.rs`'s module doc comment, "Blocking per
+      # platform"). Run on every OS, including macOS: that runner currently resolves
       # `GRIMOIRE_GPU_ADAPTER=software` to no adapter at all (PRD-0018's adapter table; the same
-      # module doc comment explains why), which this step's own "no reference"/skip reporting
-      # already covers cleanly, so there is nothing macOS-specific to special-case here.
+      # module doc comment explains why), so every scene skips there.
       # Plan 0002 WP6.4 adds the scene `overlay` (the facade's stats overlay,
       # `crates/grimoire/tests/overlay_scene.rs`), compared the same way and reported in the same
-      # log; `--workspace` keeps the Test step's feature resolution, like the offscreen step.
+      # log; `--workspace` keeps the Test step's feature resolution, like the offscreen step. Both
+      # test binaries always run, so a failure in the first still reports the second; the step fails
+      # at the end if either did.
       # Candidates go to one absolute directory: each test binary runs in its own package
       # directory, so the relative default `target/wp28-snapshots` never reached the upload below.
       - name: Render WP2.8 deterministic test scenes
@@ -239,12 +242,14 @@ jobs:
           GRIMOIRE_SNAPSHOT_CANDIDATE_DIR: ${{ github.workspace }}/target/wp28-snapshots
         run: |
           mkdir -p ci-logs
-          cargo test -p grimoire_render --test snapshot_scenes --locked -- --ignored --nocapture 2>&1 | tee ci-logs/test-snapshot-scenes.log
-          cargo test --workspace --test overlay_scene --locked -- --ignored --nocapture 2>&1 | tee -a ci-logs/test-snapshot-scenes.log
+          status=0
+          cargo test -p grimoire_render --test snapshot_scenes --locked -- --ignored --nocapture 2>&1 | tee ci-logs/test-snapshot-scenes.log || status=1
+          cargo test --workspace --test overlay_scene --locked -- --ignored --nocapture 2>&1 | tee -a ci-logs/test-snapshot-scenes.log || status=1
+          exit "$status"
       # Plan 0002 WP3.6, OF-18.2: macOS has no software adapter, so the scene step above skips every
       # scene there. This step measures the variance of every scene on the runner's own Metal
       # device instead (GRIMOIRE_GPU_ADAPTER unset), compared with the Windows references; it only
-      # reports, like the warning mode.
+      # reports (macOS stays in warning mode until P3).
       - name: Measure OF-18.2 scene variance on Metal
         if: ${{ runner.os == 'macOS' }}
         run: |
@@ -257,7 +262,8 @@ jobs:
         run: bash .github/scripts/report-snapshot-diff.sh "$RUNNER_LABEL" ci-logs/test-snapshot-scenes.log ci-logs/test-scene-variance-metal.log
       # Populated only when a scene had no reference yet or mismatched one: lets a
       # human pull down what the software adapter actually produced on this runner to review and,
-      # if it looks right, commit as that platform's new reference.
+      # if it looks right, commit as that platform's new reference. Runs after a failed scene step
+      # too, which is exactly when the candidates matter on a blocking platform.
       - name: Upload WP2.8 snapshot candidates
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

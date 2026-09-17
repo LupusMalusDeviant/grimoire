@@ -8,7 +8,7 @@
 //! distinct hues) and `bullets_on_top` (hostile bullets with glow and the player marker right on a
 //! floor spot a point light burns white; asserts that body colour and rim stay readable there,
 //! PRD-0003 rule 1). Both assert their structural property before the reference comparison, so
-//! they fail on a real regression even in warning mode. [`scene_variance`] measures the run-to-run
+//! they fail on a real regression even where the reference comparison only warns. [`scene_variance`] measures the run-to-run
 //! and cross-adapter variance of every scene for OF-18.2.
 //!
 //! - `pbr_materials`: a row of spheres sweeping roughness (columns) and metalness (rows) under the
@@ -31,21 +31,27 @@
 //! because this harness's job is narrow: catch a real rendering regression against a
 //! previously-reviewed reference, not approximate human vision.
 //!
-//! # Warning mode
+//! # Blocking per platform
 //!
-//! [`FAIL_ON_MISMATCH`] is `false`: a mismatch against the reference is printed clearly (a
-//! greppable `grimoire-snapshot-diff: ...` line, bypassing libtest's capture of passing-test output
-//! like the WP2.1 adapter report in `tests/offscreen.rs`, plus a human-readable `::warning::`
-//! annotation) but the test still **passes**. `.github/scripts/report-snapshot-diff.sh` folds every
-//! such line from the CI log into that job's summary, so a mismatch is visible at a glance without
-//! turning the run red.
+//! Every comparison prints a greppable `grimoire-snapshot-diff: ...` line (bypassing libtest's
+//! capture of passing-test output like the WP2.1 adapter report in `tests/offscreen.rs`), and
+//! `.github/scripts/report-snapshot-diff.sh` folds those lines from the CI log into the job
+//! summary. What a mismatch beyond tolerance, or a scene without a reference, does depends on the
+//! platform ([`support::BLOCKING_PLATFORMS`]):
 //!
-//! **How this becomes failing:** flip [`FAIL_ON_MISMATCH`] to `true` once WP3.6 (plan 0002)
-//! empirically establishes, per platform, that its adapter's frame-to-frame variance sits reliably
-//! under [`support::MEAN_ABS_DIFF_TOLERANCE`]/[`support::MAX_ABS_DIFF_TOLERANCE`] (PRD-0018
-//! OF-18.2) — the plan's own risk register (R6) calls for exactly that staged rollout: warning mode
-//! until M2, blocking only on adapters proven stable. Until then a flaky driver would otherwise
-//! turn an unrelated PR red.
+//! - **Windows (WARP) and Linux (lavapipe): the test fails** (plan 0002 WP3.6, from M2 on). WP3.6
+//!   measured both adapters for OF-18.2: every scene reproduces bit-exactly within a run, and the
+//!   distance to the references stays far inside the tolerance (see [`scene_variance`]). A missing
+//!   reference fails too, so a new scene cannot slip past the gate; its candidate lands in the CI
+//!   artifact `snapshot-candidates-<runner>` for review and adoption.
+//! - **Everywhere else, today macOS: warning mode until the P3 gate.** A mismatch is reported with a
+//!   `::warning::` annotation and the test passes. The macOS runner has no software adapter, so the
+//!   scenes are skipped there anyway (see "References per platform").
+//!
+//! [`blocking_comparison_fails_on_a_real_regression`] proves the rule without a GPU in every
+//! `cargo test`: two references that differ like a real regression (blob instead of key-light
+//! shadows, a camera tilted 15 degrees off) trip the tolerance and fail on both blocking platforms,
+//! while the WARP and lavapipe references of the same scene stay within it.
 //!
 //! # References per platform
 //!
@@ -67,8 +73,8 @@
 //! [`try_offscreen_renderer`] the same way `tests/offscreen.rs`'s `skip_without_adapter` handles a
 //! missing adapter — except this harness *always* treats it as a skip, never as a failure: unlike
 //! `tests/offscreen.rs`'s correctness tests, `GRIMOIRE_REQUIRE_GPU_ADAPTER` would be the wrong tool
-//! here (this harness's whole premise, "warning mode", is that a platform without a stable
-//! reference should be visibly informational, never red). That is why macOS gets no snapshot
+//! here (a platform without a stable reference stays visibly informational, never red, see
+//! "Blocking per platform"). That is why macOS gets no snapshot
 //! reference from this harness for now: there is currently no way to
 //! obtain a literal CPU/software adapter there at all, so "what the software adapter produces" is
 //! not yet a thing this platform has. Any future change here belongs with the adapter-table
@@ -106,10 +112,6 @@ use support::Image;
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
 
-/// See this module's doc comment ("Warning mode"): flip to `true` only once WP3.6 has established
-/// that the current platform's adapter is stable enough (PRD-0018 OF-18.2).
-const FAIL_ON_MISMATCH: bool = false;
-
 /// Environment variable that, when set to `1`/`true`, writes the freshly rendered image as this
 /// platform's new reference instead of comparing against the checked-in one. Used to seed or
 /// deliberately update a reference after a reviewed rendering change; never set in CI.
@@ -144,13 +146,49 @@ fn reference_path(name: &str) -> PathBuf {
         .join(format!("{name}.png"))
 }
 
-/// Renders `frame` on the software adapter and reports the outcome against `name`'s reference
-/// image: a match, a mismatch (reported, not failed, unless [`FAIL_ON_MISMATCH`]),
-/// or "no reference yet" (the candidate is written out and reported, not failed either — see this
-/// module's doc comment on why macOS and Linux currently take this path). Returns normally in every
-/// case; the caller does not need to branch on the outcome, only decide whether to keep asserting
-/// (kept possible for [`FAIL_ON_MISMATCH`] callers) after this returns.
+/// Why the scene `name` fails its test on `platform`, or `None` if it passes there. `metric` is
+/// the comparison against the reference, `None` if the platform has no reference for the scene.
+/// A match always passes; a mismatch beyond tolerance or a missing reference fails only on a
+/// blocking platform (this module's doc comment, "Blocking per platform").
+fn failure(name: &str, platform: &str, metric: Option<&support::DiffMetric>) -> Option<String> {
+    if !support::blocks_on_mismatch(platform) {
+        return None;
+    }
+    match metric {
+        Some(metric) if metric.within_tolerance() => None,
+        Some(metric) => Some(format!(
+            "scene \"{name}\" on {platform} mismatches its reference beyond tolerance: \
+             mean_abs_diff={:.3} (tolerance {:.3}), max_abs_diff={} (tolerance {}); rendering on \
+             {platform} blocks, see tests/snapshot_scenes.rs, \"Blocking per platform\"",
+            metric.mean_abs_diff,
+            support::MEAN_ABS_DIFF_TOLERANCE,
+            metric.max_abs_diff,
+            support::MAX_ABS_DIFF_TOLERANCE
+        )),
+        None => Some(format!(
+            "scene \"{name}\" has no reference on {platform}, where rendering blocks: review the \
+             candidate (CI artifact snapshot-candidates-<runner>) and commit it as \
+             tests/snapshots/{platform}/{name}.png"
+        )),
+    }
+}
+
+/// The annotation level for a scene that did not match on this platform: `error` where it fails
+/// the test, `warning` where it is only reported.
+fn annotation_level(platform: &str) -> &'static str {
+    if support::blocks_on_mismatch(platform) {
+        "error"
+    } else {
+        "warning"
+    }
+}
+
+/// Compares the rendered `image` against `name`'s reference image for this platform and reports
+/// the outcome: a match, a mismatch beyond tolerance, or "no reference yet" (the candidate is
+/// written out for review). The two last outcomes fail the test on a blocking platform and are
+/// only reported elsewhere (this module's doc comment, "Blocking per platform").
 fn check_scene(name: &str, image: &Image) {
+    let platform = support::platform_dir();
     let path = reference_path(name);
     if update_references_requested() {
         image
@@ -164,28 +202,28 @@ fn check_scene(name: &str, image: &Image) {
     }
 
     if !path.exists() {
-        let candidate = candidate_dir()
-            .join(support::platform_dir())
-            .join(format!("{name}.png"));
+        let candidate = candidate_dir().join(platform).join(format!("{name}.png"));
         image
             .write_png(&candidate)
             .unwrap_or_else(|error| panic!("writing candidate {}: {error}", candidate.display()));
         println!(
-            "grimoire-snapshot-no-reference: name={name} platform={} candidate={}",
-            support::platform_dir(),
+            "grimoire-snapshot-no-reference: name={name} platform={platform} candidate={}",
             candidate.display()
         );
         let _ = std::io::Write::write_all(
             &mut std::io::stdout(),
             format!(
-                "\n::warning title=WP2.8 snapshot has no reference yet::scene \"{name}\" on {} has \
-                 no committed reference image; a candidate was written to {} for review (see \
+                "\n::{} title=Render test scene has no reference::scene \"{name}\" on {platform} \
+                 has no committed reference image; a candidate was written to {} for review (see \
                  tests/snapshot_scenes.rs's module doc comment)\n",
-                support::platform_dir(),
+                annotation_level(platform),
                 candidate.display()
             )
             .as_bytes(),
         );
+        if let Some(message) = failure(name, platform, None) {
+            panic!("{message}");
+        }
         return;
     }
 
@@ -203,9 +241,8 @@ fn check_scene(name: &str, image: &Image) {
         );
     };
     println!(
-        "grimoire-snapshot-diff: name={name} platform={} mean_abs_diff={:.3} max_abs_diff={} \
+        "grimoire-snapshot-diff: name={name} platform={platform} mean_abs_diff={:.3} max_abs_diff={} \
          mean_tolerance={:.3} max_tolerance={} within_tolerance={}",
-        support::platform_dir(),
         metric.mean_abs_diff,
         metric.max_abs_diff,
         support::MEAN_ABS_DIFF_TOLERANCE,
@@ -213,7 +250,7 @@ fn check_scene(name: &str, image: &Image) {
         metric.within_tolerance()
     );
     if !metric.within_tolerance() {
-        let platform_out = candidate_dir().join(support::platform_dir());
+        let platform_out = candidate_dir().join(platform);
         let candidate = platform_out.join(format!("{name}.png"));
         let _ = image.write_png(&candidate);
         // Reference next to candidate, side by side: easier to spot *what* changed at a glance
@@ -223,10 +260,10 @@ fn check_scene(name: &str, image: &Image) {
         let _ = std::io::Write::write_all(
             &mut std::io::stdout(),
             format!(
-                "\n::warning title=WP2.8 snapshot mismatch::scene \"{name}\" on {} exceeds tolerance \
-                 (mean_abs_diff={:.3} > {:.3}, or max_abs_diff={} > {}); candidate written to {}, \
-                 reference-vs-candidate strip at {}\n",
-                support::platform_dir(),
+                "\n::{} title=Render test scene mismatch::scene \"{name}\" on {platform} exceeds \
+                 tolerance (mean_abs_diff={:.3} > {:.3}, or max_abs_diff={} > {}); candidate \
+                 written to {}, reference-vs-candidate strip at {}\n",
+                annotation_level(platform),
                 metric.mean_abs_diff,
                 support::MEAN_ABS_DIFF_TOLERANCE,
                 metric.max_abs_diff,
@@ -236,19 +273,9 @@ fn check_scene(name: &str, image: &Image) {
             )
             .as_bytes(),
         );
-        // Not `assert!(!FAIL_ON_MISMATCH, ...)`: clippy's `assertions_on_constants` correctly
-        // flags asserting a `const bool` directly, since with today's `false` it can never fire —
-        // that is the point (see this module's doc comment, "Warning mode") until someone flips it.
-        if FAIL_ON_MISMATCH {
-            panic!(
-                "scene \"{name}\" mismatches its reference beyond tolerance and FAIL_ON_MISMATCH \
-                 is true: mean_abs_diff={:.3} (tolerance {:.3}), max_abs_diff={} (tolerance {})",
-                metric.mean_abs_diff,
-                support::MEAN_ABS_DIFF_TOLERANCE,
-                metric.max_abs_diff,
-                support::MAX_ABS_DIFF_TOLERANCE
-            );
-        }
+    }
+    if let Some(message) = failure(name, platform, Some(&metric)) {
+        panic!("{message}");
     }
 }
 
@@ -1024,7 +1051,7 @@ fn bullets_on_top_scene() {
     );
     assert!(
         bullet_min + 60 < floor_min && bullet_max > 200,
-        "the dark rim stands out from the white floor and the core stays bright (floor          {floor_min}, bullet luminance {bullet_min}..{bullet_max})"
+        "the dark rim stands out from the white floor and the core stays bright (floor {floor_min}, bullet luminance {bullet_min}..{bullet_max})"
     );
 }
 
@@ -1146,4 +1173,61 @@ fn reference_path_for(name: &str, platform: &str) -> PathBuf {
         .join("snapshots")
         .join(platform)
         .join(format!("{name}.png"))
+}
+
+// --- Self-test of the blocking comparison (plan 0002 M2), no GPU ---------------------------------
+
+fn read_reference(name: &str, platform: &str) -> Image {
+    let path = reference_path_for(name, platform);
+    Image::read_png(&path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+}
+
+/// Proves the blocking rule on the committed references, without a GPU, in every `cargo test`:
+/// a rendering that differs from the reference like a real regression fails on Windows and Linux
+/// and only warns on macOS, a missing reference fails on Windows and Linux, and the WARP and
+/// lavapipe renderings of every scene stay within tolerance of each other, so the rule does not
+/// turn a correct rendering on the other adapter red.
+#[test]
+fn blocking_comparison_fails_on_a_real_regression() {
+    // Two regressions the references themselves contain: the key-light shadow map silently
+    // replaced by a blob shadow, and the camera tilted 90 instead of 75 degrees.
+    let regressions = [
+        ("shadows_keylight", "shadows_blob"),
+        ("camera_tilt_75", "camera_tilt_90"),
+    ];
+    for platform in support::BLOCKING_PLATFORMS {
+        for (expected, rendered) in regressions {
+            let metric = support::compare(
+                &read_reference(expected, platform),
+                &read_reference(rendered, platform),
+            )
+            .expect("same size");
+            assert!(
+                !metric.within_tolerance(),
+                "{rendered} passes as {expected} on {platform}: {metric:?}"
+            );
+            assert!(failure(expected, platform, Some(&metric)).is_some());
+            assert!(
+                failure(expected, "macos", Some(&metric)).is_none(),
+                "macOS only warns"
+            );
+        }
+        assert!(failure("pbr_materials", platform, None).is_some());
+    }
+    assert!(failure("pbr_materials", "macos", None).is_none());
+
+    for name in VARIANCE_SCENES {
+        let metric = support::compare(
+            &read_reference(name, "windows"),
+            &read_reference(name, "linux"),
+        )
+        .expect("same size");
+        assert!(
+            metric.within_tolerance(),
+            "{name}: WARP and lavapipe references differ beyond tolerance: {metric:?}"
+        );
+        for platform in support::BLOCKING_PLATFORMS {
+            assert!(failure(name, platform, Some(&metric)).is_none());
+        }
+    }
 }
