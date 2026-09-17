@@ -38,21 +38,28 @@
 //!   not-yet-authenticated socket peer) is Plan-0002 WP8.4's "Engine-Server ... IO-Thread", not
 //!   this crate's job. `TcpConfig::token` is still carried by [`TcpConfig`] but not checked by
 //!   [`TcpServerTransport`] itself for the same reason.
-//! - **Later** (Plan-0002 WP6.3, not this crate's job at all): the profiler data model
-//!   (`FrameProfile`, `ScopeId`, `StatsFrame`) that builds a [`Stats`] value in the first place.
-//!   [`Message::SwapSigilUnit`] and [`Message::SigilPreview`] decode and dispatch correctly here,
-//!   but *acting* on one (queueing a swap at a tick boundary, or ever answering `SigilPreview`
-//!   with anything but `Error(NotSupported)`) is Plan-0002 WP8.3/WP8.4's job.
+//! - **WP6.3**: the profiler data model (contract §13 "Profiler-Datenmodell"): [`FrameProfile`]
+//!   with [`ScopeId`], [`ScopeTotal`] (including budget and estimate flag) and [`StatsFrame`],
+//!   which builds a [`Stats`] value; the clock-free Scope-API [`ScopeRegistry`] and
+//!   [`ScopeTimer`]; and [`ProfileLog`] with its CSV/JSON export
+//!   (`docs/formats/profiler-export.md`). Nothing here reads a clock: the facade measures with the
+//!   platform clock and attaches the profiler to the schedule observer (contract §9.7).
+//! - **Later**: [`Message::SwapSigilUnit`] and [`Message::SigilPreview`] decode and dispatch
+//!   correctly here, but *acting* on one (queueing a swap at a tick boundary, or ever answering
+//!   `SigilPreview` with anything but `Error(NotSupported)`) is Plan-0002 WP8.3/WP8.4's job.
 
+mod export;
 mod frame;
 mod generated;
 mod handshake;
 mod message;
+mod profile;
 mod transport;
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
 
+pub use export::{ExportError, PROFILE_EXPORT_SCHEMA, PROFILE_EXPORT_SCHEMA_VERSION, ProfileLog};
 pub use frame::{Frame, FrameDecoder, MessageId, ProtocolError, encode_frame, peek_hello_version};
 pub use generated::debug_protocol::{
     ErrorCode, ErrorMsg, Hello, LogMsg, PeerRole, SigilPreview, Stats, StatsCounter, StatsScope,
@@ -63,6 +70,7 @@ pub use handshake::{
     accept_handshake, connect_handshake,
 };
 pub use message::Message;
+pub use profile::{FrameProfile, ScopeId, ScopeRegistry, ScopeTimer, ScopeTotal, StatsFrame};
 pub use transport::{
     DEBUG_ADDR_ENV, DEBUG_TOKEN_ENV, DEFAULT_DEBUG_PORT, DebugTransport, InProcessOptions,
     InProcessTransport, NullTransport, SOCKET_TESTS_ENV, TransportError, socket_tests_enabled,

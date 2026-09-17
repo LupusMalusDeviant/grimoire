@@ -818,6 +818,7 @@ name = "grimoire_debug"
 version = "0.3.0"
 dependencies = [
  "proptest",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
