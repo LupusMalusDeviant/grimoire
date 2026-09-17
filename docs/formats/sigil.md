@@ -442,7 +442,7 @@ rather than `SectionLayout`, so `to_bytes` never needs to retain raw filler byte
 | 1 | `BulletTypes` | yes | [§10.3](#103-bullettypes-kind-1) |
 | 2 | `Programs` | no | [§10.4](#104-programs-kind-2) |
 | 3 | `Emitters` | yes | [§10.5](#105-emitters-kind-3) |
-| 4 | `Transforms` | no | **opaque** (not yet decided; [§11.4](#114-open-points-for-the-product-owner)) |
+| 4 | `Transforms` | no | [§10.9](#109-transforms-kind-4) |
 | 5 | `Curves` | no | [§10.6](#106-curves-kind-5) |
 | 6 | `BehaviorRefs` | no | [§10.7](#107-behaviorrefs-kind-6) |
 | 7 | `Names` | no | **opaque**, diagnostics only, hashed but never interpreted at runtime |
@@ -450,7 +450,10 @@ rather than `SectionLayout`, so `to_bytes` never needs to retain raw filler byte
 Every `f32` field in every section is finite (`NonFinite` otherwise) and its bit pattern is never
 the non-canonical `-0.0` (`NonCanonical` otherwise; the encoder always writes `+0.0`). Every
 `reserved` byte/field is `0` (`ReservedFlags` otherwise). An unrecognised enum tag (a section
-`kind`, a block `kind`, a modifier `kind`) is `UnknownSection`/`UnknownTag`.
+`kind`, a block `kind`, a modifier `kind`, a transform `kind` or `trigger`) is
+`UnknownSection`/`UnknownTag`. The encoder writes `Programs`, `Curves` and `Transforms` only when
+they hold at least one record, so a present section with `count` `0` is `NonCanonical` (Plan 0002
+WP5.2; before, it decoded like an absent one and broke `to_bytes(from_bytes(b)) == b`).
 
 ### 10.3 `BulletTypes` (kind 1)
 
@@ -469,9 +472,9 @@ final since WP1.3):
 | 18 | `palette_space` | `u8` (Sigil bullets: always `1`, "hostile"/enemy — PRD-0003 rule 4, `SIG0021`) |
 | 19 | `glow` | `u8` (linear, `0`–`255`; the compiler quantises the source `glow` float `0.0..=1.0`) |
 
-`silhouette`/`palette` are **visual catalogue indices** ([§10.9](#109-visual-catalogue)): the row of
+`silhouette`/`palette` are **visual catalogue indices** ([§10.10](#1010-visual-catalogue)): the row of
 the source's silhouette name and of its `enemy.<name>` palette in the catalogue, the same number
-in every unit. Until the change recorded in §10.9 they were per-unit indices, numbered by sorting the
+in every unit. Until the change recorded in §10.10 they were per-unit indices, numbered by sorting the
 names one unit used alphabetically.
 
 ### 10.4 `Programs` (kind 2)
@@ -559,7 +562,9 @@ u32`, `mul: f32`), in written order. Referenced by a `speed_curve` modifier's `e
 
 `count: u16`, then `count` × `BehaviorId` (`u32`). Final since WP1.3. The set of ids a compiled
 unit references; `SigilLibrary::new` (contract §11.2) rejects a unit whose set contains an id the
-loaded `BehaviorRegistry` never registered.
+loaded `BehaviorRegistry` never registered. Which bullet type calls which behavior, and with which
+parameters, is the `Transforms` section's business ([§10.9](#109-transforms-kind-4)); every id bound
+there must also be listed here.
 
 ### 10.8 Golden fixtures
 
@@ -567,9 +572,70 @@ loaded `BehaviorRegistry` never registered.
 rule 10): every fixture's bytes, content hash included, were derived by a standalone script that
 reimplements the `StableHasher` v1 algorithm from `grimoire_core::hash`'s own documentation
 directly against this page's tables — never by calling `SigilUnit::to_bytes` and saving the
-result — then checked against `SigilUnit::from_bytes`/`to_bytes`.
+result — then checked against `SigilUnit::from_bytes`/`to_bytes`. `transforms_unit_v1.bin` (Plan
+0002 WP5.2) covers [§10.9](#109-transforms-kind-4): a behavior binding with two parameters and every
+transform and trigger kind; its script also derives the `event` id of `phase_end` independently, which
+`tests/golden.rs` compares with `EventId::from_name`.
 
-### 10.9 Visual catalogue
+### 10.9 `Transforms` (kind 4)
+
+Plan 0002 WP5.2. The runtime script of each bullet type that has one: its `BulletBehavior` binding
+(contract §11.5) and its ordered transform list (PRD-0004 FR-03). The behavior binding lives here
+because the `BulletTypes` record is frozen at 20 bytes and `BehaviorRefs` is only a set.
+
+`count: u16` (at least `1`), then `count` script records, strictly ascending by `bullet_type` (each
+type at most once; a type without a record has neither a behavior nor transforms). A script record
+is a 12-byte head, then `param_count` × `f32`, then `transform_count` × a 24-byte transform record:
+
+| Offset | Field | Type |
+|---|---|---|
+| 0 | `bullet_type` | `u16` (index into `BulletTypes`) |
+| 2 | `has_behavior` | `u8` (`0` or `1`) |
+| 3 | reserved | `u8` |
+| 4 | `behavior` | `u32` (`BehaviorId`; `0` when `has_behavior` is `0`) |
+| 8 | `param_count` | `u16` (≤ 8; `0` when `has_behavior` is `0`); the values are `BehaviorInput::params` |
+| 10 | `transform_count` | `u16` (≤ 8) |
+
+A record with neither a behavior nor a transform is `NonCanonical`. Transform record:
+
+| Offset | Field | Type |
+|---|---|---|
+| 0 | `kind` | `u8` (`1` reverse, `2` change_type, `3` burst, `4` become_emitter) |
+| 1 | `trigger` | `u8` (`1` time, `2` distance, `3` event) |
+| 2 | reserved | `u16` |
+| 4 | `at_ticks` | `u32` (`time` only, else `0`) |
+| 8 | `distance` | `f32` (`distance` only, in u, else `+0.0`) |
+| 12 | `event` | `u32` (`event` only: `EventId::from_name(name)`, else `0`) |
+| 16 | `target` | `u16` (`change_type`/`burst`: bullet-type index; `become_emitter`: emitter index; `reverse`: `0`) |
+| 18 | `program` | `u16` (`burst`: index into `Programs`, the burst's block; else `0xFFFF`) |
+| 20 | `speed` | `f32` (`burst`: base speed of the sub-bullets, u/t; else `+0.0`) |
+
+`EventId::from_name(name)` is the low 32 bits of a `StableHasher` v1 fed with `write_str` of the
+domain `"grimoire.sigil-event.v1"` and then of `name` (a dotted source reference joined with `.`).
+
+**Decoder checks** (contract §11.1), besides the per-field rules above: every index in range
+(`IndexOutOfRange` with `what` `transforms.bullet_type`, `transform.bullet_type`,
+`transform.emitter` or `transform.program`); every bound behavior id listed in `BehaviorRefs`
+(`UnknownTag { what: "transforms.behavior" }`); an exceeded count limit is `Limit`. The cascade check
+walks the graph whose `burst` and `become_emitter` edges add one level (to the burst's bullet type,
+or to the emitter's bullet type) while `change_type` keeps the level, starting at level `0` from the
+bullet type of every primary (`role` `0`) emitter: a level beyond `MAX_CASCADE_DEPTH` (3) is
+`CascadeTooDeep { depth }`, so a recursion through a level-adding edge always fails. A `change_type`
+cycle is legal for the decoder (the compiler still rejects it, `SIG0019`). This is the same walk
+`grimoire_sigilc` does on the source (`SIG0018`).
+
+**Runtime meaning** (contract §11.9): in `sigil.update`, after the program's motion, the behavior
+runs, then the transforms in record order. `time T` fires in the update in which the bullet's `age`
+equals `max(T, 1)`; `distance D` fires in the update in which the path the bullet travelled since it
+took its current type first reaches `D` units (`D <= 0`: the first update); `event E` fires in every
+tick an `EventRequest` for `E` is live. `reverse` negates the velocity and adds π to the heading, and
+evaluation continues; `change_type` switches type and flags and restarts the type's clock
+(`age = 0`, path length `0`); `burst` despawns the bullet and fires the burst's block at its position
+and heading with `speed`; `become_emitter` despawns the bullet and fires one volley of the emitter
+(its program, speed and offset) at its position and heading. These three end the list for the tick.
+Sub-bullets are one cascade level deeper than their parent.
+
+### 10.10 Visual catalogue
 
 PO decision 2026-09-17 (plan 0002 WP3.5/WP5.3), implemented in `grimoire_sigilc::catalog`.
 *Stufe I, PO-Freigabe offen:* the meaning of `BulletType`'s `silhouette` and `palette` changes from
@@ -665,27 +731,28 @@ table: cascade depth is computed by walking every primary (non-`sub`) emitter's 
 `become_emitter`/`burst` transforms (each adds one level) and `change_type`/`reverse` transforms
 (same level, same bullet instance); a level beyond `SigilUnit::MAX_CASCADE_DEPTH` (3) is `SIG0018`,
 and a bullet reachable from itself through `change_type` alone (the only edge kind that cannot be
-bounded by the depth check, since it never advances the level) is `SIG0019`. This mirrors, ahead of
-time, exactly what contract §11.1 asks the binary decoder to re-check once `Transforms` gets a real
-encoding ("keine Rekursion in Sub-Emittern", "Kaskadentiefe höchstens `MAX_CASCADE_DEPTH`").
+bounded by the depth check, since it never advances the level) is `SIG0019`. The binary decoder
+re-checks the depth on the compiled `Transforms` section ([§10.9](#109-transforms-kind-4), contract
+§11.1: "keine Rekursion in Sub-Emittern", "Kaskadentiefe höchstens `MAX_CASCADE_DEPTH`").
+
+Two limits of that encoding are checked here too (Plan 0002 WP5.2): a bullet carries at most 8
+transforms (`SIG0016`), and a `become_emitter` may only appear on a bullet of the entry file
+(`SIG0014`), because only the entry file's emitters are compiled into the unit.
 
 PRD-0003's readability rules are enforced across the whole compiled unit (not per file): rule 3 —
 no two bullet types may share a `silhouette`, even with different `palette`s (`SIG0020`) — and
 rule 4 — `palette` must reference the `enemy` namespace, the only palette space Sigil bullets may
 use (`SIG0021`, contract §11.2's `palette_space`, [§10.3](#103-bullettypes-kind-1)). Every silhouette
 name and every `enemy` palette name must be a row of the visual catalogue
-([§10.9](#109-visual-catalogue), `SIG0027`).
+([§10.10](#1010-visual-catalogue), `SIG0027`).
 
 ### 11.4 Open points for the Product Owner
 
 Recorded here, not silently decided, because each is a real design choice with more than one
 reasonable answer:
 
-1. **`Transforms` (kind 4) stays opaque bytes in v1.** `change_type`/`become_emitter`/`burst`/`reverse`
-   are fully parsed, resolved and statically validated ([§11.3](#113-static-validation)), but not
-   yet encoded — locking in a binary shape before Plan 0002 WP5's interpreter exists risks a
-   breaking format revision once real requirements emerge. Recommendation: encode it once WP5
-   starts, informed by what the interpreter actually needs to read.
+1. **`Transforms` (kind 4)**: resolved in Plan 0002 WP5.2, encoded as
+   [§10.9](#109-transforms-kind-4), lowered by the compiler and run by the interpreter.
 2. **No source field yet for `collision_radius` or `lifetime_ticks`.** The compiler defaults
    `collision_radius = radius` (satisfies contract §11.2's `collision_radius <= radius` invariant
    trivially) and `lifetime_ticks = 0` (unbounded). Recommendation: add optional source fields
@@ -699,16 +766,14 @@ reasonable answer:
    `grimoire_sigilc::compiler::compile`**, not derived from the name (contract §11.5: ids are
    assigned by whichever Rust code calls `BehaviorRegistryBuilder::register`, not computable from
    text alone). Every referenced id is folded into the unit's `BehaviorRefs` section
-   ([§10.7](#107-behaviorrefs-kind-6)), but **which bullet type uses which behavior is not yet
-   representable in the binary** (`BulletType`'s record has no field for it either). Recommendation:
-   decide the source of that name→id table (a manifest file next to the Rust registration code is
-   the natural fit) as part of Plan 0002 WP4.3's CLI work, and extend `Programs`/a new section once
-   WP5 needs the per-bullet association. **WP4.3:** the command line now takes that table as a
-   behaviour manifest (`--behaviors <file>`, [§13.3](#133-behaviour-manifest---behaviors-file));
-   which code writes the game's manifest is still the Product Owner's decision.
+   ([§10.7](#107-behaviorrefs-kind-6)); since Plan 0002 WP5.2 the per-bullet association is the
+   script record of [§10.9](#109-transforms-kind-4) (without parameters: the source syntax has none
+   yet). **WP4.3:** the command line takes the name→id table as a behaviour manifest
+   (`--behaviors <file>`, [§13.3](#133-behaviour-manifest---behaviors-file)); which code writes the
+   game's manifest is still the Product Owner's decision.
 5. **`silhouette`/`palette` indices were per-unit, not a shared cross-unit catalog.** Decided (PO,
    2026-09-17): a shared catalogue with stable names replaces the per-unit numbering. Implemented
-   as the visual catalogue ([§10.9](#109-visual-catalogue)).
+   as the visual catalogue ([§10.10](#1010-visual-catalogue)).
 
 ## 12. Schema diagnostic code table (`SIG0012`+)
 
@@ -719,9 +784,9 @@ Same stability rule: a code's meaning is fixed from its first release.
 |---|---|
 | `SIG0012` | An `import` names a path the compiler's `SourceLoader` cannot load. |
 | `SIG0013` | An import cycle: a file transitively imports itself. |
-| `SIG0014` | An unknown reference: a `bullet`/`emitter`/`behaviour` name, or an `emitter ... from <alias>.<name>` naming an unknown alias or base emitter, that does not resolve. |
+| `SIG0014` | An unknown reference: a `bullet`/`emitter`/`behaviour` name, or an `emitter ... from <alias>.<name>` naming an unknown alias or base emitter, that does not resolve; also a `become_emitter` on an imported bullet, whose emitter is not part of the compiled unit. |
 | `SIG0015` | A field uses the reserved unit `beats` (lexically valid since WP4.1, always rejected by the schema pass — there are no wall-clock units in Sigil). |
-| `SIG0016` | A parameter is outside its valid range (e.g. `glow` outside `0.0..=1.0`, a negative `repeat`/`delay`/`speed`). |
+| `SIG0016` | A parameter is outside its valid range (e.g. `glow` outside `0.0..=1.0`, a negative `repeat`/`delay`/`speed`, more than 8 transforms on one bullet). |
 | `SIG0017` | A parameter is exactly the value that would make a documented downstream formula divide by zero (e.g. a block's `count`/`arms` of `0`, a `mirror.folds` of `0`, a `wave.wavelength`/`sine_offset.period` of `0`) — a non-finite (NaN/Infinity) result is never allowed in compiled Sigil data. |
 | `SIG0018` | A `become_emitter`/`burst` transform chain would create a bullet beyond `SigilUnit::MAX_CASCADE_DEPTH`. |
 | `SIG0019` | A bullet is reachable from itself through a chain of `change_type` transforms (or, for `emitter ... from ...`, a composition cycle). |
@@ -732,7 +797,7 @@ Same stability rule: a code's meaning is fixed from its first release.
 | `SIG0024` | A present field has the wrong shape (wrong value kind, or a quantity with the wrong unit) for its construct. |
 | `SIG0025` | (`sigilc check`/`build`, WP4.3) The source's canonical content path cannot be formed: the file lies outside the content root, or its path relative to the root is not a valid `AssetPath` (contract §12) ending in `<name>.sigil`. `sigilc` never normalises a path ([§13.2](#132-content-root-and-canonical-content-path)). Node path empty, position 1:1. |
 | `SIG0026` | (`sigilc check`/`build`, WP4.3) The source file cannot be read: missing, not a regular readable file, larger than 1 MiB, or not UTF-8. Node path empty, position 1:1. |
-| `SIG0027` | A bullet's `silhouette` name, or the name of its `enemy.<name>` palette, is not a row of the visual catalogue ([§10.9](#109-visual-catalogue)); the fix hint lists the catalogue's names. |
+| `SIG0027` | A bullet's `silhouette` name, or the name of its `enemy.<name>` palette, is not a row of the visual catalogue ([§10.10](#1010-visual-catalogue)); the fix hint lists the catalogue's names. |
 
 ## 13. Command-line interface `sigilc`
 

@@ -1185,7 +1185,7 @@ impl WgpuRenderer {
   werden vor der Content-Produktion erweitert (PO-Entscheid 2026-09-17; Umsetzung offen).
 - **Katalog-Namen** (*Stufe A, PO-Freigabe offen*; Umsetzung des PO-Entscheids 2026-09-17 zum gemeinsamen Katalog):
   `bullet_silhouette::NAMES` und `bullet_palette::NAMES` nennen jede Tabellenzeile mit ihrem festen Namen aus dem
-  Visual-Katalog von `docs/formats/sigil.md` §10.9. Die Tabellen sind genau die gezeichneten Zeilen dieses Katalogs,
+  Visual-Katalog von `docs/formats/sigil.md` §10.10. Die Tabellen sind genau die gezeichneten Zeilen dieses Katalogs,
   Zeile für Zeile und in derselben Reihenfolge; eine neue Silhouette oder Palette kommt als nächste Katalogzeile
   hinzu, nie dazwischen. Geprüft durch `crates/grimoire/tests/visual_catalog.rs` gegen die Katalogtabelle der
   Formatdoku, gegen die `grimoire_sigilc` seine Indizes ebenfalls prüft (§9.9, §11.2).
@@ -1232,6 +1232,36 @@ impl WgpuRenderer {
   `bullet_point_lights_drawn` und gegebenenfalls `point_lights_over_budget`. Zellgröße, Rastergröße und die Zahl 8
   sind vorläufig (P-11); bindend ist nur der Weg über `point_light_from_bullet`. Ein Test belegt am Quelltext, dass
   außerhalb von Testmodulen nur diese Funktion `is_bullet_light` setzt.
+
+**GPU-Zeit über Timestamp-Queries (Ergänzung P1, Plan 0002 WP6.3)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Additiv: ein neues Feld in `StageStats` (bereits
+`#[non_exhaustive]`), keine neue Pflichtmethode, kein geändertes `repr(C)`-Layout, kein Referenzbild ändert sich.
+
+```rust
+// StageStats (§6 oben) wächst additiv um:
+pub gpu_time: Option<Duration>,   // Summe der Pass-Dauern eines kürzlich gezeichneten Frames; None ohne Messung
+// grimoire_gpu (frei gestaltbar, §6 oben): GpuContext::supports_timestamp_queries() -> bool
+```
+
+- **Messung:** `WgpuRenderer::render_stage` lässt jeden Pass des Frames (Schattenkarte, Cluster-Compute, Mesh-Pass,
+  Welt-, Marker- und Debug-Sprites, Bullets; höchstens 8 je Frame) Zeitstempel an seinem Anfang und Ende schreiben.
+  Nach dem letzten Pass löst ein zusätzlicher Befehlspuffer die Abfragen auf und kopiert sie in einen abbildbaren
+  Puffer. Das Ergebnis holt ein späterer `render_stage`-Aufruf ohne Warten ab (`PollType::Poll`, dieselbe Regel wie
+  für die Cluster-Zähler nach Engine-ADR-0015). `gpu_time` ist deshalb die Summe der Pass-Dauern der zuletzt
+  abgeschlossenen Messung, in der Regel ein bis drei Frames alt. Solange eine Abfrage aussteht, schreiben die
+  folgenden Frames keine Zeitstempel; der letzte Wert bleibt gemeldet.
+- **Umfang:** nur die Ausführung der Render- und Compute-Pässe. Uploads (`write_buffer`), Leerlauf zwischen zwei
+  Einreichungen, die Auflösung selbst und die Präsentation zählen nicht.
+- **`None`:** Gerät ohne `wgpu::Features::TIMESTAMP_QUERY`, vor der ersten abgeschlossenen Messung, bei einem wegen
+  Nullgröße übersprungenen Frame und immer bei `NullRenderer` sowie beim bereitgestellten `Renderer::render_stage`.
+  Die Fassade verbucht dann einen gekennzeichneten Schätzwert statt einer gemessenen Null (§9.7).
+- **`grimoire_gpu`:** Jeder `GpuContext` fordert `TIMESTAMP_QUERY` zusätzlich zu seinen Pflicht-Features an, wenn
+  der Adapter es anbietet. Laut Adapter-Bericht der CI bieten Windows/WARP und Linux/lavapipe es an, der macOS-Runner
+  (Apple Paravirtual device) nicht; dort läuft der Fall `None`. Kein bildgebender Pfad hängt von dem Feature ab.
+- **Test:** `gpu_timer.rs` rendert offscreen, bis eine Messung vorliegt (höchstens 2.000 Frames), prüft die
+  Plausibilität und den Fall `None` bei Nullgröße; auf einem Adapter ohne Timestamp-Queries prüft er, dass
+  `gpu_time` `None` bleibt. Die Referenzszenen (WP2.8) bleiben bitgleich.
 
 ## 7. `grimoire_ecs`
 
@@ -2276,6 +2306,71 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 - **Determinismus:** Ohne angewendeten Swap sind die Hashes mit und ohne Link identisch (Test mit
   `InProcessTransport`). Der Swap wirkt ab dem angegebenen Tick (Headless-E2E, WP8.4/WP8.5).
 
+**Profiler-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP6.3)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe). Die mit „Klarstellung“ markierten Punkte präzisieren den
+freigegebenen Text oben und sind Stufe K.* `AppBuilder::profiler(bool)` und `GamePlugin::on_profile` (§9.2) sind
+wie festgelegt umgesetzt; `overlay_key` und das Zeichnen des Overlays folgen mit WP6.4.
+
+```rust
+// grimoire::adapters::debug (§9.1, Zeile „debug“)
+pub const SCOPE_FRAME: &str = "frame";     pub const SCOPE_SIM: &str = "sim";       pub const SCOPE_EXTRACT: &str = "extract";
+pub const SCOPE_RENDER: &str = "render";   pub const SCOPE_GPU: &str = "gpu";       pub const SCOPE_APP: &str = "app";
+pub const LOOP_SCOPES: [&str; 5];          // frame, sim, extract, render, gpu: ScopeIds 0 bis 4
+pub const DEFAULT_BUDGETS: [(&str, Duration); 8];
+                                           // frame 16,67 ms, sim 4 ms, sigil 1 ms, collide 1,5 ms, extract 0,5 ms,
+                                           // render 3 ms, gpu 8 ms, audio 1 ms (PRD-0002, PRD-0004)
+pub fn subsystem_scope(system_name: &str) -> &str;
+pub struct ProfilerBudgets;                // Default (= DEFAULT_BUDGETS), none(), set(&str, Option<Duration>) -> &mut Self,
+                                           // with(&str, Option<Duration>) -> Self, get(&str) -> Option<Duration>,
+                                           // iter() -> impl Iterator<Item = (&str, Duration)>; Clone, Eq, Debug
+pub struct Profiler;                       // Default, new(ProfilerBudgets), begin_frame(u64), scope_id(&str) -> Option<ScopeId>,
+                                           // record(&str, Duration), record_estimate(&str, Duration),
+                                           // measure<T>(&dyn Clock, &str, impl FnOnce() -> T) -> T,
+                                           // observer<'a>(&'a mut self, &'a dyn Clock) -> ProfilerObserver<'a>,
+                                           // add_counter(&'static str, u64), record_stage_stats(&StageStats, render_time: Duration),
+                                           // set_budget(&str, Option<Duration>), budget(&str) -> Option<Duration>,
+                                           // profile() -> &FrameProfile, registry() -> &ScopeRegistry; Clone, Debug
+pub struct ProfilerObserver<'a>;           // impl SystemObserver; Debug; nur von Profiler::observer erzeugt
+pub fn stats_frame(stats: &FrameStats, content: Option<ContentEpoch>) -> StatsFrame;
+// AppBuilder zusätzlich: profiler_budgets(ProfilerBudgets) -> Self (Default ProfilerBudgets::default())
+```
+
+- **Scopes der Hauptschleife:** `sim` ist die Summe aller `step_observed`-Aufrufe des Frames. `extract` umfasst
+  `StageFrame::clear`, alle `extract` und alle `extract_stage`. `render` misst den `render_stage`-Aufruf einschließlich
+  Einreichung und Präsentation. `frame` misst vom Uhrzugriff am Frame-Anfang bis nach dem letzten `on_frame`. Jeder
+  dieser Scopes wird genau einmal je Frame verbucht, auch mit 0 Ticks (dann `sim` = 0), damit Balken und Export in
+  jedem Frame vollständig sind. Ein Frame, dessen Rendern mit einem Fehler endet, liefert kein `on_profile`.
+- **Klarstellung — feste Scope-IDs:** „in Reihenfolge des ersten Auftretens“ gilt für die Subsystem-Scopes.
+  `Profiler::new` registriert die fünf Scopes aus `LOOP_SCOPES` vorab in dieser Reihenfolge; sie tragen dadurch in
+  jedem Lauf die `ScopeId`s 0 bis 4, unabhängig davon, ob der erste Frame Ticks hat. `FrameProfile::scopes` bleibt in
+  Reihenfolge der ersten Aufzeichnung im Frame (Subsystem-Scopes eines Ticks also vor `sim`).
+- **Klarstellung — Systemnamen:** Ein leeres Präfix (`.x`) und ein Präfix gleich einem der `LOOP_SCOPES` (`sim.x`)
+  zählen zu `app`. Sonst könnte ein System einen Scope aufblähen, den die Schleife selbst misst.
+- **Parallele Stufen:** Die Anwendung jedes Puffers wird unter dem Scope ihres Systems verbucht (echte Messung). Die
+  Aufgabenphase (`stage_started` bis `tasks_finished`) geht an den gemeinsamen Scope, wenn alle Systeme der Stufe
+  denselben haben. Sonst wird sie im Verhältnis der Systemzahl auf die Scopes der Stufe verteilt und als Schätzwert
+  verbucht (`estimate = true`); der Rundungsrest geht an den letzten Scope. Die Zeit einzelner paralleler Systeme ist
+  nach §7.2 nicht messbar, die Verteilung ist deshalb gekennzeichnet statt als Messung ausgegeben.
+- **GPU (§6 „GPU-Zeit über Timestamp-Queries“):** `record_stage_stats` verbucht `gpu` mit `StageStats::gpu_time`,
+  wenn der Renderer gemessen hat. Sonst verbucht es die gemessene `render`-Zeit als Schätzwert (`estimate = true`),
+  nie eine Null: Ohne Timestamp-Queries ist die einzige sichtbare GPU-Last die Zeit, die die CPU mit Einreichen und
+  Präsentieren verbringt. Sie enthält Wartezeit auf die GPU, aber auch Präsentation (etwa vertikale
+  Synchronisation). Dazu die drei Zähler aus §9.7 oben.
+- **Budgets:** je Scope-Name; ein Scope erhält sein Budget bei der ersten Registrierung, `set_budget` ändert es auch
+  für schon registrierte Scopes. Überschreitung zeigt `ScopeTotal::over_budget` (§13). Das Overlay (WP6.4) färbt
+  danach.
+- **Nur lesend:** `ProfilerObserver` liest Uhr und Systemnamen, nie die Welt. Die Schleife mit und ohne Profiler und
+  `run_headless` ergeben identische Hashes (`tests/profiler.rs`); die Konformanz-Suite `SystemObserver` läuft gegen
+  den Beobachter (`adapters::debug`).
+- **`FrameStats` bleibt unverändert (§9.2).** Die im Plan genannte „erweiterte `FrameStats`“ ist über die
+  Nachbartypen umgesetzt: `FrameProfile` (Scopes, Budgets, Zähler), `StageStats::gpu_time` und `stats_frame`, das
+  `FrameStats` und Content-Epoche in das `StatsFrame` für `Stats` oder den Export übersetzt.
+- **Tests:** `main_loop.rs` (Uhr, die je Ablesung weiterläuft: jeder Scope gemessen, `on_profile` nach `on_frame`,
+  ohne Profiler kein `on_profile`), `adapters/debug.rs` (Präfixe, feste IDs, Budgets, exklusive und parallele Stufen
+  über echte `Schedule`s, GPU-Schätzwert, Konformanz), `tests/profiler.rs` (Hash-Neutralität, Scope-Reihenfolge,
+  Budgets aus dem Builder, Export). Beispiel `profiler_dump` (Konsole, in der CI nur gebaut).
+
 ### 9.8 InputMap-Preset: Zielachsen 2/3 (Ergänzung P1)
 
 *Freigegeben (WP1.2).* Gilt ab P1 statt des Satzes „Die Zielachsen 2 und 3 bleiben in P0 0
@@ -2332,7 +2427,7 @@ pub struct SigilRenderPlugin;                    // Default, Clone, Debug; new()
 - **Visual-Katalog** (*Stufe I, PO-Freigabe offen*; ersetzt die bisherige „Bekannte Lücke", sigil.md §11.4 Punkt 5):
   Entschieden (PO, 2026-09-17): ein gemeinsamer Katalog für Silhouetten und Paletten mit festen Namen ersetzt die
   Nummerierung je Unit. `sigilc` schreibt für einen Namen seine Zeile im Visual-Katalog (`docs/formats/sigil.md`
-  §10.9), in jeder Unit dieselbe Zahl; ein Name außerhalb des Katalogs übersetzt nicht (`SIG0027`). Die gezeichneten
+  §10.10), in jeder Unit dieselbe Zahl; ein Name außerhalb des Katalogs übersetzt nicht (`SIG0027`). Die gezeichneten
   Katalogzeilen sind die Tabellen des Bullet-Passes (§6 „Katalog-Namen"), die Identität landet deshalb immer auf der
   gleichnamigen Tabellenzeile. Reservierte Katalogzeilen übersetzen, liegen aber außerhalb der Tabellen und zählen
   in `unmapped_visual`. `map_visual` bleibt unverändert. Vorher vergab `sigilc` die Indizes je Unit in alphabetischer
@@ -2417,7 +2512,8 @@ Kopf (Little-Endian, 40 Byte):
   oder nach dem letzten — ergibt `NonCanonical`, nicht `SectionLayout`; so bleibt `to_bytes` eine reine Funktion der
   dekodierten Felder, ohne dass der Decoder rohe Lückenbytes vorhalten müsste, um sie zu reproduzieren. Abschnittsarten in
   v1: 1 `BulletTypes` (Pflicht), 2 `Programs`
-  (Bausteine und Modifikatorstapel), 3 `Emitters` (Pflicht), 4 `Transforms`, 5 `Curves`, 6 `BehaviorRefs` und
+  (Bausteine und Modifikatorstapel), 3 `Emitters` (Pflicht), 4 `Transforms` (je Bullet-Typ Behavior-Bindung und
+  Transformationsliste, §11.9), 5 `Curves`, 6 `BehaviorRefs` und
   7 `Names` (nur Diagnose, gehasht, ohne Laufzeitwirkung). Eine unbekannte Art ergibt `UnknownSection`; neue Arten
   heben `FORMAT_VERSION`. Das innere Layout jeder Art beschreibt `docs/formats/sigil.md` (WP4.1/WP4.2, P-9 A) unter
   denselben Regeln.
@@ -2430,11 +2526,13 @@ Kopf (Little-Endian, 40 Byte):
   validiert strukturell erneut, was der Compiler zusichert: Indizes im Bereich, jede `f32` endlich, bekannte
   Enum-Tags, Kaskadentiefe höchstens `MAX_CASCADE_DEPTH`, keine Rekursion in Sub-Emittern, jede referenzierte
   `BehaviorId` in `BehaviorRefs`. Die Lesbarkeitsregeln (Silhouetten-Unterscheidung, Palettenraum) prüft nur der
-  Compiler (WP4.2).
+  Compiler (WP4.2). Tiefe und Rekursion prüft der Decoder seit WP5.2 am Abschnitt `Transforms` (§11.9).
 - **Kanonisch:** `to_bytes` ist der Referenz-Encoder, den `sigilc` und die Tests nutzen. Für jede gültige Eingabe
   gilt `to_bytes(from_bytes(b)?) == b`. Der Decoder lehnt deshalb nicht kanonische Bytes ab (reservierte Felder ≠ 0,
   falsche Reihenfolge, `-0.0` statt `+0.0`) und liefert `NonCanonical`. Damit sind Units auf Windows, Linux und
-  macOS byte-identisch prüfbar (WP4.4).
+  macOS byte-identisch prüfbar (WP4.4). *Klarstellung (WP5.2):* Nicht kanonisch ist auch ein vorhandener, aber
+  leerer optionaler Abschnitt (`Programs`, `Curves`, `Transforms` mit Anzahl `0`), den der Encoder nie schreibt;
+  zuvor dekodierte er wie ein fehlender Abschnitt und verletzte damit die Gleichung.
 - **`UnitId`** vergibt `sigilc` aus dem kanonischen Content-Pfad der Quelle nach derselben Regel wie
   `AssetId::from_path` (§12, `StableHasher` v1); ergibt die Ableitung 0, meldet `sigilc` einen Fehler. Damit
   bezeichnen Pack-Eintrag, Swap-Nachricht (§13) und Laufzeit eine Unit mit derselben Zahl.
@@ -2470,7 +2568,7 @@ pub struct BulletType {                          // Copy, Debug, PartialEq, Stab
 }
 pub struct BulletVisual { pub silhouette: u16, pub palette: u16, pub palette_space: u8, pub glow: u8 }
                                                  // Copy, Eq, Hash, Debug, StableHash; neutrale Kennungen, Abbildung in der Fassade (§6)
-                                                 // silhouette/palette: Zeilen des Visual-Katalogs, sigil.md §10.9 (Stufe I, PO-Freigabe offen)
+                                                 // silhouette/palette: Zeilen des Visual-Katalogs, sigil.md §10.10 (Stufe I, PO-Freigabe offen)
 pub struct BulletFlags(pub u8);                  // Copy, Eq, Hash, Debug, StableHash; SMASHABLE = 1, REFLECTABLE = 2,
                                                  // ENV_ACTIVE = 4, GRAZEABLE = 8; übrige Bits 0; contains(BulletFlags) -> bool
 pub struct SigilLibrary;                         // Debug, Send + Sync; unveränderlich
@@ -2649,6 +2747,9 @@ pub struct BehaviorRegistry;                     // Debug, Send + Sync; version(
   (`u32`) und den Namen (`str`), nie über Funktionsadressen. Er geht in den Manifest-Hash (§11.8) und damit in
   `state_hash` und den Replay-v2-Header ein. Zwei Registries mit denselben Einträgen in anderer
   `register`-Reihenfolge ergeben denselben Fingerprint und dieselben Hashes (Test WP5.2).
+- **Aufruf** (WP5.2, Stufe A, PO-Freigabe offen): Welcher Bullet-Typ welches Behavior mit welchen `params` aufruft,
+  steht im Abschnitt `Transforms` der Unit; `sigil.update` ruft es je lebendem Bullet dieses Typs einmal je Tick
+  auf (Reihenfolge und Zustand §11.9).
 - **Behavior-Versionierung** (additiv, PO-Entscheid V-20, 2026-09-15; schließt die offene Frage aus PR #2): Der
   `fingerprint` schließt bewusst die Funktionsidentität aus (§8.4) — eine geänderte Behavior-Funktion bei
   unverändertem `version`/`BehaviorId`/Namen bliebe damit sonst unentdeckt. Jede semantische Änderung an einer
@@ -2684,8 +2785,9 @@ pub mod system_names {                           // &'static str, erscheinen in 
   1. `sigil.begin`: Vergleicht den Registry-Fingerprint mit `SigilContent` (Panic
      ``behavior registry fingerprint {a:#018x} does not match the loaded content ({b:#018x})``), leert die
      Ereignisse und setzt `events_tick = Tick`.
-  2. `sigil.update`: Pool-Blöcke (§11.7). Setzt `previous_position = position`, erhöht `age`, prüft
-     `lifetime_ticks`, führt das Programm aus (Baustein-Bewegung, Modifikatoren), dann das Behavior, dann die Bounds
+  2. `sigil.update` (genaue Reihenfolge und Ereignisse seit WP5.2: §11.9): Pool-Blöcke (§11.7). Setzt
+     `previous_position = position`, erhöht `age`, prüft `lifetime_ticks`, führt das Programm aus
+     (Baustein-Bewegung, Modifikatoren), dann das Behavior, dann die Bounds
      (`bounds_min`/`bounds_max`, außerhalb → `Bounds`). Transformationen mit In-place-Wirkung (Typwechsel,
      Richtungsumkehr) wirken im Block. Despawns und Sub-Spawns (Platzen, Sub-Emitter) sammelt jeder Block in
      Slot-Reihenfolge.
@@ -2737,7 +2839,8 @@ pub mod stream {                                 // Einträge der Strom-Tabelle 
   dann herausgenommen, und die Simulation ist nur per `restore` weiterverwendbar (§7, exklusive Systeme).
 - **Lesende Konsumenten** (Broadphase-Adapter, §9.6; Render-Extraktion, §9.1) nutzen `BulletPool::iter()` bzw.
   `BulletPool::blocks()` mit derselben Blockregel und, wenn sie parallelisieren, `run_blocks` mit `world.executor()`.
-- **Hash-Gate:** Ein Szenario mit mehr als drei Pool-Blöcken, Behaviors, Streuung und Clear läuft wie §8 mit
+- **Hash-Gate** (umgesetzt in WP5.2: `grimoire_sigil/tests/pool_scenario`, zusätzlich mit Transformationen und
+  Ereignissen): Ein Szenario mit mehr als drei Pool-Blöcken, Behaviors, Streuung und Clear läuft wie §8 mit
   `SequentialExecutor`, `PermutedExecutor` (Seeds 1 und 2, rückwärts) und in `grimoire_exec/tests/hash_gate.rs` mit
   1, 2 und N Threads; alle Checkpoints sind identisch.
   - **Dev-Kanten des Hash-Gates** (PO-Entscheid V-1): `hash_gate.rs` bindet Szenarien anderer Crates per `#[path]`
@@ -2823,6 +2926,78 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   - zwei Swaps derselben Unit ergeben unterschiedliche Epochen;
   - Swap von 3 auf 1 Emitter und zurück auf 3 panict nicht und ergibt mit `SequentialExecutor` und
     `PermutedExecutor` identische Hashes; ein vom Spiel erzeugter `Emitter` mit ungültigem Index bleibt inaktiv.
+
+### 11.9 Transformationen, Trigger, Ereignisse und Behavior-Aufruf (Ergänzung WP5.2)
+
+*Entwurf WP5.2 — Stufe A, PO-Freigabe offen.*
+
+```rust
+pub struct EventId(pub u32);                     // Copy, Eq, Ord, Hash, Debug, StableHash; from_name(&str) -> EventId
+pub struct EventRequest { pub event: EventId }   // Component: Clone, Debug, PartialEq, Eq, StableHash
+```
+
+**Semantik:**
+- **Format:** Der Abschnitt `Transforms` (Art 4, Layout `docs/formats/sigil.md` §10.9) trägt je Bullet-Typ
+  höchstens einen Eintrag, aufsteigend nach Typindex: eine optionale Behavior-Bindung (`BehaviorId` und bis zu
+  8 `f32`-Parameter) und bis zu 8 Transformationen (`reverse`, `change_type`, `burst`, `become_emitter`) mit je
+  einem Trigger (`time`, `distance`, `event`). `BulletTypes` bleibt bei 20 Byte und `BehaviorRefs` eine Menge; das
+  schließt die in WP5.1 gemeldete Lücke, dass ein Behavior aus der Tick-Phase nicht aufrufbar war.
+  `FORMAT_VERSION` bleibt `1`: Art 4 war seit WP1.3 reserviert und undurchsichtig, und `sigilc`, einziger Erzeuger
+  (P-2), hat sie nie geschrieben. Der Decoder lehnt beliebige Bytes in Art 4 jetzt ab.
+- **Decoder** (§11.1, §2 Regel 9): Indizes im Bereich (`IndexOutOfRange`), gebundene Behavior-IDs in
+  `BehaviorRefs` (`UnknownTag { what: "transforms.behavior" }`), Obergrenzen (`Limit`), unbenutzte Felder null
+  (`NonCanonical`). Die Kaskadenprüfung geht von den Bullet-Typen der primären Emitter (Rolle `0`) auf Stufe `0`
+  aus; `burst` und `become_emitter` führen eine Stufe tiefer, `change_type` bleibt auf der Stufe. Eine Stufe über
+  `MAX_CASCADE_DEPTH` ergibt `CascadeTooDeep { depth }`, eine Rekursion über `burst`/`become_emitter` also immer.
+  Das entspricht der Prüfung des Compilers (`SIG0018`); ein reiner `change_type`-Zyklus ist für den Decoder
+  zulässig (der Compiler lehnt ihn weiter ab, `SIG0019`).
+- **`EventId::from_name`** = die unteren 32 Bit von `StableHasher` v1 über `write_str("grimoire.sigil-event.v1")`
+  und `write_str(name)`. Compiler und Spiel bilden die ID aus demselben Namen; die Unit braucht keine Namenstabelle.
+  Zwei Namen können kollidieren.
+- **`EventRequest`:** `sigil.update` sammelt zu Beginn alle lebenden Anforderungen in Query-Reihenfolge, despawnt
+  ihre Entities in dieser Reihenfolge und löst jedes `event`-Trigger dieses Ereignisses in diesem Tick genau einmal
+  aus, gleich wie viele Anforderungen es nennen. Eine Anforderung aus einer früheren Stufe desselben Ticks wirkt im
+  selben Tick, sonst im nächsten (wie `ClearRequest`, §11.4). Parallele Systeme fordern Ereignisse strukturell an.
+  `install` registriert `EventRequest` bewusst nicht, weil jede Registrierung die Komponentenanzahl in
+  `World::stable_hash` (§7) jeder installierten Sitzung ändern würde; die Komponente registriert sich mit der ersten
+  Anforderung.
+- **Reihenfolge je lebendem Slot in `sigil.update`:** `previous_position = position`, `age += 1`, Modifikatoren des
+  Programms, `position += velocity`, Behavior, Transformationen, Lebensdauer (`lifetime_ticks` des dann aktuellen
+  Typs), Bounds. *Klarstellung:* Die Lebensdauer prüft die Laufzeit seit WP5.1 nach der Bewegung; §11.6 nennt sie
+  im Wortlaut vor dem Programm.
+- **Behavior:** `BehaviorInput { tick, age, params, target }` mit `target` aus `AimTarget` und `BulletMotion` aus den
+  Spalten; das Ergebnis wird zurückgeschrieben. `Despawn` ergibt `DespawnCause::Behavior`, die Transformationen
+  laufen dann nicht mehr. `SimRng` ist der Blockgenerator `derive_block_rng(seed, tick, stream::UPDATE, blockindex)`,
+  in Slot-Reihenfolge fortgeschaltet; aus ihm ziehen auch `scatter`-Bausteine von Sub-Spawns (§11.7).
+- **Uhr eines Typs:** `age` und die Weglänge seit Annahme des aktuellen Typs. Die Weglänge summiert die Länge der
+  tatsächlichen Verschiebung je Tick (`position - previous_position`, also mit `sine_offset` und Behavior-Bewegung)
+  in `state[0]`, nur für Typen mit `distance`-Trigger; `sine_offset` belegt `state[1..=3]` (WP5.1). Ein Behavior
+  darf die so belegten Plätze seines Typs nicht schreiben (Review, §3).
+- **Trigger:** `time T` löst im Update aus, in dem `age == max(T, 1)`; `distance D` in dem Update, in dem die
+  Weglänge `D` erstmals erreicht (`D <= 0`: erstes Update); `event E` in jedem Tick mit lebender Anforderung für
+  `E`. Die Transformationen eines Typs laufen in Listenreihenfolge.
+- **Wirkungen:** `reverse` negiert `velocity`, addiert π auf `angle`, und die Liste läuft weiter. `change_type`
+  setzt Typ und `flags` des Zieltyps, `age = 0` und, falls der Zieltyp einen `distance`-Trigger hat, `state[0] = 0`;
+  Position, Geschwindigkeit, Programm, Kaskadentiefe und übriger Zustand bleiben. `burst` despawnt den Bullet
+  (`DespawnCause::Transform`, mit Ereignis) und erzeugt eine Salve des `burst`-Programms an seiner Position mit
+  seinem `angle` als Basisrichtung und `speed` als Basistempo. `become_emitter` despawnt ebenso und erzeugt eine
+  Salve des Ziel-Emitters (Programm, `speed`, Versatz) an der Position mit `angle` als Basisrichtung, als Salve `0`;
+  `delay`, `repeat` und `interval` des Ziel-Emitters wirken dabei nicht. Nach `change_type`, `burst` und
+  `become_emitter` endet die Liste für diesen Tick. Salven entstehen in Slot-Reihenfolge im Block.
+- **Sub-Spawns** faltet `sigil.resolve` nach allen Despawns in Blockreihenfolge (§11.6) mit der Tiefe des
+  Elternteils plus eins (`checked_add`); eine Tiefe über `MAX_CASCADE_DEPTH` und `PoolFull` verwerfen den Spawn und
+  zählen ihn in `dropped_spawns`. Sub-Bullets bewegen sich ab dem nächsten Tick.
+- **Nicht Zustand:** der aus Unit und Registry abgeleitete Laufzeit-Cache, der Ereignispuffer und die Arbeitslisten
+  zwischen `sigil.update` und `sigil.resolve`; alle sind zwischen Ticks leer bzw. rein abgeleitet. Die Hash-Layouts
+  (§11.3, §7) bleiben unverändert; die bestehenden Goldens bleiben gleich.
+- **Flags** (PRD-0004 FR-04) werden geparst, je Bullet in `flags` gespeichert, von `change_type` nachgeführt und
+  gehasht; eine Wirkung haben sie in P1 nicht.
+- **Tests (WP5.2):** Decoder-Fehlerbilder samt Proptest und handabgeleitetem Fixture `transforms_unit_v1.bin`;
+  je Transformation und Trigger ein Laufzeittest; Kaskadendeckel zur Laufzeit; Ereignisse; Behavior-Aufruf; zwei
+  Welten mit anders registrierter Registry und anderem Executor mit identischen Hashes (§11.5); typgefilterter
+  Clear im selben Tick samt Ereignissen (PRD-0004 FR-12); Snapshot-Roundtrip mitten in einer Kaskade; goldener
+  Hash einer Kaskaden-Unit; Hash-Gate-Szenario §11.7 mit `SequentialExecutor`, `PermutedExecutor` und 1, 2 und N
+  Threads; `sigilc` übersetzt `03-subemitter-cascade.sigil`, die Laufzeit erreicht jede Generation auf ihrer Tiefe.
 
 ## 12. `grimoire_assets` — Pack v1 und `AssetSource`
 
@@ -3275,6 +3450,53 @@ pub struct StatsFrame { pub frame: u64, pub sim_tick: u64, pub ticks_this_frame:
     keine Kante zu `grimoire` oder `grimoire_sim` hat (§1). `frame_time_ns` und `dropped_time_ns` sind die
     Nanosekunden der `Duration`, bei Überlauf `u64::MAX`. `fps` ist wie im Katalog `f32`; die Fassade übernimmt
     `FrameStats::fps` (`f64`, §9) mit `as f32`.
+
+**Profiler: Budgets, Scope-API und Export (Ergänzung P1, Plan 0002 WP6.3)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe); die mit „Klarstellung“ markierten Punkte sind Stufe K.*
+Additiv zum Profiler-Datenmodell oben; das Byte-Layout von `Stats` ändert sich nicht (`budget_ns` und `estimate`
+stehen schon im Katalog), `PROTOCOL_VERSION` bleibt 1.
+
+```rust
+#[non_exhaustive]
+pub struct ScopeTotal { pub scope: ScopeId, pub total: Duration, pub calls: u32,
+                        pub budget: Option<Duration>, pub estimate: bool }   // Copy, Eq, Debug; zusätzlich over_budget() -> bool
+// FrameProfile zusätzlich: frame() -> u64, record_estimate(ScopeId, &str, Duration),
+//                          set_budget(ScopeId, Option<Duration>), budget(ScopeId) -> Option<Duration>,
+//                          scope(ScopeId) -> Option<&ScopeTotal>
+pub struct ScopeRegistry;     // new()/Default, register(&str) -> Option<ScopeId>, get(&str) -> Option<ScopeId>,
+                              // name(ScopeId) -> Option<&str>, len(), is_empty(); Clone, Debug
+#[must_use] pub struct ScopeTimer;   // start(ScopeId, now: Duration) -> Self, scope(), started_at(), elapsed(now) -> Duration,
+                                     // stop(self, &mut FrameProfile, name: &str, now: Duration) -> Duration; Copy, Eq, Debug
+pub const PROFILE_EXPORT_SCHEMA: &str = "grimoire.profiler.export";
+pub const PROFILE_EXPORT_SCHEMA_VERSION: u32 = 1;
+pub struct ProfileLog;        // new()/Default, push(Stats), frames() -> &[Stats], len(), is_empty(), clear(),
+                              // write_csv(&mut dyn io::Write) -> Result<(), ExportError>,
+                              // write_json(&mut dyn io::Write) -> Result<(), ExportError>; Clone, PartialEq, Debug
+pub enum ExportError;         // #[non_exhaustive], thiserror: Io { kind: io::ErrorKind, message: String },
+                              // IntegerTooLarge { frame: u64, field: &'static str, value: u64 },
+                              // NonFinite { frame: u64, field: &'static str }; Clone, Eq, Debug
+```
+
+- **Budgets:** `set_budget` gilt je `ScopeId` über `begin` hinweg und auch für eine im laufenden Frame schon
+  verbuchte Summe. `ScopeTotal::budget` übernimmt es; `to_stats` schreibt `budget_ns` (kein Budget und ein Budget von
+  0 ergeben beide 0 = „keins“).
+- **Schätzwerte:** `record_estimate` verbucht wie `record` und setzt `estimate` für die Summe dieses Frames; eine
+  einzige Schätzung genügt. `begin` setzt es zurück.
+- **Klarstellung — Zähler:** `add_counter` mit einem im Frame schon verwendeten Namen addiert sättigend auf den
+  bestehenden Eintrag an dessen Position; `counters()` enthält jeden Namen einmal.
+- **Scope-API (uhrfrei):** `ScopeRegistry` vergibt `ScopeId`s in Reihenfolge der ersten Registrierung und liefert
+  `None`, wenn alle 65.536 IDs vergeben sind; bekannte Namen bleiben erreichbar. Allokiert wird nur bei der ersten
+  Registrierung eines Namens. `ScopeTimer` nimmt Beginn und Ende als Uhrablesung des Aufrufers entgegen
+  (`Duration`); liegt das Ende vor dem Beginn, ergibt das 0. `grimoire_debug` liest weiterhin keine Uhr.
+- **Export:** `ProfileLog` hält `Stats`-Werte (also die Kürzungsregeln von `to_stats`). Format, Spalten, Schlüssel
+  und Fehlerfälle stehen in `docs/formats/profiler-export.md` (handgeschrieben wie `bench-result.md`). JSON folgt §2
+  Regel 11 (feste Schlüsselreihenfolge, `content_manifest` als 16 Hexziffern, Ganzzahlen ≤ 2^53 − 1, keine
+  nicht endlichen Zahlen); bei einem Verstoß schreibt `write_json` nichts. CSV kennt keine Zahlgrenzen und scheitert
+  nur an I/O.
+- **Tests:** Einheitstests in `profile.rs` und `export.rs`, darunter die Stats-Kürzung mit 65 Scopes, 65 Zählern und
+  einem 65-Byte-Namen samt Rundreise über `Message::from_frame` (Pflichtfall oben) sowie das Parsen der JSON-Ausgabe
+  mit `serde_json` (nur Dev-Abhängigkeit, schon im Workspace gepinnt).
 
 ## 14. `grimoire_collide` — Kollision v0
 

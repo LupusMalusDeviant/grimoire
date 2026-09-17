@@ -1,5 +1,5 @@
 //! The visual catalogue: stable names for bullet silhouettes and enemy palettes
-//! (`docs/formats/sigil.md` §10.9; PO decision 2026-09-17, plan 0002 WP3.5/WP5.3).
+//! (`docs/formats/sigil.md` §10.10; PO decision 2026-09-17, plan 0002 WP3.5/WP5.3).
 //!
 //! A Sigil source names a silhouette (`silhouette = orb`) and a palette (`palette =
 //! enemy.hex_magenta`); the compiler writes the name's **catalogue index** into

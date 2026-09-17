@@ -249,6 +249,12 @@ fn conservative_required_limits(adapter_limits: wgpu::Limits) -> wgpu::Limits {
     }
 }
 
+/// Features every context requests on top of its required ones whenever the adapter offers them
+/// (plan 0002 WP6.3). `TIMESTAMP_QUERY` lets `grimoire_render` measure GPU pass time; without it
+/// the renderer reports no GPU time and the facade's profiler records a marked estimate instead.
+/// Nothing that renders an image depends on an optional feature.
+const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TIMESTAMP_QUERY;
+
 /// `wgpu` requires `Debug` on the instance display handle; `dyn PlatformWindow` has none.
 struct WindowDisplay(Arc<dyn PlatformWindow>);
 
@@ -426,6 +432,7 @@ impl GpuContext {
 
         let adapter_limits = adapter.limits();
         let required_limits = required_limits(adapter_limits);
+        let required_features = required_features | (adapter.features() & OPTIONAL_FEATURES);
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("grimoire device"),
             required_features,
@@ -493,6 +500,15 @@ impl GpuContext {
     #[must_use]
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.info
+    }
+
+    /// Whether the device supports timestamp queries (`wgpu::Features::TIMESTAMP_QUERY`), which
+    /// every context requests whenever the adapter offers them (plan 0002 WP6.3).
+    #[must_use]
+    pub fn supports_timestamp_queries(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
     }
 
     /// Backend name such as `"Vulkan"`, `"Metal"`, `"Dx12"` or `"Gl"`.

@@ -1,6 +1,6 @@
 sigil 1
 // e-unknown-visual: a silhouette and an enemy palette whose names are not in the visual
-// catalogue (docs/formats/sigil.md section 10.9), so neither has an index that means the same
+// catalogue (docs/formats/sigil.md section 10.10), so neither has an index that means the same
 // thing in every unit. Covers SIG0027.
 
 bullet wisp {

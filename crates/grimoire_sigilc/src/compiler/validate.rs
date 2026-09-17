@@ -28,9 +28,60 @@ pub(crate) fn validate(
         validate_emitter(workspace, &resolved.entry_path, emitter, &mut out);
     }
     validate_cascade(resolved, &mut out);
+    validate_transform_encoding(resolved, &mut out);
     validate_silhouette_readability(resolved, &mut out);
 
     out
+}
+
+/// Largest number of `transform` members one bullet may carry, mirroring the `Transforms`
+/// section's per-type limit (`docs/formats/sigil.md` §10.9).
+const MAX_TRANSFORMS_PER_BULLET: usize = 8;
+
+/// Checks what the `Transforms` section (Plan 0002 WP5.2) can encode: at most
+/// [`MAX_TRANSFORMS_PER_BULLET`] transforms per bullet (`SIG0016`), and a `become_emitter` only on
+/// a bullet of the entry file (`SIG0014`), because only the entry file's emitters are compiled
+/// into the unit; an imported bullet's emitter would otherwise resolve to nothing, or to an
+/// unrelated emitter of the same name.
+fn validate_transform_encoding(resolved: &ResolvedUnit, out: &mut Vec<Diagnostic>) {
+    for (file, bullet) in &resolved.bullets {
+        if bullet.transforms.len() > MAX_TRANSFORMS_PER_BULLET {
+            out.push(diagnostic(
+                "SIG0016",
+                file,
+                bullet.position,
+                format!("bullets.{}.transforms", bullet.name),
+                bullet.name.clone(),
+                format!(
+                    "Bullet `{}` has {} transforms; a bullet may have at most \
+                     {MAX_TRANSFORMS_PER_BULLET}.",
+                    bullet.name,
+                    bullet.transforms.len()
+                ),
+                "Split the behaviour across a `change_type` chain, or remove transforms.",
+            ));
+        }
+        if file == &resolved.entry_path {
+            continue;
+        }
+        for (index, transform) in bullet.transforms.iter().enumerate() {
+            if transform.kind == "become_emitter" {
+                out.push(diagnostic(
+                    "SIG0014",
+                    file,
+                    transform.kind_position,
+                    format!("bullets.{}.transforms[{index}]", bullet.name),
+                    transform.kind.clone(),
+                    format!(
+                        "Imported bullet `{}` uses `become_emitter`, but only the entry file's \
+                         emitters are part of the compiled unit.",
+                        bullet.name
+                    ),
+                    "Declare the bullet (or a copy) in the entry file, next to its emitter.",
+                ));
+            }
+        }
+    }
 }
 
 // ---- Small typed-field helpers --------------------------------------------------------------
@@ -201,7 +252,7 @@ fn nan_risk_error(
 // ---- Bullets -----------------------------------------------------------------------------
 
 /// `SIG0027`: a silhouette or enemy palette name that is not in the visual catalogue
-/// (`crate::catalog`, `docs/formats/sigil.md` §10.9). Without a catalogue row the name has no
+/// (`crate::catalog`, `docs/formats/sigil.md` §10.10). Without a catalogue row the name has no
 /// index that means the same thing in every unit, so it cannot be compiled.
 fn unknown_visual(
     file: &str,
@@ -217,9 +268,7 @@ fn unknown_visual(
         located.position,
         located.node_path.clone(),
         debug_token(&located.value),
-        format!(
-            "{what} `{name}` is not in the visual catalogue (docs/formats/sigil.md section 10.9)."
-        ),
+        format!("{what} `{name}` is not in the visual catalogue of docs/formats/sigil.md."),
         format!("Use one of: {}.", table.join(", ")),
     ));
 }

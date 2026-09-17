@@ -20,6 +20,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Parses the profiler's JSON export in tests (already pinned in the workspace, used the same way by
+# grimoire_bench and grimoire_sigilc); never a normal dependency of this crate.
+serde_json.workspace = true
 
 [lints]
 workspace = true

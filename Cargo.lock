@@ -756,6 +756,7 @@ dependencies = [
  "grimoire_assets",
  "grimoire_collide",
  "grimoire_core",
+ "grimoire_debug",
  "grimoire_ecs",
  "grimoire_platform",
  "grimoire_render",
@@ -818,6 +819,7 @@ name = "grimoire_debug"
 version = "0.3.0"
 dependencies = [
  "proptest",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
@@ -837,6 +839,7 @@ dependencies = [
  "grimoire",
  "grimoire_core",
  "grimoire_ecs",
+ "grimoire_sigil",
  "grimoire_sim",
  "proptest",
  "rayon",

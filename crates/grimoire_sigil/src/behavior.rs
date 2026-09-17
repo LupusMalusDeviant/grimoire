@@ -1,6 +1,6 @@
 //! `BulletBehavior` registry: plain function pointers, registered once and never mutated
-//! (contract §11.5). Execution (calling a [`BehaviorFn`] from a tick-phase system) is out of scope
-//! for WP1.3; this module only defines the data types and the registry.
+//! (contract §11.5). `sigil.update` calls a bullet type's bound [`BehaviorFn`] since WP5.2
+//! (`crate::runtime`); this module only defines the data types and the registry.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -1,5 +1,5 @@
 //! The bullet pass tables are the drawn rows of the visual catalogue (`docs/formats/sigil.md`
-//! §10.9), and `map_visual` lands every catalogue row on the table row of the same name.
+//! §10.10), and `map_visual` lands every catalogue row on the table row of the same name.
 //!
 //! `sigilc` compiles a silhouette or palette name to its row in the catalogue table of the format
 //! document (checked by `grimoire_sigilc`'s `tests/visual_catalog.rs`). This test holds the other

@@ -13,6 +13,9 @@ use grimoire_platform::{
 use grimoire_render::{Camera25D, CameraFollow, RenderError, Renderer, StageFrame, StageStats};
 use grimoire_sim::{FixedTimestep, Simulation, TickInput};
 
+use crate::adapters::debug::{
+    Profiler, ProfilerBudgets, SCOPE_EXTRACT, SCOPE_FRAME, SCOPE_RENDER, SCOPE_SIM,
+};
 use crate::aim::{PointerState, sample_aim};
 use crate::error::GrimoireError;
 use crate::input::{InputMap, InputState};
@@ -45,6 +48,8 @@ pub(crate) struct LoopSettings {
     /// Viewport size (physical pixels) mouse-aim sampling uses before the first
     /// [`PlatformEvent::Resized`] (contract §9.3): `WindowConfig::width`/`height`.
     pub initial_viewport: (f32, f32),
+    /// Budgets of the frame profiler (WP6.3), `None` when [`crate::AppBuilder::profiler`] is off.
+    pub profiler: Option<ProfilerBudgets>,
 }
 
 /// Result of [`crate::AppBuilder::run_headless_frames`].
@@ -119,6 +124,8 @@ pub(crate) struct GameLoop<R: Renderer> {
     /// Whether the one-time "renderer has no `render_stage` override" log line has run yet
     /// (contract §9.3: "meldet die Fassade das einmal im Log").
     logged_missing_stage_support: bool,
+    /// Frame profiler (plan 0002 WP6.3, contract §9.7); `None` when turned off.
+    profiler: Option<Profiler>,
     timestep: FixedTimestep,
     last_time: Duration,
     fps: FpsCounter,
@@ -137,6 +144,7 @@ impl<R: Renderer> GameLoop<R> {
         let timestep = FixedTimestep::new(settings.tick_rate_hz)
             .with_max_ticks_per_frame(settings.max_ticks_per_frame);
         let viewport = settings.initial_viewport;
+        let profiler = settings.profiler.clone().map(Profiler::new);
         Self {
             settings,
             plugins,
@@ -150,6 +158,7 @@ impl<R: Renderer> GameLoop<R> {
             held_focus: None,
             held_camera: None,
             logged_missing_stage_support: false,
+            profiler,
             timestep,
             last_time: Duration::ZERO,
             fps: FpsCounter::new(Duration::ZERO),
@@ -282,8 +291,24 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             tick_input.slots[0].axes[3] = axes[1];
         }
 
+        if let Some(profiler) = &mut self.profiler {
+            profiler.begin_frame(self.frames);
+        }
+        // Contract §9.3 step 4 / §9.7: with the profiler, every tick runs through its schedule
+        // observer (read-only, no hash changes) and `sim` sums the steps.
+        let mut sim_time = Duration::ZERO;
         for _ in 0..plan.ticks {
-            running.sim.step(tick_input);
+            match &mut self.profiler {
+                Some(profiler) => {
+                    let clock = ctx.clock();
+                    let started = clock.elapsed();
+                    running
+                        .sim
+                        .step_observed(tick_input, &mut profiler.observer(clock));
+                    sim_time += clock.elapsed().saturating_sub(started);
+                }
+                None => running.sim.step(tick_input),
+            }
             let tick = running.sim.tick();
             if self.settings.record_hashes
                 && self.settings.hash_every != 0
@@ -296,13 +321,20 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
         if plan.ticks > 0 {
             self.input.clear_presses();
         }
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record(SCOPE_SIM, sim_time);
+        }
 
+        let extract_started = self.profiler.as_ref().map(|_| ctx.clock().elapsed());
         self.stage.clear();
         for plugin in &mut self.plugins {
             plugin.extract(running.sim.world(), plan.alpha, &mut self.stage.base);
         }
         for plugin in &mut self.plugins {
             plugin.extract_stage(running.sim.world(), plan.alpha, &mut self.stage);
+        }
+        if let (Some(profiler), Some(started)) = (&mut self.profiler, extract_started) {
+            profiler.record(SCOPE_EXTRACT, ctx.clock().elapsed().saturating_sub(started));
         }
 
         // Contract §9.3 step 5: the first plugin with an opinion wins and the rest are not asked;
@@ -339,6 +371,7 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             self.logged_missing_stage_support = true;
         }
 
+        let render_started = self.profiler.as_ref().map(|_| ctx.clock().elapsed());
         let render = match running.renderer.render_stage(&self.stage) {
             Ok(stats) => stats,
             Err(RenderError::SurfaceLost) => {
@@ -353,6 +386,12 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
             }
         };
 
+        if let (Some(profiler), Some(started)) = (&mut self.profiler, render_started) {
+            let render_time = ctx.clock().elapsed().saturating_sub(started);
+            profiler.record(SCOPE_RENDER, render_time);
+            profiler.record_stage_stats(&render, render_time);
+        }
+
         let stats = FrameStats {
             frame: self.frames,
             sim_tick: running.sim.tick(),
@@ -365,6 +404,12 @@ impl<R: Renderer> AppHandler for GameLoop<R> {
         };
         for plugin in &mut self.plugins {
             plugin.on_frame(&stats);
+        }
+        if let Some(profiler) = &mut self.profiler {
+            profiler.record(SCOPE_FRAME, ctx.clock().elapsed().saturating_sub(now));
+            for plugin in &mut self.plugins {
+                plugin.on_profile(profiler.profile());
+            }
         }
         self.frames += 1;
         if self
@@ -498,6 +543,7 @@ mod tests {
             executor: None,
             camera_25d: None,
             initial_viewport: (800.0, 600.0),
+            profiler: Some(ProfilerBudgets::default()),
         }
     }
 
@@ -674,6 +720,178 @@ mod tests {
             Some(GrimoireError::Render(RenderError::NoAdapter))
         ));
         assert!(game_loop.report().is_none());
+    }
+
+    /// A manual clock that additionally moves one microsecond on every reading, so every interval
+    /// the loop measures is non-zero and deterministic.
+    #[derive(Default)]
+    struct SteppingClock {
+        base: ManualClock,
+        readings: std::sync::atomic::AtomicU64,
+    }
+
+    impl Clock for SteppingClock {
+        fn elapsed(&self) -> Duration {
+            let readings = self
+                .readings
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.base.elapsed() + Duration::from_micros(readings)
+        }
+    }
+
+    #[derive(Default)]
+    struct SteppingContext {
+        clock: SteppingClock,
+        exit_requested: bool,
+    }
+
+    impl PlatformContext for SteppingContext {
+        fn window(&self) -> Option<std::sync::Arc<dyn PlatformWindow>> {
+            None
+        }
+
+        fn clock(&self) -> &dyn Clock {
+            &self.clock
+        }
+
+        fn request_exit(&mut self) {
+            self.exit_requested = true;
+        }
+
+        fn exit_requested(&self) -> bool {
+            self.exit_requested
+        }
+
+        fn frame_not_presented(&mut self) {}
+    }
+
+    /// `(scope name, total, calls, budget, estimate)` of every scope, plus the frame index.
+    type ProfileRows = Vec<(u64, Vec<(String, Duration, u32, Option<Duration>, bool)>)>;
+
+    #[derive(Default)]
+    struct ProfileProbe {
+        rows: Rc<RefCell<ProfileRows>>,
+        order: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl GamePlugin for ProfileProbe {
+        fn name(&self) -> &str {
+            "profile_probe"
+        }
+
+        fn build(&mut self, sim: &mut Simulation) {
+            sim.schedule_mut()
+                .add_system(grimoire_ecs::system_fn("sigil.probe", |_| {}))
+                .add_system(grimoire_ecs::system_fn("probe", |_| {}));
+        }
+
+        fn on_frame(&mut self, _stats: &FrameStats) {
+            self.order.borrow_mut().push("on_frame");
+        }
+
+        fn on_profile(&mut self, profile: &grimoire_debug::FrameProfile) {
+            self.order.borrow_mut().push("on_profile");
+            let scopes = profile
+                .scopes()
+                .iter()
+                .map(|total| {
+                    (
+                        profile
+                            .scope_name(total.scope)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        total.total,
+                        total.calls,
+                        total.budget,
+                        total.estimate,
+                    )
+                })
+                .collect();
+            self.rows.borrow_mut().push((profile.frame(), scopes));
+        }
+    }
+
+    #[test]
+    fn the_profiler_measures_every_loop_scope_with_the_platform_clock() {
+        let probe = ProfileProbe::default();
+        let rows = Rc::clone(&probe.rows);
+        let order = Rc::clone(&probe.order);
+        let factory: RendererFactory<ScriptedRenderer> =
+            Box::new(|_| Ok(ScriptedRenderer::new(u64::MAX, || RenderError::SurfaceLost)));
+        let mut game_loop = GameLoop::new(
+            settings(),
+            vec![Box::new(probe)],
+            factory,
+            Outcome::default(),
+        );
+        let mut ctx = SteppingContext::default();
+        game_loop.init(&mut ctx).expect("init succeeds");
+        for _ in 0..3 {
+            ctx.clock.base.advance(Duration::from_nanos(16_666_667));
+            game_loop.frame(&mut ctx);
+        }
+        assert_eq!(
+            *order.borrow(),
+            [
+                "on_frame",
+                "on_profile",
+                "on_frame",
+                "on_profile",
+                "on_frame",
+                "on_profile"
+            ]
+        );
+        let rows = rows.borrow();
+        let (frame, scopes) = &rows[1];
+        assert_eq!(*frame, 1);
+        let names: Vec<&str> = scopes.iter().map(|row| row.0.as_str()).collect();
+        // Subsystem scopes appear during the tick, before the loop's own scopes.
+        assert_eq!(
+            names,
+            ["sigil", "app", "sim", "extract", "render", "gpu", "frame"]
+        );
+        let scope = |name: &str| {
+            scopes
+                .iter()
+                .find(|row| row.0 == name)
+                .cloned()
+                .expect("scope recorded")
+        };
+        for name in ["sigil", "app", "sim", "extract", "render", "frame"] {
+            let (_, total, calls, _, estimate) = scope(name);
+            assert!(total > Duration::ZERO, "{name} measured");
+            assert_eq!(calls, 1, "{name} recorded once");
+            assert!(!estimate, "{name} is a real measurement");
+        }
+        let (_, sim, ..) = scope("sim");
+        let (_, sigil, ..) = scope("sigil");
+        let (_, app, ..) = scope("app");
+        assert!(sim > sigil + app, "sim contains its systems");
+        let (_, extract, ..) = scope("extract");
+        let (_, render, ..) = scope("render");
+        let (_, frame_total, _, frame_budget, _) = scope("frame");
+        assert!(frame_total > sim + extract + render);
+        assert_eq!(frame_budget, Some(Duration::from_nanos(16_666_667)));
+        // A renderer without timestamp queries: the render time stands in for the GPU, marked.
+        let (_, gpu, gpu_calls, gpu_budget, gpu_estimate) = scope("gpu");
+        assert_eq!(
+            (gpu, gpu_calls, gpu_budget, gpu_estimate),
+            (render, 1, Some(Duration::from_millis(8)), true)
+        );
+    }
+
+    #[test]
+    fn without_the_profiler_on_profile_is_never_called() {
+        let probe = ProfileProbe::default();
+        let order = Rc::clone(&probe.order);
+        let factory: RendererFactory<ScriptedRenderer> =
+            Box::new(|_| Ok(ScriptedRenderer::new(u64::MAX, || RenderError::SurfaceLost)));
+        let mut settings = settings();
+        settings.profiler = None;
+        let mut game_loop =
+            GameLoop::new(settings, vec![Box::new(probe)], factory, Outcome::default());
+        run_headless(&mut game_loop, 5, Duration::from_millis(16)).expect("init succeeds");
+        assert_eq!(*order.borrow(), ["on_frame"; 5]);
     }
 
     #[test]

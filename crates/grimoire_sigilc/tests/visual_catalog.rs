@@ -1,4 +1,4 @@
-//! The visual catalogue (`docs/formats/sigil.md` §10.9): `grimoire_sigilc::catalog` equals the
+//! The visual catalogue (`docs/formats/sigil.md` §10.10): `grimoire_sigilc::catalog` equals the
 //! catalogue table of the format document, and every name compiles to its catalogue index in any
 //! unit, independent of which other names the unit uses.
 //!

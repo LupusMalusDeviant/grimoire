@@ -3,7 +3,7 @@ sigil 1
 // tables hold (plan 0002 WP3.5: 3 silhouettes, 2 hostile palettes). Compiled by sigilc into
 // unmapped_visual_unit_v1.bin; used by crates/grimoire/tests/sigil_render.rs to prove that the
 // Sigil -> Render adapter counts and skips visuals it cannot map (contract §6 "Kennungen").
-// Visual catalogue indices (docs/formats/sigil.md, section 10.9): silhouettes orb 0, rice 1,
+// Visual catalogue indices (docs/formats/sigil.md, section 10.10): silhouettes orb 0, rice 1,
 // diamond 2, blade 3 (reserved, not drawn: unmapped); palettes hex_magenta 0, poison_lime 1,
 // amber 2 (reserved, not drawn: unmapped).
 

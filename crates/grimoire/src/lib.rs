@@ -28,7 +28,10 @@
 //!    which only ever sees the resulting quantised axes. The renderer then draws the stage.
 //!    A lost surface skips the frame and is reported to the platform, which throttles the loop
 //!    while frames keep going unpresented; any other render error ends the run with that error.
-//! 4. Every plugin receives the [`FrameStats`].
+//! 4. Every plugin receives the [`FrameStats`], then the frame's profile
+//!    ([`GamePlugin::on_profile`]): time per loop scope (`frame`, `sim`, `extract`, `render`,
+//!    `gpu`) and per subsystem, measured with the platform clock, with budgets and the bullet
+//!    counters ([`adapters::debug`], plan 0002 WP6.3). [`AppBuilder::profiler`] turns it off.
 //!
 //! When the loop ends, every plugin receives [`GamePlugin::shutdown`] once, in registration order.
 //!
@@ -110,6 +113,7 @@ pub use plugin::{FrameStats, GamePlugin};
 
 pub use grimoire_collide as collide;
 pub use grimoire_core as core;
+pub use grimoire_debug as debug;
 pub use grimoire_ecs as ecs;
 pub use grimoire_platform as platform;
 pub use grimoire_render as render;

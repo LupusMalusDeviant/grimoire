@@ -5,7 +5,7 @@ sigil 1
 // the compiled bytes stay current.
 // Three bullet types, one per silhouette of the bullet pass, in both hostile palettes.
 // Silhouette and palette names come from the visual catalogue (docs/formats/sigil.md, section
-// 10.9), whose indices are the bullet pass table rows: orb 0, rice 1, diamond 2; hex_magenta 0,
+// 10.10), whose indices are the bullet pass table rows: orb 0, rice 1, diamond 2; hex_magenta 0,
 // poison_lime 1.
 
 meta {

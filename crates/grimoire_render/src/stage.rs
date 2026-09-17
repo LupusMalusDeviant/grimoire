@@ -10,6 +10,8 @@
 //! module wires them into the frame, its `clear()` and the shared extraction/counting logic,
 //! alongside the P1 bullet channel.
 
+use std::time::Duration;
+
 use crate::stage3d::{
     AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, DirectionalLight, MAX_SKIN_JOINTS,
     MeshHandle, MeshInstance, PbrMaterial, PointLight, ShadowConfig,
@@ -88,7 +90,7 @@ pub const BULLET_PASS_PALETTE_SPACE: u8 = palette_space::HOSTILE;
 /// distinguishable silhouette here before it gets another colour.
 ///
 /// [`NAMES`](bullet_silhouette::NAMES) gives every row its stable name in the shared visual
-/// catalogue (`docs/formats/sigil.md` §10.9): Sigil sources name a silhouette, `sigilc` compiles the
+/// catalogue (`docs/formats/sigil.md` §10.10): Sigil sources name a silhouette, `sigilc` compiles the
 /// name to the catalogue index, and the catalogue's drawn rows are exactly this table, in this
 /// order. A new silhouette is added as the next catalogue row, never in between.
 pub mod bullet_silhouette {
@@ -110,7 +112,7 @@ pub mod bullet_silhouette {
 /// rim; the colours themselves are provisional until the look review (P-11).
 ///
 /// [`NAMES`](bullet_palette::NAMES) gives every row its stable name in the shared visual catalogue
-/// (`docs/formats/sigil.md` §10.9, `enemy.<name>` in Sigil sources), exactly as for
+/// (`docs/formats/sigil.md` §10.10, `enemy.<name>` in Sigil sources), exactly as for
 /// [`bullet_silhouette`].
 pub mod bullet_palette {
     /// H0 "Hexenmagenta": body `#FF2FB4`, core `#FFE3F4`.
@@ -341,6 +343,16 @@ pub struct StageStats {
     /// `<= cluster_layout::light_index_list_worst_case_len` for the configured budget, usually far
     /// below it (engine ADR-0013's module doc comment on why the worst case is pessimistic).
     pub light_cluster_index_entries: u32,
+    /// GPU time of a recently drawn frame, measured with timestamp queries (plan 0002 WP6.3): the
+    /// summed durations of that frame's render and compute passes, from the most recent
+    /// measurement whose non-blocking readback had completed when this call started (typically
+    /// one to three frames old; see `gpu_timer.rs`). Queue uploads, idle time between submissions
+    /// and presentation are not included.
+    ///
+    /// `None` when the device offers no timestamp queries, before the first measurement completed,
+    /// for a frame skipped because of a zero-size target, and always for [`crate::NullRenderer`].
+    /// The facade then records a marked estimate instead of a measured zero (contract §9.7).
+    pub gpu_time: Option<Duration>,
 }
 
 /// Outcome of classifying a [`StageFrame::bullets`] channel against the bullet pass rules.
@@ -451,6 +463,7 @@ pub(crate) fn stage_stats_from_base(
         point_lights_over_budget,
         clusters_with_lights: cluster_stats.clusters_with_lights,
         light_cluster_index_entries: cluster_stats.light_cluster_index_entries,
+        gpu_time: None,
     }
 }
 

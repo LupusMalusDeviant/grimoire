@@ -10,7 +10,7 @@
       "column": 12,
       "node_path": "bullets.spark.palette",
       "token": "enemy.azure",
-      "message": "Enemy palette `azure` is not in the visual catalogue (docs/formats/sigil.md section 10.9).",
+      "message": "Enemy palette `azure` is not in the visual catalogue of docs/formats/sigil.md.",
       "fix_hint": "Use one of: hex_magenta, poison_lime, amber, crimson, rose, teal, violet.",
       "related": null
     },
@@ -22,7 +22,7 @@
       "column": 15,
       "node_path": "bullets.wisp.silhouette",
       "token": "wisp",
-      "message": "Silhouette `wisp` is not in the visual catalogue (docs/formats/sigil.md section 10.9).",
+      "message": "Silhouette `wisp` is not in the visual catalogue of docs/formats/sigil.md.",
       "fix_hint": "Use one of: orb, rice, diamond, blade, crescent, petal, ring, shard, star.",
       "related": null
     }
