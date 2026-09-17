@@ -394,6 +394,10 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-17 | §11.1, §11.5, §11.6, §11.7 (Verweise; leere optionale Abschnitte nicht kanonisch; Lebensdauerprüfung nach der Bewegung) | #34 | K | — | nein |
 | 2026-09-17 | §6 (`bullet_silhouette::NAMES`, `bullet_palette::NAMES`) | #36 | A (PO-Entscheid 2026-09-17) | Render-B, Sigil-Sprache | nein |
 | 2026-09-17 | §9.9, §11.2, Formatdoku `sigil.md` §10.3, §10.10 neu, §11.3, §11.4, §12, §13.4 (gemeinsamer Visual-Katalog: Silhouetten- und Paletten-Index bedeuten die Katalogzeile statt der alphabetischen Stelle in der Unit; `SIG0027`; `FORMAT_VERSION` bleibt 1) | #36 | I (PO-Entscheid 2026-09-17: angenommen) | Sigil-Sprache, Sigil-Laufzeit, Render-B, Spiel (Units neu übersetzen) | nein |
+| 2026-09-17 | §9.10 neu (Asset-Haken `GamePlugin::register_assets` mit `RenderAssets`, `HeadlessRenderAssets`, `GrimoireError::Assets`, `figure_assets::load_figure_into`, `AppBuilder::stage_renderer_config`, `AppBuilder::run_offscreen` mit `OffscreenRun`) | #37 | A (gebündelte PO-Freigabe offen) | Spiel (Prototyp zurück auf `App::run`), Messung (WP6.4) | nein |
+| 2026-09-17 | §11.6 (Bedeutung von „ohne Allokation“ für Spawn und Despawn, Nachweis per zählendem Allokator, Messort des Budgets) | #39 | K | — | nein |
+| 2026-09-17 | Formatdoku `sigil.md` §14 neu (Abdeckungstabelle der zwölf Referenzmuster; nur Testdaten) | #40 | K | — | nein |
+| 2026-09-17 | §9.7 (Stats-Overlay: `overlay_key` mit Vorgabe F3, Zeilen je Profil-Scope mit 30-Bild-Mittel und Budgetbalken, prozeduraler 5×7-Glyphenatlas über den Sprite-Pass, Testszene `overlay`) | #41 | A (gebündelte PO-Freigabe offen) | Spiel (Prototyp), Messung (WP3.6) | nein (neue Windows-Referenz `overlay.png`, keine Erneuerung) |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
