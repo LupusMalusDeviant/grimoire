@@ -141,6 +141,30 @@ fn oversized_paths_count_fails_before_allocating() {
 }
 
 #[test]
+fn a_short_manifest_claiming_the_maximum_entry_count_fails_against_the_remaining_bytes() {
+    // 65 536 entries are within `MAX_ENTRIES`, but every path is at least its 2-byte `Str16`
+    // length prefix and no bytes follow `entry_count`. The count is checked against the remaining
+    // input before the decoder reserves room for 65 536 `String`s (Plan 0002 WP8.4);
+    // `tests/decode_allocations.rs` proves nothing that size is allocated.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // manifest_version
+    bytes.extend_from_slice(&3u16.to_le_bytes()); // compiler: Str16 length
+    bytes.extend_from_slice(b"abc");
+    bytes.extend_from_slice(&3u16.to_le_bytes()); // compiler_version: Str16 length
+    bytes.extend_from_slice(b"1.0");
+    bytes.extend_from_slice(&MAX_ENTRIES.to_le_bytes()); // entry_count
+
+    assert_eq!(
+        PackManifestBody::decode(&bytes).unwrap_err(),
+        PackManifestV1Error::UnexpectedEnd {
+            offset: 18,
+            needed: MAX_ENTRIES as usize * 2,
+            available: 0,
+        }
+    );
+}
+
+#[test]
 fn encode_rejects_entry_count_disagreeing_with_paths_len() {
     // `paths` is `vec_using(entry_count, ..)` (contract §12): its wire count is `entry_count`,
     // not a separate length prefix, so nothing else stops `encode` from writing a manifest whose

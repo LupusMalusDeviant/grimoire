@@ -152,19 +152,46 @@ impl<'a> Reader<'a> {
         Ok(self.take(raw_len)?.to_vec())
     }
 
-    /// Decodes a `Vec≤max<T>` element count (contract §13): the raw `u32` count is checked
-    /// against `max` before the caller allocates a `Vec` with that capacity, so an oversized
-    /// declared count (e.g. `u32::MAX`) never reaches an allocation — it fails here instead.
-    fn count_u32(&mut self, field: &'static str, max: usize) -> Result<usize, ProtocolError> {
+    /// Decodes a `Vec≤max<T>` element count (contract §13) and checks it with
+    /// [`Reader::check_count`] before the caller allocates a `Vec` with that capacity.
+    fn count_u32(
+        &mut self,
+        field: &'static str,
+        max: usize,
+        min_elem_len: usize,
+    ) -> Result<usize, ProtocolError> {
         let raw_count = self.u32()? as usize;
-        if raw_count > max {
+        self.check_count(field, raw_count, max, min_elem_len)
+    }
+
+    /// Checks an element count before the caller allocates for it (contract §2 rule 9): against
+    /// the field's documented `max` (`FieldTooLong`), then against the bytes remaining, since
+    /// `count` elements of at least `min_elem_len` encoded bytes each must still fit
+    /// (`UnexpectedEnd`). A short message that claims a large count therefore fails here instead
+    /// of reserving capacity for elements it cannot contain.
+    fn check_count(
+        &self,
+        field: &'static str,
+        count: usize,
+        max: usize,
+        min_elem_len: usize,
+    ) -> Result<usize, ProtocolError> {
+        if count > max {
             return Err(ProtocolError::FieldTooLong {
                 field,
-                len: raw_count,
+                len: count,
                 max,
             });
         }
-        Ok(raw_count)
+        let needed = count.saturating_mul(min_elem_len);
+        if needed > self.remaining() {
+            return Err(ProtocolError::UnexpectedEnd {
+                offset: self.pos,
+                needed,
+                available: self.remaining(),
+            });
+        }
+        Ok(count)
     }
 
     /// Fails with `TrailingBytes` unless every byte has been consumed (contract §13: "keine
@@ -713,7 +740,7 @@ impl Stats {
         let content_swaps = reader.u32()?;
         let content_manifest = reader.u64()?;
         let scopes = {
-            let count = reader.count_u32("scopes", 64)?;
+            let count = reader.count_u32("scopes", 64, 27)?;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
                 items.push(StatsScope::decode_from(reader)?);
@@ -721,7 +748,7 @@ impl Stats {
             items
         };
         let counters = {
-            let count = reader.count_u32("counters", 64)?;
+            let count = reader.count_u32("counters", 64, 12)?;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
                 items.push(StatsCounter::decode_from(reader)?);
