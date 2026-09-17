@@ -1,0 +1,27 @@
+[package]
+name = "subsystem-hash-cost"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Spike plan 0002 WP7.2 / OF-18.1: cost of subsystem hashes per system per tick versus every N ticks, at 10k bullets."
+
+# Standalone crate: deliberately not a member of the engine workspace (same convention as
+# spikes/wp3.2-light-bullet-stress), so its own Cargo.lock and lints stay out of the workspace's.
+# It measures the real implementation (`grimoire_sim::trace`) on the real bench scenarios
+# (`grimoire_bench::scenarios`) without changing either crate. Measured only on CI runners
+# (`.github/workflows/spike-wp7.2-subsystem-hash.yml`, engine ADR-0010).
+[workspace]
+
+[dependencies]
+grimoire_bench = { path = "../../crates/grimoire_bench" }
+grimoire_core = { path = "../../crates/grimoire_core" }
+grimoire_ecs = { path = "../../crates/grimoire_ecs" }
+grimoire_sigil = { path = "../../crates/grimoire_sigil" }
+grimoire_sim = { path = "../../crates/grimoire_sim" }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
