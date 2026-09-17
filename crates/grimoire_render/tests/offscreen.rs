@@ -74,6 +74,23 @@ fn report_adapter_once(renderer: &WgpuRenderer) {
     });
 }
 
+/// Runs the tests of this file one at a time.
+///
+/// On the Windows software adapter (WARP, DirectX 12) in the release profile, two of these tests
+/// running at the same time crashed the test process with an access violation: reproduced locally
+/// in up to three of three runs, first found for pairs of bullet-drawing tests, then also for a
+/// glow test together with the shadow-map test. Each test alone passes, and Linux (lavapipe), macOS
+/// and the debug profile are unaffected. The root cause is not found; concurrent devices in the
+/// software driver are the most likely place. The engine creates one renderer per process, so the
+/// tests take this lock instead of sharing the driver between threads.
+static GPU_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn gpu_serial() -> std::sync::MutexGuard<'static, ()> {
+    GPU_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn offscreen_renderer(
     width: u32,
     height: u32,
@@ -141,6 +158,7 @@ fn black_frame() -> RenderFrame {
 
 #[test]
 fn adapter_requirement_is_read_from_the_variable() {
+    let _serial = gpu_serial();
     for value in ["1", "true", "TRUE", " 1 "] {
         assert!(adapter_required(Some(value)), "{value:?}");
     }
@@ -152,11 +170,13 @@ fn adapter_requirement_is_read_from_the_variable() {
 #[test]
 #[should_panic(expected = "no GPU adapter found although GRIMOIRE_REQUIRE_GPU_ADAPTER=1")]
 fn missing_adapter_fails_when_required() {
+    let _serial = gpu_serial();
     skip_without_adapter(true);
 }
 
 #[test]
 fn red_circle_in_the_centre_on_black() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -198,6 +218,7 @@ fn red_circle_in_the_centre_on_black() {
 
 #[test]
 fn world_y_points_up() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -218,6 +239,7 @@ fn world_y_points_up() {
 
 #[test]
 fn quad_is_rotated() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -249,6 +271,7 @@ fn quad_is_rotated() {
 
 #[test]
 fn rotation_is_counter_clockwise_and_half_size_is_per_axis() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -288,6 +311,7 @@ fn rotation_is_counter_clockwise_and_half_size_is_per_axis() {
 
 #[test]
 fn alpha_blends_in_linear_space() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -309,6 +333,7 @@ fn alpha_blends_in_linear_space() {
 
 #[test]
 fn ten_thousand_sprites_in_one_draw_call() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(256, 256, 16) else {
         return;
     };
@@ -343,6 +368,7 @@ fn ten_thousand_sprites_in_one_draw_call() {
 
 #[test]
 fn empty_frame_clears_only() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -364,6 +390,7 @@ fn empty_frame_clears_only() {
 
 #[test]
 fn failed_resize_is_returned_from_every_render_until_a_resize_succeeds() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -402,6 +429,7 @@ fn failed_resize_is_returned_from_every_render_until_a_resize_succeeds() {
 
 #[test]
 fn zero_size_skips_rendering_until_resized() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -508,6 +536,7 @@ fn full_bright_lighting(frame: &mut StageFrame) {
 
 #[test]
 fn nearer_mesh_occludes_a_farther_one_through_the_depth_buffer() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -580,6 +609,7 @@ fn nearer_mesh_occludes_a_farther_one_through_the_depth_buffer() {
 
 #[test]
 fn render_stage_still_draws_sprites_on_top_of_the_mesh_pass() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -668,6 +698,7 @@ fn dark_scene(camera: Camera25D) -> StageFrame {
 
 #[test]
 fn point_light_range_is_a_hard_cutoff() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -719,6 +750,7 @@ fn point_light_range_is_a_hard_cutoff() {
 
 #[test]
 fn point_light_specular_highlight_tracks_the_lights_horizontal_offset() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -805,6 +837,7 @@ fn render_sphere_peak_luminance(metallic: f32, roughness: f32, light: PointLight
 
 #[test]
 fn metal_sphere_has_a_brighter_specular_peak_than_a_dielectric_sphere_at_matched_settings() {
+    let _serial = gpu_serial();
     // Aligned camera-above/light-above geometry (like `point_light_range_is_a_hard_cutoff`'s
     // centre pixel), so both spheres' highlights land near the same, easily comparable point: a
     // metal's Fresnel reflectance F0 *is* its albedo (0.8 here), a dielectric's is a fixed 0.04 —
@@ -825,6 +858,7 @@ fn metal_sphere_has_a_brighter_specular_peak_than_a_dielectric_sphere_at_matched
 
 #[test]
 fn specular_anti_aliasing_changes_the_highlight_but_leaves_the_background_alone() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -887,6 +921,7 @@ fn specular_anti_aliasing_changes_the_highlight_but_leaves_the_background_alone(
 
 #[test]
 fn key_light_shadow_map_darkens_the_floor_behind_an_occluder() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -968,6 +1003,7 @@ fn key_light_shadow_map_darkens_the_floor_behind_an_occluder() {
 
 #[test]
 fn shadow_mode_none_never_samples_the_shadow_map_even_with_casters_present() {
+    let _serial = gpu_serial();
     // A structural counterpart to the pixel-based test above: with the exact same occluder scene,
     // `ShadowMode::None` must report zero shadow casters regardless of how many meshes could have
     // cast a shadow, and the renderer must not fail or panic while a shadow-casting scene exists
@@ -996,6 +1032,7 @@ fn shadow_mode_none_never_samples_the_shadow_map_even_with_casters_present() {
 
 #[test]
 fn blob_shadow_darkens_the_ground_under_the_disc() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1051,6 +1088,7 @@ fn blob_shadow_darkens_the_ground_under_the_disc() {
 
 #[test]
 fn base_color_texture_tints_the_material_factor() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1101,6 +1139,7 @@ fn base_color_texture_tints_the_material_factor() {
 
 #[test]
 fn unregistered_texture_handle_falls_back_to_the_material_factor() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1175,6 +1214,7 @@ fn tangent_quad(handedness: f32) -> MeshData {
 /// than a coincidental brightness change that some other bug could also produce.
 #[test]
 fn tangent_handedness_flips_the_bitangent() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(64, 64, 4) else {
         return;
     };
@@ -1273,6 +1313,7 @@ fn flat_pixel(image: &[u8], world: [f32; 2]) -> [u8; 4] {
 
 #[test]
 fn bullet_pass_draws_core_body_and_rim_on_top_of_the_world_layer() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1344,6 +1385,7 @@ fn bullet_pass_draws_core_body_and_rim_on_top_of_the_world_layer() {
 
 #[test]
 fn player_marker_and_debug_sprites_are_drawn_on_top_of_bullets_in_that_order() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1419,6 +1461,7 @@ fn silhouette_coverage(
 
 #[test]
 fn silhouettes_differ_in_outline_not_only_in_colour() {
+    let _serial = gpu_serial();
     // PRD-0003 rule 3 on real pixels: the same colour, three different outlines.
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
@@ -1452,6 +1495,7 @@ fn silhouettes_differ_in_outline_not_only_in_colour() {
 
 #[test]
 fn glow_draws_a_halo_outside_the_rim() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1491,6 +1535,7 @@ fn glow_draws_a_halo_outside_the_rim() {
 
 #[test]
 fn rejected_bullets_are_skipped_and_the_rest_still_drawn() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1543,6 +1588,7 @@ fn rejected_bullets_are_skipped_and_the_rest_still_drawn() {
 
 #[test]
 fn bullets_under_the_tilted_camera_sit_on_their_ground_position() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1579,6 +1625,7 @@ fn bullets_under_the_tilted_camera_sit_on_their_ground_position() {
 
 #[test]
 fn glowing_bullets_light_the_floor_through_the_bullet_light_path() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
         return;
     };
@@ -1672,6 +1719,7 @@ fn mesh_swarm(renderer: &mut WgpuRenderer, count: usize) -> (Vec<MeshInstance>, 
 #[test]
 #[ignore = "OF-3.5 spike measurement, run explicitly (see this test's doc comment)"]
 fn measure_specular_aa_relative_cost_and_shimmer() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(1280, 720, 16_384) else {
         return;
     };
@@ -1778,6 +1826,7 @@ fn swarm(count: usize) -> Vec<SpriteInstance> {
 #[test]
 #[ignore = "performance measurement, run explicitly in release mode"]
 fn measure_ten_thousand_sprite_cpu_time() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(1280, 720, 16_384) else {
         return;
     };
@@ -1855,6 +1904,7 @@ fn median(durations: &mut [Duration]) -> Duration {
 #[test]
 #[ignore = "texture-quality B1 measurement, run explicitly (see this test's doc comment)"]
 fn measure_msaa_relative_cost() {
+    let _serial = gpu_serial();
     for msaa in [Msaa::Off, Msaa::X4] {
         let Some(mut renderer) = offscreen_renderer_staged(1280, 720, 16_384, msaa) else {
             return;
@@ -1916,6 +1966,7 @@ fn measure_msaa_relative_cost() {
 #[test]
 #[ignore = "texture-quality B1 measurement, run explicitly (see this test's doc comment)"]
 fn measure_mipmap_generation_relative_cost() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = offscreen_renderer(64, 64, 16) else {
         return;
     };
