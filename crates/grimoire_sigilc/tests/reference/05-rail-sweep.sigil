@@ -1,0 +1,64 @@
+sigil 1
+// 05-rail-sweep: two rails of spikes left and right of the enemy that launch fast, nearly stop and
+// then release: a timing test rather than a space test.
+// Covers: block line, modifier speed_curve (linear interpolation), emitter offset,
+//         flag reflectable.
+
+meta {
+  name = "Rail Sweep"
+  difficulty = [normal, timing]
+  density = 112
+}
+
+// Spike: reflectable, so a parry can send it back.
+bullet spike {
+  silhouette = diamond
+  palette = enemy.hex_magenta
+  glow = 0.7
+  radius = 0.16u
+  damage = 1
+  flags = [grazeable, reflectable]
+}
+
+emitter left_rail {
+  bullet = spike
+  offset = (x = -3u, y = 0u)
+  repeat = 4
+  interval = 50t
+  speed = 0.12u/t
+  block line {
+    count = 7
+    spacing = 0.6u
+    direction = 270deg
+  }
+  modifier speed_curve {
+    // Launch, near stop, release.
+    keys = [
+      (at = 0t, mul = 1.0),
+      (at = 30t, mul = 0.1),
+      (at = 70t, mul = 1.4),
+    ]
+    interp = linear
+  }
+}
+
+emitter right_rail {
+  bullet = spike
+  offset = (x = 3u, y = 0u)
+  repeat = 4
+  interval = 50t
+  speed = 0.12u/t
+  block line {
+    count = 7
+    spacing = 0.6u
+    direction = 270deg
+  }
+  modifier speed_curve {
+    keys = [
+      (at = 0t, mul = 1.0),
+      (at = 30t, mul = 0.1),
+      (at = 70t, mul = 1.4),
+    ]
+    interp = linear
+  }
+}

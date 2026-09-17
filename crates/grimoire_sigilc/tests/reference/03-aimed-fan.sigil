@@ -1,0 +1,60 @@
+sigil 1
+// 03-aimed-fan: an aimed five-way shot at the player, alternating with a wide fan that weaves
+// sideways. Standing still is punished from the front, dodging wide from the sides.
+// Covers: block aimed, block fan, modifier sine_offset, two bullet types told apart by
+//         silhouette (PRD-0003 rule 3).
+
+meta {
+  name = "Aimed Fan"
+  difficulty = [normal, pressure]
+  density = 180
+}
+
+// Diamond pointing along its flight: the aimed threat.
+bullet dart {
+  silhouette = diamond
+  palette = enemy.hex_magenta
+  glow = 0.8
+  radius = 0.18u
+  damage = 2
+  flags = [grazeable]
+}
+
+// Orb of the weaving fan.
+bullet orb {
+  silhouette = orb
+  palette = enemy.poison_lime
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter aimed {
+  bullet = dart
+  repeat = forever
+  interval = 24t
+  speed = 0.16u/t
+  block aimed {
+    count = 5
+    spread = 30deg // total spread around the aim line
+  }
+}
+
+emitter fan {
+  bullet = orb
+  delay = 12t // between two aimed volleys
+  repeat = forever
+  interval = 24t
+  speed = 0.07u/t
+  block fan {
+    count = 9
+    spread = 120deg
+    center = 270deg // towards the bottom of the screen
+  }
+  modifier sine_offset {
+    amplitude = 0.5u // lateral weave
+    period = 45t
+    phase = 90deg
+  }
+}

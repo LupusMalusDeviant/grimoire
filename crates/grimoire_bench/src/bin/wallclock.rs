@@ -10,10 +10,12 @@
 //!
 //! Usage: `wallclock --sha <40 hex> --os <os> --arch <arch> --logical-cpus <n> [--dirty]
 //!   [--image <img>] [--cpu-model <model>] [--fingerprint k=v,...] [--run-id <id> --run-attempt <n>]`
-//! Prints three JSON Lines (`ecs_query_10k`, `sim_step_600`, `sigil_extract_10k`) to stdout, and one
-//! human-readable line per extraction sample median to stderr (time per single extraction against
-//! the plan's 0.5 ms budget), so the CI log shows the number the plan asks for without decoding
-//! JSON.
+//! Prints six JSON Lines (`ecs_query_10k`, `sim_step_600`, `sigil_extract_10k`, `sigil_update_6k`,
+//! `sigil_update_10k`, `sigil_churn_2k`) to stdout, and one human-readable budget line per Sigil
+//! bench to stderr (median time per extraction against the plan's 0.5 ms budget, median time per
+//! tick against the 1.0 ms budget of Plan 0002 WP5.4), so the CI log shows the numbers the plan
+//! asks for without decoding JSON. The budget lines are trend output like everything here: a
+//! millisecond budget is never a CI gate on shared runners (engine ADR-0010).
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -21,12 +23,18 @@ use std::time::Instant;
 
 use grimoire_bench::scenarios::{
     ECS_ENTITIES, ECS_SCENARIO, ECS_WALLCLOCK_ROUNDS, EXTRACT_BULLETS, EXTRACT_SCENARIO,
-    EXTRACT_WALLCLOCK_ROUNDS, SIM_ENTITIES, SIM_SCENARIO, SIM_WALLCLOCK_TICKS, build_ecs_world,
-    build_sigil_extract, build_sim, run_ecs_rounds, run_sigil_extract_rounds, run_sim_ticks,
+    EXTRACT_WALLCLOCK_ROUNDS, SIGIL_CHURN_BULLETS, SIGIL_CHURN_PER_TICK, SIGIL_CHURN_SCENARIO,
+    SIGIL_CHURN_WALLCLOCK_TICKS, SIGIL_ENTITIES, SIGIL_SCENARIO, SIGIL_TICK_BUDGET_MS,
+    SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_SCENARIO, SIGIL_UPDATE_10K_WALLCLOCK_TICKS,
+    SIGIL_WALLCLOCK_TICKS, SIM_ENTITIES, SIM_SCENARIO, SIM_WALLCLOCK_TICKS, build_ecs_world,
+    build_sigil_churn, build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
+    run_ecs_rounds, run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks,
+    sigil_update_fill_ticks,
 };
 use grimoire_bench::schema::{
     BenchResult, CommitRef, ExecutorInfo, ParamValue, RunKey, RunnerInfo, ValueOrigin, median,
 };
+use grimoire_sim::Simulation;
 
 /// Unmeasured samples discarded before recording (matches the WP6.1 spike's trimmed warmup).
 const WARMUP_SAMPLES: u32 = 2;
@@ -153,6 +161,20 @@ fn measure_extract() -> Vec<f64> {
     samples
 }
 
+/// Samples `ticks` simulation steps of an already built, steady `sim`, after the usual warm-up.
+fn measure_sigil_ticks(mut sim: Simulation, ticks: u32) -> Vec<f64> {
+    for _ in 0..WARMUP_SAMPLES {
+        run_sigil_update_ticks(&mut sim, ticks, 0);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        run_sigil_update_ticks(&mut sim, ticks, 0);
+        samples.push(start.elapsed().as_nanos() as f64);
+    }
+    samples
+}
+
 fn result_for(
     meta: &Meta,
     scenario: &str,
@@ -224,16 +246,80 @@ fn main() -> ExitCode {
         ),
     ]);
 
+    let int = |value: u32| ParamValue::Int(i64::from(value));
+    let update_6k_params = BTreeMap::from([
+        ("bullets".to_string(), int(SIGIL_ENTITIES)),
+        ("ticks".to_string(), int(SIGIL_WALLCLOCK_TICKS)),
+    ]);
+    let update_10k_params = BTreeMap::from([
+        ("bullets".to_string(), int(SIGIL_UPDATE_10K_BULLETS)),
+        ("ticks".to_string(), int(SIGIL_UPDATE_10K_WALLCLOCK_TICKS)),
+    ]);
+    let churn_params = BTreeMap::from([
+        ("bullets".to_string(), int(SIGIL_CHURN_BULLETS)),
+        ("per_tick".to_string(), int(SIGIL_CHURN_PER_TICK)),
+        ("ticks".to_string(), int(SIGIL_CHURN_WALLCLOCK_TICKS)),
+    ]);
+
+    let update_6k = {
+        let mut sim = build_sigil_update(0xB5_11_C1_0C_C0_FF_EE_00);
+        run_sigil_update_ticks(&mut sim, sigil_update_fill_ticks(), 0);
+        measure_sigil_ticks(sim, SIGIL_WALLCLOCK_TICKS)
+    };
+    let update_10k = measure_sigil_ticks(
+        build_sigil_update_10k(0xB5_11_C1_0C_C0_FF_EE_00),
+        SIGIL_UPDATE_10K_WALLCLOCK_TICKS,
+    );
+    let churn = measure_sigil_ticks(
+        build_sigil_churn(0xB5_11_C1_0C_C0_FF_EE_00),
+        SIGIL_CHURN_WALLCLOCK_TICKS,
+    );
+
     let results = [
         result_for(&meta, ECS_SCENARIO, measure_ecs(), ecs_params),
         result_for(&meta, SIM_SCENARIO, measure_sim(), sim_params),
         result_for(&meta, EXTRACT_SCENARIO, measure_extract(), extract_params),
+        result_for(&meta, SIGIL_SCENARIO, update_6k, update_6k_params),
+        result_for(
+            &meta,
+            SIGIL_UPDATE_10K_SCENARIO,
+            update_10k,
+            update_10k_params,
+        ),
+        result_for(&meta, SIGIL_CHURN_SCENARIO, churn, churn_params),
     ];
-    // Plan 0002 WP5.3 budget, as a trend line for the log (never a gate, engine ADR-0010).
-    if let Some(extract) = results.last() {
-        let per_extraction_ms = extract.median / f64::from(EXTRACT_WALLCLOCK_ROUNDS) / 1.0e6;
+    // Plan 0002 WP5.3 and WP5.4 budgets, as trend lines for the log (never a gate, engine
+    // ADR-0010).
+    let per_extraction_ms = results[2].median / f64::from(EXTRACT_WALLCLOCK_ROUNDS) / 1.0e6;
+    eprintln!(
+        "{EXTRACT_SCENARIO}: median {per_extraction_ms:.4} ms per extraction of {EXTRACT_BULLETS} bullets (plan budget 0.5 ms, wall clock, trend only)"
+    );
+    for (result, ticks, what) in [
+        (
+            &results[3],
+            SIGIL_WALLCLOCK_TICKS,
+            "6,000 active bullets, six stacked modifiers",
+        ),
+        (
+            &results[4],
+            SIGIL_UPDATE_10K_WALLCLOCK_TICKS,
+            "10,000 active bullets",
+        ),
+        (
+            &results[5],
+            SIGIL_CHURN_WALLCLOCK_TICKS,
+            "10,000 active bullets, 2,000 spawns and 2,000 despawns per tick",
+        ),
+    ] {
+        let per_tick_ms = result.median / f64::from(ticks) / 1.0e6;
+        let verdict = if per_tick_ms <= SIGIL_TICK_BUDGET_MS {
+            "within"
+        } else {
+            "OVER"
+        };
         eprintln!(
-            "{EXTRACT_SCENARIO}: median {per_extraction_ms:.4} ms per extraction of {EXTRACT_BULLETS} bullets (plan budget 0.5 ms, wall clock, trend only)"
+            "{}: median {per_tick_ms:.4} ms per tick, {what}, sequential (budget {SIGIL_TICK_BUDGET_MS:.1} ms: {verdict}; wall clock, trend only)",
+            result.scenario
         );
     }
 

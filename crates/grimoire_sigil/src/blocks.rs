@@ -42,6 +42,44 @@ pub(crate) struct Shot {
 /// list it among the decoder's re-checks); this function treats it as `1` rather than dividing by
 /// zero, matching contract §2 rule 9's "malformed input is an error, never a panic" even for a
 /// hand-built or fuzzed-but-otherwise-valid `SigilUnit`.
+///
+/// Appends the shots to `out` (WP5.4: callers reuse one buffer, so a volley allocates nothing once
+/// the buffer has grown to the largest volley).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_shots_into(
+    block: &BlockDef,
+    base_speed: f32,
+    base_angle: f32,
+    aim: Option<Vec2>,
+    origin: Vec2,
+    volley_index: u32,
+    rng: &mut SimRng,
+    out: &mut Vec<Shot>,
+) {
+    let count = u32::from(block.count.max(1));
+    match block.kind {
+        BlockKind::RING => ring(block, count, base_speed, base_angle, out),
+        BlockKind::SPIRAL => spiral(block, count, base_speed, base_angle, volley_index, out),
+        BlockKind::FAN => fan(block, count, base_speed, base_angle + block.params[1], out),
+        BlockKind::AIMED => {
+            let direction = match aim {
+                Some(target) => (target - origin).angle(),
+                None => base_angle,
+            };
+            fan(block, count, base_speed, direction, out);
+        }
+        BlockKind::WAVE => wave(block, count, base_speed, out),
+        BlockKind::LINE => line(block, count, base_speed, out),
+        BlockKind::SCATTER => scatter(block, count, base_speed, base_angle, rng, out),
+        // The decoder only ever hands this function a `SigilUnit` it has already validated
+        // (`kind` in `1..=BlockKind::MAX`); an unreachable default keeps this exhaustive without
+        // inventing an eighth block kind here.
+        _ => {}
+    }
+}
+
+/// [`generate_shots_into`] into a fresh vector, for this module's tests.
+#[cfg(test)]
 pub(crate) fn generate_shots(
     block: &BlockDef,
     base_speed: f32,
@@ -51,33 +89,27 @@ pub(crate) fn generate_shots(
     volley_index: u32,
     rng: &mut SimRng,
 ) -> Vec<Shot> {
-    let count = u32::from(block.count.max(1));
-    match block.kind {
-        BlockKind::RING => ring(block, count, base_speed, base_angle),
-        BlockKind::SPIRAL => spiral(block, count, base_speed, base_angle, volley_index),
-        BlockKind::FAN => fan(block, count, base_speed, base_angle + block.params[1]),
-        BlockKind::AIMED => {
-            let direction = match aim {
-                Some(target) => (target - origin).angle(),
-                None => base_angle,
-            };
-            fan(block, count, base_speed, direction)
-        }
-        BlockKind::WAVE => wave(block, count, base_speed),
-        BlockKind::LINE => line(block, count, base_speed),
-        BlockKind::SCATTER => scatter(block, count, base_speed, base_angle, rng),
-        // The decoder only ever hands this function a `SigilUnit` it has already validated
-        // (`kind` in `1..=BlockKind::MAX`); an unreachable default keeps this exhaustive without
-        // inventing an eighth block kind here.
-        _ => Vec::new(),
-    }
+    let mut out = Vec::new();
+    generate_shots_into(
+        block,
+        base_speed,
+        base_angle,
+        aim,
+        origin,
+        volley_index,
+        rng,
+        &mut out,
+    );
+    out
 }
 
-/// Generates one volley of `program`: its block's shots (see [`generate_shots`]), then every
-/// `mirror` modifier of its stack applied in authored order. Shared by `sigil.emit` (an emitter's
-/// volley) and `sigil.update` (the volley of a `burst` or `become_emitter` transform), so both
-/// place shots identically; only the generator `rng` they pass differs (contract §11.7).
-pub(crate) fn program_shots(
+/// Generates one volley of `program` into `out` (cleared first): its block's shots (see
+/// [`generate_shots_into`]), then every `mirror` modifier of its stack applied in authored order.
+/// Shared by `sigil.emit` (an emitter's volley) and `sigil.update` (the volley of a `burst` or
+/// `become_emitter` transform), so both place shots identically; only the generator `rng` they
+/// pass differs (contract §11.7).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn program_shots_into(
     program: &ProgramRecord,
     base_speed: f32,
     base_angle: f32,
@@ -85,8 +117,10 @@ pub(crate) fn program_shots(
     origin: Vec2,
     volley_index: u32,
     rng: &mut SimRng,
-) -> Vec<Shot> {
-    let mut shots = generate_shots(
+    out: &mut Vec<Shot>,
+) {
+    out.clear();
+    generate_shots_into(
         &program.block,
         base_speed,
         base_angle,
@@ -94,27 +128,25 @@ pub(crate) fn program_shots(
         origin,
         volley_index,
         rng,
+        out,
     );
     for modifier in &program.modifiers {
         if modifier.kind == ModifierKind::MIRROR {
-            shots = apply_mirror(&shots, modifier, base_angle);
+            apply_mirror_in_place(out, modifier, base_angle);
         }
     }
-    shots
 }
 
 const TAU: f32 = dmath::TAU;
 
-fn ring(block: &BlockDef, count: u32, base_speed: f32, base_angle: f32) -> Vec<Shot> {
+fn ring(block: &BlockDef, count: u32, base_speed: f32, base_angle: f32, out: &mut Vec<Shot>) {
     let start = block.params[0];
     let step = TAU / count as f32;
-    (0..count)
-        .map(|i| Shot {
-            angle: base_angle + start + step * i as f32,
-            speed: base_speed,
-            offset: Vec2::ZERO,
-        })
-        .collect()
+    out.extend((0..count).map(|i| Shot {
+        angle: base_angle + start + step * i as f32,
+        speed: base_speed,
+        offset: Vec2::ZERO,
+    }));
 }
 
 /// `spiral`'s `params[0]` is the per-volley rotation `step`, `params[1]` the initial `start`
@@ -127,41 +159,39 @@ fn spiral(
     base_speed: f32,
     base_angle: f32,
     volley_index: u32,
-) -> Vec<Shot> {
+    out: &mut Vec<Shot>,
+) {
     let step = block.params[0];
     let start = block.params[1];
     let rotation_for_volley = start + step * volley_index as f32;
     let arm_step = TAU / arms as f32;
-    (0..arms)
-        .map(|i| Shot {
-            angle: base_angle + rotation_for_volley + arm_step * i as f32,
-            speed: base_speed,
-            offset: Vec2::ZERO,
-        })
-        .collect()
+    out.extend((0..arms).map(|i| Shot {
+        angle: base_angle + rotation_for_volley + arm_step * i as f32,
+        speed: base_speed,
+        offset: Vec2::ZERO,
+    }));
 }
 
 /// Shared by `fan` (`center` around `base_angle`) and `aimed` (`center` is the resolved aim
 /// direction, `docs/formats/sigil.md` §10.4: "aimed ... spread (rad)" with no separate `center`
 /// param of its own).
-fn fan(block: &BlockDef, count: u32, base_speed: f32, center: f32) -> Vec<Shot> {
+fn fan(block: &BlockDef, count: u32, base_speed: f32, center: f32, out: &mut Vec<Shot>) {
     let spread = block.params[0];
     if count == 1 {
-        return vec![Shot {
+        out.push(Shot {
             angle: center,
             speed: base_speed,
             offset: Vec2::ZERO,
-        }];
+        });
+        return;
     }
     let step = spread / (count - 1) as f32;
     let half = spread * 0.5;
-    (0..count)
-        .map(|i| Shot {
-            angle: center - half + step * i as f32,
-            speed: base_speed,
-            offset: Vec2::ZERO,
-        })
-        .collect()
+    out.extend((0..count).map(|i| Shot {
+        angle: center - half + step * i as f32,
+        speed: base_speed,
+        offset: Vec2::ZERO,
+    }));
 }
 
 /// `wave`'s baked `params[4..6]` unit vector (`docs/formats/sigil.md` §10.4) is used as the shots'
@@ -169,7 +199,7 @@ fn fan(block: &BlockDef, count: u32, base_speed: f32, center: f32) -> Vec<Shot> 
 /// baking it, so this function does not call `dmath` for direction at all, only for the per-shot
 /// sine lateral offset (`params[0]` amplitude, `params[1]` wavelength), which is still emit-time,
 /// not per-tick.
-fn wave(block: &BlockDef, count: u32, base_speed: f32) -> Vec<Shot> {
+fn wave(block: &BlockDef, count: u32, base_speed: f32, out: &mut Vec<Shot>) {
     let amplitude = block.params[0];
     let wavelength = if block.params[1].abs() > f32::EPSILON {
         block.params[1]
@@ -180,34 +210,30 @@ fn wave(block: &BlockDef, count: u32, base_speed: f32) -> Vec<Shot> {
     let direction = Vec2::new(block.params[4], block.params[5]);
     let perp = direction.perp();
     let mid = (count - 1) as f32 * 0.5;
-    (0..count)
-        .map(|i| {
-            let t = i as f32 - mid;
-            let lateral = amplitude * dmath::sin(TAU * t / wavelength);
-            Shot {
-                angle,
-                speed: base_speed,
-                offset: perp * lateral,
-            }
-        })
-        .collect()
+    out.extend((0..count).map(|i| {
+        let t = i as f32 - mid;
+        let lateral = amplitude * dmath::sin(TAU * t / wavelength);
+        Shot {
+            angle,
+            speed: base_speed,
+            offset: perp * lateral,
+        }
+    }));
 }
 
 /// `line`'s baked `params[4..6]` unit vector, used the same way as `wave`'s but for a fixed
 /// `spacing` (`params[0]`) instead of a sine lateral offset: no `dmath` call at all.
-fn line(block: &BlockDef, count: u32, base_speed: f32) -> Vec<Shot> {
+fn line(block: &BlockDef, count: u32, base_speed: f32, out: &mut Vec<Shot>) {
     let spacing = block.params[0];
     let angle = block.params[1];
     let direction = Vec2::new(block.params[4], block.params[5]);
     let perp = direction.perp();
     let mid = (count - 1) as f32 * 0.5;
-    (0..count)
-        .map(|i| Shot {
-            angle,
-            speed: base_speed,
-            offset: perp * (spacing * (i as f32 - mid)),
-        })
-        .collect()
+    out.extend((0..count).map(|i| Shot {
+        angle,
+        speed: base_speed,
+        offset: perp * (spacing * (i as f32 - mid)),
+    }));
 }
 
 /// `scatter`'s only randomised block (contract §11.4): draws exactly two `SimRng::next_f32`s per
@@ -220,21 +246,20 @@ fn scatter(
     base_speed: f32,
     base_angle: f32,
     rng: &mut SimRng,
-) -> Vec<Shot> {
+    out: &mut Vec<Shot>,
+) {
     let cone = block.params[0];
     let base = base_angle + block.params[1];
     let speed_jitter = block.params[2].clamp(0.0, 1.0);
-    (0..count)
-        .map(|_| {
-            let angle = base + (rng.next_f32() - 0.5) * cone;
-            let speed_mul = 1.0 + (rng.next_f32() - 0.5) * 2.0 * speed_jitter;
-            Shot {
-                angle,
-                speed: base_speed * speed_mul,
-                offset: Vec2::ZERO,
-            }
-        })
-        .collect()
+    out.extend((0..count).map(|_| {
+        let angle = base + (rng.next_f32() - 0.5) * cone;
+        let speed_mul = 1.0 + (rng.next_f32() - 0.5) * 2.0 * speed_jitter;
+        Shot {
+            angle,
+            speed: base_speed * speed_mul,
+            offset: Vec2::ZERO,
+        }
+    }));
 }
 
 /// Applies a `mirror` modifier to an already-generated shot list (contract §11.4's stackable
@@ -247,22 +272,37 @@ fn scatter(
 /// `0` is defensively treated as `1` instead of panicking. This mirrors around a `folds`-way
 /// rotationally-spaced set of axes rather than the alternative (recursive kaleidoscope) reading;
 /// see the WP5.1 report for this as an open point for the Product Owner.
-pub(crate) fn apply_mirror(shots: &[Shot], modifier: &ModifierDef, base_angle: f32) -> Vec<Shot> {
+///
+/// Works in place (WP5.4): the reflections of the first `shots.len()` entries are appended to the
+/// same buffer, in the same order a fresh list would hold them.
+pub(crate) fn apply_mirror_in_place(
+    shots: &mut Vec<Shot>,
+    modifier: &ModifierDef,
+    base_angle: f32,
+) {
     let folds = u32::from(modifier.extra.max(1));
     let axis0 = base_angle + modifier.params[0];
-    let mut all = Vec::with_capacity(shots.len() * (1 + folds as usize));
-    all.extend_from_slice(shots);
+    let originals = shots.len();
+    shots.reserve(originals * folds as usize);
     for k in 0..folds {
         let axis = axis0 + (dmath::PI / folds as f32) * k as f32;
         let normal = Vec2::from_angle(axis);
-        for shot in shots {
-            all.push(Shot {
+        for index in 0..originals {
+            let shot = shots[index];
+            shots.push(Shot {
                 angle: 2.0 * axis - shot.angle,
                 speed: shot.speed,
                 offset: reflect(shot.offset, normal),
             });
         }
     }
+}
+
+/// [`apply_mirror_in_place`] on a copy, for this module's tests.
+#[cfg(test)]
+pub(crate) fn apply_mirror(shots: &[Shot], modifier: &ModifierDef, base_angle: f32) -> Vec<Shot> {
+    let mut all = shots.to_vec();
+    apply_mirror_in_place(&mut all, modifier, base_angle);
     all
 }
 

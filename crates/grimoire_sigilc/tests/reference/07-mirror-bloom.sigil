@@ -1,0 +1,40 @@
+sigil 1
+// 07-mirror-bloom: one short fan mirrored into four symmetric pairs and slowly turned: a flower
+// that opens and rotates around the enemy.
+// Covers: block fan, modifier mirror (folds), modifiers stacked in written order (mirror, then
+//         rotate).
+
+meta {
+  name = "Mirror Bloom"
+  difficulty = [normal, curtain]
+  density = 288 // three shots, mirrored, four folds, twelve volleys
+}
+
+// Petal of the bloom.
+bullet petal {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.7
+  radius = 0.2u
+  damage = 1
+  flags = [grazeable]
+}
+
+emitter bloom {
+  bullet = petal
+  repeat = 12
+  interval = 10t
+  speed = 0.07u/t
+  block fan {
+    count = 3
+    spread = 24deg
+    center = 45deg
+  }
+  modifier mirror {
+    axis = 90deg // mirror across the vertical axis
+    folds = 4 // repeat the mirrored pair four times around the circle
+  }
+  modifier rotate {
+    rate = 0.35deg/t
+  }
+}

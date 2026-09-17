@@ -1,0 +1,7 @@
+{
+  "schema": "grimoire.sigilc.behaviors",
+  "schema_version": 1,
+  "behaviors": [
+    { "name": "drift_orbit", "id": 1 }
+  ]
+}

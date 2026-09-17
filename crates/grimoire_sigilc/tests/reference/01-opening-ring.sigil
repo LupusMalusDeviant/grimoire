@@ -1,0 +1,37 @@
+sigil 1
+// 01-opening-ring: the first pattern a new enemy teaches. A slow ring that speeds up as it
+// travels, so the gaps the player aims for close the further out they are.
+// Covers: block ring, modifier accelerate, flags grazeable + smashable, emitter delay, repeat,
+//         interval. Imported by 12-finale-composite.
+
+meta {
+  name = "Opening Ring"
+  difficulty = [easy, opener]
+  density = 72 // three rings of 24
+}
+
+// Round orb; smashable, so a melee swing can open a gap in the ring.
+bullet orb {
+  silhouette = orb
+  palette = enemy.hex_magenta
+  glow = 0.6
+  radius = 0.22u
+  damage = 1
+  flags = [grazeable, smashable]
+}
+
+emitter ring {
+  bullet = orb
+  delay = 30t // telegraph before the first ring
+  repeat = 3
+  interval = 40t
+  speed = 0.04u/t
+  block ring {
+    count = 24
+    start = 7.5deg // offset from the cardinal axes
+  }
+  modifier accelerate {
+    rate = 0.0015u/t2
+    max_speed = 0.14u/t // cap keeps late bullets readable
+  }
+}

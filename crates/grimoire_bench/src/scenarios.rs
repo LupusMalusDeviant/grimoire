@@ -1,5 +1,5 @@
-//! The two P0 baseline benches (Plan-0002 WP6.2 scope item 1), the WP5.1 `sigil.update`
-//! micro-bench, and the calibrated regression injector (engine ADR-0010, "Vor der Umsetzung in
+//! The two P0 baseline benches (Plan-0002 WP6.2 scope item 1), the Sigil benches (WP5.1, WP5.3,
+//! WP5.4), and the calibrated regression injector (engine ADR-0010, "Vor der Umsetzung in
 //! WP6.2" / calibration Nachtrag).
 //!
 //! The two P0 benches are reused near-verbatim from the WP6.1 noise spike (branch
@@ -28,19 +28,18 @@
 //! after the one-off emit burst has finished, so almost the entire measured cost is
 //! `sigil.update`/`sigil.resolve` on an already-full pool, not `sigil.emit`.
 //!
-//! **What this bench proves today, and what it does not yet.** Building and running it (`cargo
-//! test -p grimoire_bench`, and — per this crate's own contribution rule — Callgrind only on the
-//! CI runner, never locally) shows the scenario is real and deterministic. Turning that into the
-//! same kind of hard proof `ecs_query_10k`/`sim_step_600` already have — a Callgrind `Ir` count
-//! wired into `.github/workflows/bench-gate.yml` with an accepted baseline — is a follow-up this
-//! pull request deliberately leaves open rather than unilaterally running the separate
-//! `bench-accept-baseline` acceptance ceremony (see the WP5.1 report). In the meantime, the "no
-//! trigonometry per bullet per tick" claim is also checked the way `clippy.toml`'s
-//! `disallowed-methods` already checks the *raw* `f32` methods for this crate family: by
-//! inspection — `grimoire_sigil::runtime` (the module this bench exercises) has no `use` of
-//! `grimoire_core::math::dmath`'s `sin`/`cos`/`tan`/`atan2`/... anywhere in its per-tick
-//! functions, only in the once-per-content-load `RuntimeCache` builder and the once-per-bullet
-//! `sine_offset` seed.
+//! **Gated since Plan 0002 WP5.4.** `sigil_update_6k` is measured under Callgrind by
+//! `scripts/measure_ir.sh` and compared like every other bench once an accepted basis exists
+//! (`bench-accept-baseline`). The "no trigonometry per bullet per tick" claim still rests on the
+//! source as well: `grimoire_sigil::runtime`'s per-tick functions call no
+//! `grimoire_core::math::dmath` trigonometry, only its once-per-content-load `RuntimeCache` builder
+//! and the once-per-bullet `sine_offset` seed do.
+//!
+//! WP5.4 adds the two budget benches of the plan: `sigil_update_10k` (10,000 active bullets, five
+//! block/modifier programs and in-place transforms) and `sigil_churn_2k` (2,000 spawns and 2,000
+//! despawns in every tick at 10,000 active bullets). Their wall-clock medians per tick are printed
+//! against the 1.0 ms budget ([`SIGIL_TICK_BUDGET_MS`]) as a trend line, never as a gate (engine
+//! ADR-0010); their `Ir` counts enter the regression gate.
 
 use std::hint::black_box;
 
@@ -390,6 +389,13 @@ pub fn build_sigil_update(seed: u64) -> Simulation {
     sim
 }
 
+/// Ticks after which every volley of [`build_sigil_update`]'s emitter has fired: run them once,
+/// outside the measured region, before measuring `sigil_update_6k`.
+#[must_use]
+pub const fn sigil_update_fill_ticks() -> u32 {
+    SIGIL_VOLLEYS
+}
+
 /// Runs `ticks + extra_ticks` simulation steps. Callers that want the measured region to be
 /// (almost) pure `sigil.update`/`sigil.resolve` should call this only after the emitter's
 /// `SIGIL_VOLLEYS` volleys have already fired (i.e. after at least that many ticks have already
@@ -525,6 +531,313 @@ pub fn run_sigil_extract_rounds(
     extracted
 }
 
+// ---- Plan 0002 WP5.4: the Sigil budget benches ------------------------------------------------
+
+/// Budget of the Sigil share of one simulation tick with 10,000 active bullets, in milliseconds
+/// (Plan 0002 WP5.4, PRD-0004 NFR: movement and transforms). Printed next to the wall-clock
+/// medians as a budget line; never a CI gate on shared runners (engine ADR-0010).
+pub const SIGIL_TICK_BUDGET_MS: f64 = 1.0;
+
+/// Scenario name of the 10,000-bullet `sigil.*` tick benchmark (contract §15.1).
+pub const SIGIL_UPDATE_10K_SCENARIO: &str = "sigil_update_10k";
+/// Active bullets once [`build_sigil_update_10k`]'s emitters have finished.
+pub const SIGIL_UPDATE_10K_BULLETS: u32 = 10_000;
+/// Volleys every emitter of [`build_sigil_update_10k`] fires, one per tick, before the measured
+/// ticks start.
+pub const SIGIL_UPDATE_10K_FILL_TICKS: u32 = 100;
+/// Ticks per wall-clock sample of `sigil_update_10k`.
+pub const SIGIL_UPDATE_10K_WALLCLOCK_TICKS: u32 = 100;
+/// Ticks per Callgrind probe of `sigil_update_10k`, after the fill ticks.
+pub const SIGIL_UPDATE_10K_IR_TICKS: u32 = 100;
+
+/// Scenario name of the 2,000-spawns-and-2,000-despawns-per-tick benchmark (contract §15.1).
+pub const SIGIL_CHURN_SCENARIO: &str = "sigil_churn_2k";
+/// Spawns and despawns in every steady tick of [`build_sigil_churn`].
+pub const SIGIL_CHURN_PER_TICK: u32 = 2_000;
+/// Active bullets in every steady tick of [`build_sigil_churn`] (2,000 per tick living 5 ticks).
+pub const SIGIL_CHURN_BULLETS: u32 = 10_000;
+/// Lifetime of a churn bullet, in ticks.
+const SIGIL_CHURN_LIFETIME: u32 = 5;
+/// Emitter entities of the churn benchmark; each fires a ring of `SIGIL_CHURN_PER_TICK /
+/// SIGIL_CHURN_EMITTERS` bullets every tick.
+const SIGIL_CHURN_EMITTERS: u16 = 40;
+/// Ticks before the churn benchmark is steady (buffers grown, pool slots at their high-water mark).
+pub const SIGIL_CHURN_WARMUP_TICKS: u32 = 20;
+/// Ticks per wall-clock sample of `sigil_churn_2k`.
+pub const SIGIL_CHURN_WALLCLOCK_TICKS: u32 = 100;
+/// Ticks per Callgrind probe of `sigil_churn_2k`, after the warm-up ticks.
+pub const SIGIL_CHURN_IR_TICKS: u32 = 100;
+
+/// Little-endian byte builders for hand-assembled benchmark units (`docs/formats/sigil.md` §10).
+mod unit_bytes {
+    /// One 20-byte `BulletTypes` record, hostile palette space.
+    pub(super) fn bullet_type(lifetime_ticks: u32, flags: u8, visual: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0.3f32.to_le_bytes());
+        out.extend_from_slice(&0.3f32.to_le_bytes());
+        out.extend_from_slice(&lifetime_ticks.to_le_bytes());
+        out.push(flags);
+        out.push(0);
+        out.extend_from_slice(&visual.to_le_bytes());
+        out.extend_from_slice(&visual.to_le_bytes());
+        out.push(1);
+        out.push(128);
+        out
+    }
+
+    /// One `Programs` record: a block without scatter seed plus its modifier stack.
+    pub(super) fn program(
+        kind: u8,
+        count: u16,
+        params: [f32; 6],
+        modifiers: &[[u8; 16]],
+    ) -> Vec<u8> {
+        let mut out = vec![kind, 0];
+        out.extend_from_slice(&count.to_le_bytes());
+        for param in params {
+            out.extend_from_slice(&param.to_le_bytes());
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(modifiers.len() as u16).to_le_bytes());
+        for modifier in modifiers {
+            out.extend_from_slice(modifier);
+        }
+        out
+    }
+
+    /// One 16-byte `ModifierDef`.
+    pub(super) fn modifier(kind: u8, extra: u16, params: [f32; 3]) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[0] = kind;
+        out[2..4].copy_from_slice(&extra.to_le_bytes());
+        for (i, param) in params.iter().enumerate() {
+            out[4 + 4 * i..8 + 4 * i].copy_from_slice(&param.to_le_bytes());
+        }
+        out
+    }
+
+    /// One 30-byte primary `Emitters` record without offset.
+    pub(super) fn emitter(bullet_type: u16, program: u16, repeat: u32, speed: f32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&bullet_type.to_le_bytes());
+        out.extend_from_slice(&program.to_le_bytes());
+        out.push(0); // role: primary
+        out.push(0);
+        out.extend_from_slice(&0u32.to_le_bytes()); // delay_ticks
+        out.extend_from_slice(&repeat.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes()); // interval_ticks
+        out.extend_from_slice(&speed.to_le_bytes());
+        out.extend_from_slice(&0f32.to_le_bytes());
+        out.extend_from_slice(&0f32.to_le_bytes());
+        out
+    }
+
+    /// One 24-byte transform record: `kind`, a `time` (`trigger` 1) or `distance` (2) trigger
+    /// value, and a bullet-type `target` (`0` for `reverse`).
+    pub(super) fn transform(kind: u8, trigger: u8, value: f32, target: u16) -> Vec<u8> {
+        let mut out = vec![kind, trigger, 0, 0];
+        let (at_ticks, distance) = if trigger == 1 {
+            (value as u32, 0.0f32)
+        } else {
+            (0, value)
+        };
+        out.extend_from_slice(&at_ticks.to_le_bytes());
+        out.extend_from_slice(&distance.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // event
+        out.extend_from_slice(&target.to_le_bytes());
+        out.extend_from_slice(&0xFFFFu16.to_le_bytes()); // program: none
+        out.extend_from_slice(&0f32.to_le_bytes()); // speed
+        out
+    }
+
+    /// One `Transforms` record of `bullet_type` without behavior.
+    pub(super) fn script(bullet_type: u16, transforms: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = bullet_type.to_le_bytes().to_vec();
+        out.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // no behavior, id 0, no params
+        out.extend_from_slice(&(transforms.len() as u16).to_le_bytes());
+        for transform in transforms {
+            out.extend_from_slice(transform);
+        }
+        out
+    }
+
+    /// `records` prefixed with their `u16` count.
+    pub(super) fn counted(records: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = (records.len() as u16).to_le_bytes().to_vec();
+        for record in records {
+            out.extend_from_slice(record);
+        }
+        out
+    }
+}
+
+/// Installs `unit` into a fresh simulation with room for `capacity` bullets and generous bounds,
+/// then spawns one primary [`Emitter`] entity per `(emitter index, origin, rotation)`.
+fn sigil_simulation(
+    seed: u64,
+    unit: SigilUnit,
+    capacity: u32,
+    emitters: &[(u16, Vec2, f32)],
+) -> Simulation {
+    let unit_id = unit.id();
+    let registry = BehaviorRegistryBuilder::new(1).build();
+    let library = SigilLibrary::new(vec![unit], registry.clone()).expect("library must build");
+    let mut sim = Simulation::new(seed);
+    install(
+        &mut sim,
+        library,
+        registry,
+        SigilConfig::new(capacity, Vec2::new(-1.0e6, -1.0e6), Vec2::new(1.0e6, 1.0e6)),
+    )
+    .expect("install must succeed");
+    for &(emitter, origin, rotation) in emitters {
+        sim.world_mut().spawn((Emitter {
+            unit: unit_id,
+            emitter,
+            origin,
+            rotation,
+            started_at: 0,
+        },));
+    }
+    sim
+}
+
+/// Builds `sigil_update_10k`: five emitters each fire a 20-shot volley every tick for
+/// [`SIGIL_UPDATE_10K_FILL_TICKS`] ticks, leaving [`SIGIL_UPDATE_10K_BULLETS`] unbounded bullets.
+/// The programs cover five blocks and five of the six per-tick modifiers (`ring` + `accelerate`,
+/// `spiral` + `rotate`, `wave` + `sine_offset`, `fan` + `speed_curve`, `scatter` + `curve`), and
+/// every bullet type carries a transform so trigger evaluation is part of the measured cost: type
+/// `0` turns into type `1` after 25 units (`distance`, tracked every tick until it fires), type
+/// `2` reverses at age 150 (`time`). Bullets never leave the bounds and never expire, so the
+/// population stays at 10,000 during the measured ticks.
+///
+/// # Panics
+/// Only if the hand-built fixture stops decoding or installing, which the crate's own tests catch.
+#[must_use]
+pub fn build_sigil_update_10k(seed: u64) -> Simulation {
+    use unit_bytes::{bullet_type, counted, emitter, modifier, program, script, transform};
+
+    let quarter_turn = std::f32::consts::FRAC_PI_2;
+    let bullet_types = counted(&[
+        bullet_type(0, 8, 0),
+        bullet_type(0, 8, 1),
+        bullet_type(0, 1, 2),
+    ]);
+    let programs = counted(&[
+        program(
+            1,
+            20,
+            [0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+            &[modifier(1, 0, [0.001, 0.3, 0.0])],
+        ),
+        program(
+            2,
+            20,
+            [0.07, 0.0, 0.0, 0.0, 0.0, 0.0],
+            &[modifier(3, 0, [0.004, 0.0, 0.0])],
+        ),
+        program(
+            5,
+            20,
+            [0.5, 6.0, quarter_turn, 0.0, 0.0, 1.0],
+            &[modifier(2, 0, [0.2, 24.0, 0.0])],
+        ),
+        program(
+            3,
+            20,
+            [1.2, 0.0, 0.0, 0.0, 0.0, 0.0],
+            &[modifier(5, 0, [0.0; 3])],
+        ),
+        program(
+            7,
+            20,
+            [0.8, 0.0, 0.3, 0.0, 0.0, 0.0],
+            &[modifier(6, 0, [0.003, 0.0, 0.0])],
+        ),
+    ]);
+    let volleys = SIGIL_UPDATE_10K_FILL_TICKS;
+    let emitters = counted(&[
+        emitter(0, 0, volleys, 0.12),
+        emitter(0, 1, volleys, 0.1),
+        emitter(0, 2, volleys, 0.08),
+        emitter(2, 3, volleys, 0.1),
+        emitter(2, 4, volleys, 0.15),
+    ]);
+    let scripts = counted(&[
+        script(0, &[transform(2, 2, 25.0, 1)]),
+        script(2, &[transform(1, 1, 150.0, 0)]),
+    ]);
+    let mut curves = 1u16.to_le_bytes().to_vec();
+    curves.extend_from_slice(&3u16.to_le_bytes());
+    for (at_ticks, mul) in [(0u32, 1.0f32), (60, 1.5), (240, 0.9)] {
+        curves.extend_from_slice(&at_ticks.to_le_bytes());
+        curves.extend_from_slice(&mul.to_le_bytes());
+    }
+    let unit = assemble_sigil_unit(
+        3,
+        vec![
+            (1, bullet_types),
+            (2, programs),
+            (3, emitters),
+            (4, scripts),
+            (5, curves),
+        ],
+    );
+    let placements: Vec<(u16, Vec2, f32)> = (0..5u16)
+        .map(|index| {
+            let offset = f32::from(index) * 40.0 - 80.0;
+            (index, Vec2::new(offset, 0.0), 0.3 * f32::from(index))
+        })
+        .collect();
+    let mut sim = sigil_simulation(seed, unit, SIGIL_UPDATE_10K_BULLETS, &placements);
+    run_sigil_update_ticks(&mut sim, SIGIL_UPDATE_10K_FILL_TICKS, 0);
+    sim
+}
+
+/// Builds `sigil_churn_2k`: 40 emitters each fire a 50-shot ring every tick
+/// (2,000 spawns per tick) of bullets that live 5 ticks and accelerate, so
+/// every steady tick despawns 2,000 bullets by lifetime and spawns 2,000 into the freed slots while
+/// 10,000 stay active (PRD-0004 FR-06). Returned after [`SIGIL_CHURN_WARMUP_TICKS`] ticks, steady.
+///
+/// # Panics
+/// Only if the hand-built fixture stops decoding or installing, which the crate's own tests catch.
+#[must_use]
+pub fn build_sigil_churn(seed: u64) -> Simulation {
+    use unit_bytes::{bullet_type, counted, emitter, modifier, program};
+
+    let per_emitter = (SIGIL_CHURN_PER_TICK / u32::from(SIGIL_CHURN_EMITTERS)) as u16;
+    let unit = assemble_sigil_unit(
+        4,
+        vec![
+            (1, counted(&[bullet_type(SIGIL_CHURN_LIFETIME, 8, 0)])),
+            (
+                2,
+                counted(&[program(
+                    1,
+                    per_emitter,
+                    [0.0; 6],
+                    &[modifier(1, 0, [0.002, 0.4, 0.0])],
+                )]),
+            ),
+            (3, counted(&[emitter(0, 0, u32::MAX, 0.1)])),
+        ],
+    );
+    let placements: Vec<(u16, Vec2, f32)> = (0..SIGIL_CHURN_EMITTERS)
+        .map(|index| {
+            let column = f32::from(index % 8);
+            let row = f32::from(index / 8);
+            (
+                0,
+                Vec2::new(column * 20.0 - 70.0, row * 20.0 - 40.0),
+                0.05 * f32::from(index),
+            )
+        })
+        .collect();
+    let mut sim = sigil_simulation(seed, unit, SIGIL_CHURN_BULLETS, &placements);
+    run_sigil_update_ticks(&mut sim, SIGIL_CHURN_WARMUP_TICKS, 0);
+    sim
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,10 +877,85 @@ mod tests {
         assert_eq!(sim.world().query::<&Pos>().count(), SIM_ENTITIES);
     }
 
+    fn live(sim: &Simulation) -> u32 {
+        sim.world().resource::<BulletPool>().unwrap().len()
+    }
+
+    #[test]
+    fn sigil_update_10k_holds_ten_thousand_bullets_while_transforms_fire() {
+        let mut sim = build_sigil_update_10k(3);
+        assert_eq!(live(&sim), SIGIL_UPDATE_10K_BULLETS);
+        let changed_before = sim
+            .world()
+            .resource::<BulletPool>()
+            .unwrap()
+            .iter()
+            .filter(|bullet| bullet.bullet_type() == 1)
+            .count();
+        run_sigil_update_ticks(&mut sim, SIGIL_UPDATE_10K_IR_TICKS, 0);
+        let pool = sim.world().resource::<BulletPool>().unwrap();
+        assert_eq!(pool.len(), SIGIL_UPDATE_10K_BULLETS);
+        assert_eq!(pool.slot_count(), SIGIL_UPDATE_10K_BULLETS);
+        assert_eq!(pool.dropped_spawns(), 0);
+        let changed_after = pool
+            .iter()
+            .filter(|bullet| bullet.bullet_type() == 1)
+            .count();
+        assert!(
+            changed_after > changed_before,
+            "distance triggers must keep firing in the measured ticks ({changed_before} -> {changed_after})"
+        );
+        assert!(
+            pool.iter().any(|bullet| bullet.bullet_type() == 0),
+            "some bullets must still be tracking their distance"
+        );
+    }
+
+    #[test]
+    fn sigil_churn_spawns_and_despawns_two_thousand_bullets_every_tick() {
+        let mut sim = build_sigil_churn(4);
+        assert_eq!(live(&sim), SIGIL_CHURN_BULLETS);
+        for _ in 0..3 {
+            run_sigil_update_ticks(&mut sim, 1, 0);
+            let pool = sim.world().resource::<BulletPool>().unwrap();
+            let despawned = pool
+                .events()
+                .iter()
+                .filter(|event| event.cause == grimoire_sigil::DespawnCause::Lifetime)
+                .count();
+            assert_eq!(despawned, SIGIL_CHURN_PER_TICK as usize);
+            // Population unchanged and nothing dropped: the tick spawned as many as it despawned.
+            assert_eq!(pool.len(), SIGIL_CHURN_BULLETS);
+            assert_eq!(pool.dropped_spawns(), 0);
+            assert_eq!(pool.slot_count(), SIGIL_CHURN_BULLETS);
+        }
+    }
+
+    #[test]
+    fn sigil_budget_benchmarks_are_deterministic_for_a_given_seed() {
+        let mut a = build_sigil_update_10k(8);
+        let mut b = build_sigil_update_10k(8);
+        run_sigil_update_ticks(&mut a, 20, 0);
+        run_sigil_update_ticks(&mut b, 20, 0);
+        assert_eq!(a.state_hash(), b.state_hash());
+        let mut c = build_sigil_churn(8);
+        let mut d = build_sigil_churn(8);
+        run_sigil_update_ticks(&mut c, 20, 0);
+        run_sigil_update_ticks(&mut d, 20, 0);
+        assert_eq!(c.state_hash(), d.state_hash());
+    }
+
     #[test]
     fn scenario_names_are_valid_bench_result_slugs() {
         // Contract §15.1: scenario matches [a-z0-9_]{1,64}.
-        for name in [ECS_SCENARIO, SIM_SCENARIO, SIGIL_SCENARIO, EXTRACT_SCENARIO] {
+        for name in [
+            ECS_SCENARIO,
+            SIM_SCENARIO,
+            SIGIL_SCENARIO,
+            EXTRACT_SCENARIO,
+            SIGIL_UPDATE_10K_SCENARIO,
+            SIGIL_CHURN_SCENARIO,
+        ] {
             assert!(!name.is_empty() && name.len() <= 64);
             assert!(
                 name.bytes()

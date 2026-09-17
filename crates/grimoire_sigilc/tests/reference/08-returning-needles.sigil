@@ -1,0 +1,34 @@
+sigil 1
+// 08-returning-needles: needles fly out past the player and, after three quarters of a second,
+// turn around and come back. The second pass arrives from behind.
+// Covers: transform reverse on a time trigger.
+
+meta {
+  name = "Returning Needles"
+  difficulty = [normal, trap]
+  density = 80
+}
+
+// Needle; reverses its velocity once, 45 ticks after it was fired.
+bullet needle {
+  silhouette = rice
+  palette = enemy.poison_lime
+  glow = 0.5
+  radius = 0.12u
+  damage = 1
+  flags = [grazeable]
+  transform reverse {
+    when = time 45t
+  }
+}
+
+emitter needles {
+  bullet = needle
+  repeat = 5
+  interval = 30t
+  speed = 0.1u/t
+  block ring {
+    count = 16
+    start = 11.25deg
+  }
+}

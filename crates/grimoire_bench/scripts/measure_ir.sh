@@ -88,5 +88,11 @@ measure_one sim sim_step_600
 # its current mode like the two P0 benches; until an accepted basis exists for it, `compare`
 # reports it as "no accepted basis" without a verdict.
 measure_one sigil_extract sigil_extract_10k
+# Plan 0002 WP5.4: the `sigil.*` tick benches under the same gate. `sigil_update_6k` is the WP5.1
+# micro-bench (six stacked modifiers, the trig-free hot path), `sigil_update_10k` holds 10,000
+# active bullets with transforms, `sigil_churn_2k` spawns and despawns 2,000 bullets per tick.
+measure_one sigil_update sigil_update_6k
+measure_one sigil_update_10k sigil_update_10k
+measure_one sigil_churn sigil_churn_2k
 
 cat "$OUT"
