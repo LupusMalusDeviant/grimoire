@@ -746,11 +746,30 @@ mod tests {
     //   cargo test -p grimoire_sim --lib -- --ignored regenerate_fixtures
     //
     // The three builders below (`v1_fixture_replay`, `minimal_fixture_replay`,
-    // `full_fixture_replay`) must stay byte-for-byte in sync with the identically-named
-    // expectations in `tests/replay.rs`, which re-derive the same values from the same public
-    // API to check the checked-in files without depending on this module's internals.
+    // `full_fixture_replay`) must stay byte-for-byte in sync with the expectations in
+    // `tests/replay.rs`, which re-derive the same values from the public API and additionally
+    // write every fixture out byte by byte from the layout table, without the encoder.
+    //
+    // The fixtures pin the byte format, not the version of the day: their `engine_version` and
+    // `engine_build` are fixed values, never `ENGINE_VERSION` or `ENGINE_BUILD`, so neither a
+    // release that raises the crate version nor a build with `GRIMOIRE_BUILD_HASH` changes them.
 
     use crate::input::{InputFrame, TickInput};
+
+    /// `engine_version` of every v2 fixture, fixed on purpose (see above).
+    const FIXTURE_ENGINE_VERSION: &str = "0.4.0";
+
+    /// A v2 header with the fixed fixture identity: [`FIXTURE_ENGINE_VERSION`], an unknown build,
+    /// `content_manifest`, no swaps and no metadata.
+    fn fixture_header(content_manifest: ContentManifestHash) -> ReplayHeader {
+        ReplayHeader {
+            engine_version: FIXTURE_ENGINE_VERSION.to_string(),
+            engine_build: BuildHash::UNKNOWN,
+            content_manifest,
+            swaps: Vec::new(),
+            app_metadata: BTreeMap::new(),
+        }
+    }
 
     fn fixture_log(frame_count: usize) -> InputLog {
         let frames = (0..frame_count)
@@ -779,13 +798,13 @@ mod tests {
 
     fn minimal_fixture_replay() -> Replay {
         Replay {
-            header: Some(ReplayHeader::for_this_build(ContentManifestHash::EMPTY)),
+            header: Some(fixture_header(ContentManifestHash::EMPTY)),
             log: fixture_log(3),
         }
     }
 
     fn full_fixture_replay() -> Replay {
-        let mut header = ReplayHeader::for_this_build(ContentManifestHash(0x0011_2233_4455_6677));
+        let mut header = fixture_header(ContentManifestHash(0x0011_2233_4455_6677));
         header.engine_build = BuildHash([0xab; 20]);
         header.swaps = vec![
             SwapRecord::new(2, ContentManifestHash(0xaa)),
@@ -804,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the checked-in fixtures under tests/fixtures/; run manually after a deliberate format change"]
+    #[ignore = "regenerates the checked-in fixtures under tests/fixtures/; run manually after a deliberate format change, never for a release"]
     fn regenerate_fixtures() {
         write_fixture("replay_v1.bin", &v1_fixture_replay());
         write_fixture("replay_v2_minimal.bin", &minimal_fixture_replay());
