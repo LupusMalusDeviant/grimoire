@@ -451,7 +451,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-17 | §12 (Verdrahtung des generierten Manifest-Codecs in `PackReader`/`PackWriter` mit Präfixprüfung vor der Allokation; Aufteilung der Formatdoku in `pack.md` (von Hand) und `pack-manifest.md` (generiert); `Handle` trägt die Kennung des ausgebenden Stores, sodass `get` für ein fremdes Handle `None` liefert; zweite Golden-Fixture unter „Verhaltenstests“) | #54 | K | — | nein (neue Golden-Fixture `pack_v1_sigil.grimpack` samt kommentierter Herleitung `pack_v1_sigil.hex`) |
 | 2026-09-17 | §9.11 neu (öffentliche API von `grimoire::adapters::assets`: `sigil_units`, `sigil_library`, `SigilAssetsError`), §9.1 (Verweis auf §9.11 in der Adapter-Tabelle) | #54 | A (PO-Freigabe 2026-09-18, gebündelt) | Spiel (Sigil-Content aus dem Pack), C#-Pipeline (WP9.2) | nein |
 | 2026-09-17 | §14 (Allokationsnachweis `tests/alloc.rs` mit zählendem Allokator; Konformanz-Suite hinter dem Feature `conformance` läuft im eigenen CI-Schritt; Proptest `overlapping_batch` gegen Einzelabfragen; feste Blockszene `GOLDEN_BLOCK_QUERY_HASH` neben `GOLDEN_QUERY_HASH` im Hash-Gate; Szenenparameter der Benches `collide_uniform` und `collide_cluster`) | #55 | K | — | nein (neue goldene Konstante `GOLDEN_BLOCK_QUERY_HASH`, keine bestehende erneuert) |
-| 2026-09-17 | §8.5 neu (`grimoire_sim::trace`: `trace`, `SystemHasher`, `system_hash`, `HashTrace`, `TraceCheckpoint`, `TraceGranularity`, `first_divergence`, `Divergence`, `DivergentSystem`; Dichte für Harness und Golden Master schlägt Engine-ADR-0018 vor, Status Vorgeschlagen) | #56 | A (PO-Freigabe 2026-09-18, gebündelt) | Absicherung (WP7.4, WP7.5) | nein |
+| 2026-09-17 | §8.5 neu (`grimoire_sim::trace`: `trace`, `SystemHasher`, `system_hash`, `HashTrace`, `TraceCheckpoint`, `TraceGranularity`, `first_divergence`, `Divergence`, `DivergentSystem`; Dichte für Harness und Golden Master legt Engine-ADR-0018 fest, vom PO am 2026-09-18 angenommen) | #56 | A (PO-Freigabe 2026-09-18, gebündelt) | Absicherung (WP7.4, WP7.5) | nein |
 | 2026-09-17 | §13 (`EngineLink`, `LinkEvent`, `LinkError`, `InProcessTransport::send_bytes`, Verbindungsgrenzen des TCP-Transports: `poll` meldet `Disconnected` genau einmal je Verbindung, `send` ohne Client `NotConnected`, `disconnect` nur für die zuletzt gesehene Verbindung), §9.7 (`adapters::debug::link` mit `DebugLink`, `engine_identity`, `current_epoch`, `SWAP_*`), §9.2 (`AppBuilder::debug_link_token`) | #57 | A (PO-Freigabe 2026-09-18, gebündelt) | Pipeline-Rust (WP8.5), C#-Pipeline (WP9.1), Editor (WP10.5) | nein |
 | 2026-09-17 | §13 (TCP-IO-Thread setzt „TCP“ um: Tor vor dem Handshake, `TooLarge` vor dem ersten Nutzlast-Byte, Frist, `Busy`, Gegendruck statt stillem Verwerfen; Anzahlprüfung der generierten Decoder gegen die Resteingabe nach §2 Regel 9; Hot-Swap von Nicht-Sigil-Assets bleibt in v1 reserviert; Konformanz-Suite läuft in der CI), §9.7 (Reihenfolge in `run_headless`, `Stats`-Takt, Ack-Reihenfolge und Felder bei Status 1 und 2), §12 (Konformanz-Suite läuft in der CI), §2 Regel 14 (paketgewählter Clippy-Schritt der Auslieferungskonfiguration und die Feature-Schritte in der CI) | #57 | K | — | nein |
 | 2026-09-17 | Formatdoku `sigil.md` §15 (Gruppe `bench` im Plattform-Identitäts-Gate: die drei Vollvorhang-Units aus `grimoire_bench`) | #58 | K | — | nein (drei neue Unit-Fixtures `full_curtain_flow/weave/shatter_unit_v1.bin`, keine Erneuerung) |
@@ -461,6 +461,7 @@ Delta-Notizen im eigenen Worktree und mergt nicht dagegen.
 | 2026-09-17 | §1 (Umsetzungsvermerk `tools/` erweitert: Projekt `Grimoire.AssetCompiler` für den Asset-Compiler `grimoire-ac`, Korpuslauf und `sigilc`-Bau in `tools.yml` mit `GRIMOIRE_REQUIRE_SIGILC=1`, Messung des vollständigen Pack-Rebuilds nur auf CI-Runnern, Pack-Eintragspfad gleich dem Asset-Pfad der Quelle, Compilername `grimoire-ac` mit der Version des aufgerufenen `sigilc`, `AC`-Diagnosecodes, Abgrenzung zu `grimoire_link`) | #62 | K | — | nein |
 | 2026-09-18 | §9.12 neu (`GamePlugin::presentation_input`: reine Darstellungstasten erreichen kein `TickInput`, Auslieferung zu Beginn des nächsten Frames in Registrierungs- und Ankunftsreihenfolge, auch in Frames ohne Tick, Grenze 4.096 wartende Ereignisse), §9.2 (Methode in der `GamePlugin`-Liste), §9.3 (Schritt 0 des Frames, Sammeln in `event`) | #63 | A (PO-Freigabe 2026-09-18, gebündelt) | Spiel (Kamera-Taste `C` vom `InputMap`-Button auf den Haken) | nein |
 | 2026-09-18 | §6 (Skelettanimation: Modul `grimoire_render::figure_clip`, Art `FNP_CLIP`), §9.1, §9.10 (`figure_assets::load_clip`), Formatdoku `figure-clip.md` neu, §2 Regel 10 (Liste der Formatdokumente) | #64 | A (PO-Freigabe 2026-09-18, gebündelt) | Spiel (Figuren-Konverter: Clips als `FNP_CLIP` exportieren), Render-A/B | nein (neue Golden-Fixture `figure_clip_v1.bin` samt Herleitung, neue goldene Posen-Hashes) |
+| 2026-09-18 | Formatdoku `sigil.md` §15 (Gruppe `link` im Plattform-Identitäts-Gate: die drei Dev-Link-Muster aus `crates/grimoire_link/tests/patterns`, Content-Root `crates/grimoire_link/tests`, seit WP8.5 vom Gate übersetzt und bis hierher nicht in der Formatdoku) | #67 | K | — | nein |
 
 ## 3. Determinismus-Regeln (Simulationsseite: `core`, `ecs`, `sim`, `collide`, `sigil`; Compiler `sigilc`; Fassade `grimoire`)
 
@@ -1839,7 +1840,9 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   Tausch vor dem ersten `step` hat `tick = 0`. Den Stand direkt nach der Installation des Contents beschreibt
   `content_manifest`. Unit-Bytes stehen nicht im Replay (§11.8). Ein Replay mit mindestens einem Eintrag ist nie
   golden (`is_golden_eligible() == false`); Golden-Master-Werkzeuge weisen es ab (§15.2).
-  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `ReplayHeader::record_swap` hängt einen Eintrag in
+  *Umsetzung (WP7.1); freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe)
+  mit der Begründung der Empfehlung: Die API führt die hier schon festgelegte Regel, und WP8.4 braucht genau
+  diese Stelle.* `ReplayHeader::record_swap` hängt einen Eintrag in
   Tick-Reihenfolge an. Hat er den Tick des letzten Eintrags, ersetzt er dessen `content_manifest` (mehrere Tausche an
   einer Grenze ergeben so den Endstand). Ein früherer Tick liefert `SwapOrder { index: swaps.len() }`, ein neuer
   Eintrag über `MAX_SWAP_RECORDS` hinaus `TooManyEntries`; bei einem Fehler ändert sich nichts. `tick ≤ frames.len()`
@@ -2013,9 +2016,11 @@ pub mod stream {
 
 ### 8.5 Subsystem-Hashes und Divergenz-Diagnose (Ergänzung P1, WP7.2)
 
-*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung von OF-18.1 über den Beobachter aus §7.2 und
-§8.4. Welche Dichte Harness und Golden Master verwenden, schlägt [ADR-0018](../adr/0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md)
-vor (Status Vorgeschlagen); die API trägt jede Dichte.
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe).* Umsetzung von
+OF-18.1 über den Beobachter aus §7.2 und §8.4. Welche Dichte Harness und Golden Master verwenden, legt
+[ADR-0018](../adr/0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md) fest — erkennen alle
+60 Ticks, bei einer Abweichung nur das erste Fenster je System je Tick eingrenzen, Golden Master speichern
+keine System-Hashes —, vom PO am 2026-09-18 angenommen; die API trägt jede Dichte.
 
 ```rust
 pub struct TraceGranularity;                      // private Felder; Copy, Eq, Hash, Debug
@@ -2271,7 +2276,7 @@ pub trait GamePlugin {                                                  // zusä
 }
 // AppBuilder zusätzlich: profiler(bool) -> Self (Default true), overlay_key(Option<KeyCode>) -> Self (Default Some(KeyCode::F3))
 // AppBuilder zusätzlich, nur mit Feature `debug-link`: debug_link(Box<dyn grimoire_debug::DebugTransport>) -> Self,
-//     debug_link_token([u8; 32]) -> Self (WP8.4, Stufe A, PO-Freigabe offen; §9.7)
+//     debug_link_token([u8; 32]) -> Self (WP8.4, Stufe A, PO-Freigabe 2026-09-18; §9.7)
 pub struct PointerState;     // Clone, Copy, Default, PartialEq, Debug; apply(&RawInputEvent),
                              // position() -> Option<[f32; 2]> (physische Pixel, Ursprung oben links, Y nach unten)
 pub const AIM_MIN_DISTANCE: f32 = 0.01;                                 // Welteinheiten, Chebyshev-Abstand
@@ -2586,8 +2591,9 @@ pub const GRAZE_SYSTEM: &str = "collide.graze";
 
 **Debug-Link-Umsetzung in der Fassade (Ergänzung P1, Plan 0002 WP8.4)**
 
-*Stufe A, PO-Freigabe offen:* die API unten. Die mit „Klarstellung“ markierten Punkte präzisieren den freigegebenen
-Text oben und sind Stufe K.
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+entschiedenen Empfehlung, das Null-Token als Vorgabe für einen übergebenen Transport zu behalten:* die API
+unten. Die mit „Klarstellung“ markierten Punkte präzisieren den freigegebenen Text oben und sind Stufe K.
 
 ```rust
 // grimoire::adapters::debug::link (nur Feature debug-link)
@@ -2913,7 +2919,9 @@ pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub 
 
 ### 9.11 Adapter Assets → Sigil (`grimoire::adapters::assets`)
 
-*Stufe A, PO-Freigabe offen.* Ergänzung P1, Plan 0002 WP8.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+entschiedenen Empfehlung, die API anzunehmen, weil das Spiel Sigil-Content aus einem Pack sonst nicht laden
+kann (WP9.2).* Ergänzung P1, Plan 0002 WP8.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt
 die öffentliche API fest.
 
 ```rust
@@ -3480,7 +3488,8 @@ impl From<SwapReport> for grimoire_sim::SwapRecord;   // WP7.1: { tick: effectiv
   Endstand. Unit-Bytes stehen in P1 nicht im Replay: Eine Swap-Session ist ohne dieselben Units nur bis zum ersten
   Swap-Tick reproduzierbar, gilt als nicht golden (`is_golden_eligible() == false`), und das Golden-Master-Werkzeug
   schreibt aus ihr keinen Master (§15.2, WP7.5).
-  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `impl From<SwapReport> for SwapRecord` bildet genau diesen Eintrag;
+  *Umsetzung (WP7.1); freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe):*
+  `impl From<SwapReport> for SwapRecord` bildet genau diesen Eintrag;
   eine aufzeichnende Sitzung schreibt `header.record_swap(report.into())` (§8.1). Die Zusammenfassung mehrerer Tausche
   an einer Grenze übernimmt `record_swap`. Mit denselben Units ist eine Sitzung, die je Grenze höchstens einmal
   tauscht, vollständig reproduzierbar; bei zusammengefassten Tauschen fehlt die Swap-Anzahl der Epoche, die in
@@ -4136,9 +4145,11 @@ pub enum ExportError;         // #[non_exhaustive], thiserror: Io { kind: io::Er
 
 **Engine-Server (Ergänzung P1, Plan 0002 WP8.4)**
 
-*Stufe A, PO-Freigabe offen:* `EngineLink`, `LinkEvent`, `LinkError`, `InProcessTransport::send_bytes` und die
-Verbindungsgrenzen des TCP-Transports (unten). Die mit „Klarstellung“ markierten Punkte setzen den freigegebenen Text
-oben um und sind Stufe K.
+*Freigegeben (PO, 2026-09-18; Stufe A nach PO-Entscheid V-20, §2b, gebündelte Freigabe), einschließlich der
+entschiedenen Einstufung der Verbindungsgrenzen als Stufe A statt I — §13 legte das Ergebnis an der Grenze nicht
+fest, und außer Tests nutzte niemand den Transport:* `EngineLink`, `LinkEvent`, `LinkError`,
+`InProcessTransport::send_bytes` und die Verbindungsgrenzen des TCP-Transports (unten). Die mit „Klarstellung“
+markierten Punkte setzen den freigegebenen Text oben um und sind Stufe K.
 
 ```rust
 pub struct EngineLink;                // Debug; new(Box<dyn DebugTransport>, EngineIdentity), is_connected() -> bool,

@@ -1,8 +1,8 @@
 # ADR-0018: Subsystem-Hashes — erkennen alle 60 Ticks, eingrenzen je System (OF-18.1)
 
-- **Status:** Vorgeschlagen (Entscheidung durch den PO offen)
+- **Status:** Akzeptiert (PO, 2026-09-18)
 - **Datum:** 2026-09-17
-- **Entscheider:** Lupus Malus Deviant (PO), Entscheidung aussteht; vorbereitet durch Claude
+- **Entscheider:** Lupus Malus Deviant (PO), vorbereitet durch Claude
 - **Bezug:** Spiel-Repo Plan 0002 WP7.2 (Spike OF-18.1) und WP7.4/WP7.5 (Sim-Harness, Golden Master);
   [PRD-0018](https://github.com/LupusMalusDeviant/fiends-n-patrons/blob/main/docs/prd/0018-teststrategie.md)
   (NFR „Diagnostik“, US-03, OF-18.1); Engine-Vertrag [`crate-vertraege.md`](../architektur/crate-vertraege.md)
@@ -127,9 +127,13 @@ Zustands-Hashes würden jeden Hash verbilligen. Beides ändert das Hash-Layout (
 erneuert) bzw. braucht Eigentums-Metadaten je Komponente in `grimoire_ecs`. Kein P1-Bedarf, weil D die
 Kosten bereits aus den regelmäßigen Läufen herausnimmt.
 
-## Entscheidung (Vorschlag)
+## Entscheidung
 
-**Option D mit N = 60.**
+**Gewählte Option: D mit N = 60.** Der PO hat die ADR am 2026-09-18 angenommen und dabei
+jeden Punkt so entschieden, wie er empfohlen war: **erkennen alle 60 Ticks, eingrenzen je System je Tick
+innerhalb des abweichenden Fensters**; im Fehlerfall **die Referenz neu bauen, statt System-Hashes im
+Golden Master abzulegen**; und das Beispiel in PRD-0018 von 600 auf 60 Ticks nachziehen. Die Umsetzung der
+API ist mit WP7.2 gemergt (Vertrag §8.5); die PRD-Änderung liegt im Spiel-Repo und wird dort nachgezogen.
 
 - Regelmäßige Läufe (Harness WP7.4, Golden-Master-Vergleich WP7.5, Plattformvergleich nightly)
   zeichnen den Zustands-Hash alle 60 Ticks auf (`TraceGranularity::every(60)`, gleich
@@ -138,7 +142,8 @@ Kosten bereits aus den regelmäßigen Läufen herausnimmt.
 - Die Diagnose grenzt einen Bruch mit `PER_SYSTEM_PER_TICK` über das erste abweichende Fenster ein und
   meldet `Divergence` (Tick, System, Subsystem). Die Referenz läuft dafür erneut, aus demselben Stand
   oder aus dem im Replay-Header aufgezeichneten Build.
-- Golden Master speichern keine System-Hashes. Sollte sich in WP7.5 zeigen, dass die Referenz im
+- Golden Master speichern keine System-Hashes; der PO hat den Neubau der Referenz dem Speichern
+  ausdrücklich vorgezogen. Sollte sich in WP7.5 zeigen, dass die Referenz im
   Spiel-CI nicht mit vertretbarem Aufwand neu gebaut werden kann, ist der Rückfall, beim bewussten
   Erneuern eines Masters zusätzlich einen `PER_SYSTEM_PER_TICK`-Trace abzulegen (Speicherbedarf wie
   Option A, Rechenkosten nur beim Erneuern). Das entscheidet WP7.5.
@@ -147,7 +152,7 @@ Kosten bereits aus den regelmäßigen Läufen herausnimmt.
 ## Konsequenzen
 
 - **Vertrag:** §8.5 beschreibt `trace`, `SystemHasher`, `HashTrace`, `TraceGranularity`,
-  `first_divergence` und `Divergence` (Stufe A, PO-Freigabe offen). Die API trägt jede Option; dieses
+  `first_divergence` und `Divergence` (Stufe A, PO-Freigabe 2026-09-18). Die API trägt jede Option; dieses
   ADR legt nur fest, welche Dichte Harness und Golden Master verwenden.
 - **WP7.4/WP7.5:** Checkpoints alle 60 Ticks im `HarnessReport` und im Master; der Diff-Report
   (erster Tick, Subsystem, Diff-Replay) ruft die Eingrenzung auf, statt Daten dafür vorzuhalten.
