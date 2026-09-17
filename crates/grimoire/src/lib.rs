@@ -119,6 +119,7 @@ pub use main_loop::LoopReport;
 pub use plugin::{FrameStats, GamePlugin};
 pub use render_assets::{HeadlessRenderAssets, PluginError, RenderAssets};
 
+pub use grimoire_assets as assets;
 pub use grimoire_collide as collide;
 pub use grimoire_core as core;
 pub use grimoire_debug as debug;

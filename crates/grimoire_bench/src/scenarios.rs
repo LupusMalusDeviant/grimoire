@@ -56,9 +56,13 @@ use grimoire::render::{
     BULLET_PASS_PALETTE_SPACE, BulletInstance, Camera25D, LightBudget, PointLight, StageFrame,
     bullet_palette, bullet_silhouette,
 };
+use grimoire_collide::{
+    BatchHits, Capsule, Circle, Collider, ColliderKey, CollisionQuery, GrazeRing, GridConfig,
+    GridItem, Hit, LayerMask, Shape, ShapeQuery, SpatialGrid,
+};
 use grimoire_core::impl_stable_hash;
 use grimoire_core::math::Vec2;
-use grimoire_ecs::{System, World, system_fn};
+use grimoire_ecs::{Entity, Executor, System, World, system_fn};
 use grimoire_sigil::{
     BehaviorRegistryBuilder, BulletPool, BulletSpawn, Emitter, SigilConfig, SigilContent,
     SigilLibrary, SigilUnit, install,
@@ -950,9 +954,313 @@ pub fn run_light_cluster_frames(
     lights
 }
 
+// ---- Plan 0002 WP6.5: the collision benches ------------------------------------------------------
+
+/// Collision budget per tick in milliseconds: broadphase rebuild, the enemy queries and the graze
+/// query for [`COLLIDE_BULLETS`] bullets and [`COLLIDE_ENEMIES`] enemies (plan 0002 WP6.5, contract
+/// §14). Printed next to the wall-clock medians as a budget line; never a CI gate on shared runners
+/// (engine ADR-0010).
+pub const COLLIDE_TICK_BUDGET_MS: f64 = 1.5;
+
+/// Scenario name of the representative collision bench, bullets spread over the arena (contract
+/// §14; its `Ir` enters the regression gate).
+pub const COLLIDE_UNIFORM_SCENARIO: &str = "collide_uniform";
+/// Scenario name of the worst-case collision bench, every bullet in the four grid cells around the
+/// graze centre (contract §14, PO decision P-3; wall-clock trend only).
+pub const COLLIDE_CLUSTER_SCENARIO: &str = "collide_cluster";
+/// Bullet circles in both collision benches.
+pub const COLLIDE_BULLETS: u32 = 10_000;
+/// Dummy enemies (entities with a `Collider`) in both collision benches.
+pub const COLLIDE_ENEMIES: u32 = 100;
+/// Ticks per wall-clock sample of both collision benches.
+pub const COLLIDE_WALLCLOCK_TICKS: u32 = 100;
+/// Ticks per Callgrind probe of `collide_uniform`.
+pub const COLLIDE_IR_TICKS: u32 = 50;
+
+/// Half the side of the uniform scene's square arena: 64 × 64 world units, 16 × 16 grid cells,
+/// about 39 bullets per cell (roughly a playfield under the tilted camera).
+const COLLIDE_ARENA_HALF: f32 = 32.0;
+/// Half the side of the square holding every bullet of the cluster scene. With the bullet radius,
+/// every bounding box stays inside `(-4, 4)`, the four cells around the origin.
+const COLLIDE_CLUSTER_HALF: f32 = 3.69;
+/// Collision radius of every bullet.
+const COLLIDE_BULLET_RADIUS: f32 = 0.3;
+/// Layers of the bench: bullets on one, enemies on another (the game owns the real meaning).
+const COLLIDE_BULLET_LAYERS: LayerMask = LayerMask::layer(0);
+const COLLIDE_ENEMY_LAYERS: LayerMask = LayerMask::layer(1);
+
+/// Where the bullets of a collision bench fly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollideLayout {
+    /// Spread over the whole arena (`collide_uniform`).
+    Uniform,
+    /// Inside the four grid cells around the graze centre (`collide_cluster`).
+    Cluster,
+}
+
+/// State of a collision bench: the bullets as position and velocity columns, the enemy entities,
+/// the grid and every reused query buffer.
+pub struct CollideBench {
+    half: f32,
+    positions: Vec<Vec2>,
+    velocities: Vec<Vec2>,
+    world: World,
+    items: Vec<GridItem>,
+    queries: Vec<ShapeQuery>,
+    grid: SpatialGrid,
+    batch: BatchHits,
+    graze: Vec<Hit>,
+}
+
+/// Grid of the collision benches: the default of the Sigil → collision adapter (contract §9.6),
+/// 128 × 128 cells of 4 units around the origin.
+#[must_use]
+pub fn collide_grid_config() -> GridConfig {
+    GridConfig::new(Vec2::new(-256.0, -256.0), 4.0, 128, 128)
+}
+
+/// The graze ring of the collision benches: the player at the origin.
+#[must_use]
+pub fn collide_graze_ring() -> GrazeRing {
+    GrazeRing {
+        center: Vec2::ZERO,
+        inner_radius: 0.5,
+        outer_radius: 2.5,
+    }
+}
+
+/// A value in `[0, 1)` derived from `index` and `salt` without floating-point state, so both
+/// benches place the same bullets on every run and every machine.
+fn unit_hash(index: u32, salt: u32) -> f32 {
+    let mut x = index.wrapping_mul(0x9E37_79B9) ^ salt.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    (x & 0x00FF_FFFF) as f32 / 16_777_216.0
+}
+
+/// `value` wrapped into `[-half, half)`.
+fn wrap(value: f32, half: f32) -> f32 {
+    (value + half).rem_euclid(2.0 * half) - half
+}
+
+/// Builds a collision bench: [`COLLIDE_BULLETS`] bullets on hashed positions with hashed
+/// velocities inside the layout's square, and [`COLLIDE_ENEMIES`] enemy entities on a 10 × 10
+/// lattice over the arena (every fifth a capsule), identical in both layouts.
+#[must_use]
+pub fn build_collide(layout: CollideLayout) -> CollideBench {
+    let (half, speed) = match layout {
+        CollideLayout::Uniform => (COLLIDE_ARENA_HALF, 0.25),
+        CollideLayout::Cluster => (COLLIDE_CLUSTER_HALF, 0.05),
+    };
+    let positions = (0..COLLIDE_BULLETS)
+        .map(|i| {
+            Vec2::new(
+                (unit_hash(i, 1) * 2.0 - 1.0) * half,
+                (unit_hash(i, 2) * 2.0 - 1.0) * half,
+            )
+        })
+        .collect();
+    let velocities = (0..COLLIDE_BULLETS)
+        .map(|i| {
+            Vec2::new(
+                (unit_hash(i, 3) * 2.0 - 1.0) * speed,
+                (unit_hash(i, 4) * 2.0 - 1.0) * speed,
+            )
+        })
+        .collect();
+    let mut world = World::new();
+    for index in 0..COLLIDE_ENEMIES {
+        let center = Vec2::new(
+            (index % 10) as f32 * 6.4 - 28.8,
+            (index / 10) as f32 * 6.4 - 28.8,
+        );
+        let shape = if index % 5 == 0 {
+            Shape::Capsule(Capsule {
+                a: center - Vec2::new(1.0, 0.0),
+                b: center + Vec2::new(1.0, 0.0),
+                radius: 0.9,
+            })
+        } else {
+            Shape::Circle(Circle {
+                center,
+                radius: 1.2,
+            })
+        };
+        world.spawn((Collider {
+            shape,
+            layers: COLLIDE_ENEMY_LAYERS,
+        },));
+    }
+    CollideBench {
+        half,
+        positions,
+        velocities,
+        world,
+        items: Vec::with_capacity((COLLIDE_BULLETS + COLLIDE_ENEMIES) as usize),
+        queries: Vec::with_capacity(COLLIDE_ENEMIES as usize),
+        grid: SpatialGrid::new(collide_grid_config()).expect("valid bench grid"),
+        batch: BatchHits::default(),
+        graze: Vec::new(),
+    }
+}
+
+/// Runs `ticks + extra_ticks` collision ticks on `executor` and returns the hits found: every
+/// tick moves the bullets, collects bullets and enemies into grid items (bullets in slot order,
+/// then enemies in query order, like the adapter of contract §9.6), rebuilds the grid with
+/// `rebuild_par`, answers one query per enemy with `overlapping_batch` and the player's graze ring
+/// with `graze_ring`. `extra_ticks` is the nominal regression injection, like the other benches'.
+pub fn run_collide_ticks(
+    bench: &mut CollideBench,
+    executor: &dyn Executor,
+    ticks: u32,
+    extra_ticks: u32,
+) -> u64 {
+    let ring = collide_graze_ring();
+    let mut hits = 0u64;
+    for _ in 0..(ticks + extra_ticks) {
+        for (position, velocity) in bench.positions.iter_mut().zip(&bench.velocities) {
+            let moved = *position + *velocity;
+            *position = Vec2::new(wrap(moved.x, bench.half), wrap(moved.y, bench.half));
+        }
+
+        bench.items.clear();
+        bench.queries.clear();
+        bench.items.extend(
+            bench
+                .positions
+                .iter()
+                .enumerate()
+                .map(|(slot, &center)| GridItem {
+                    key: ColliderKey::pool(slot as u32, 0),
+                    shape: Shape::Circle(Circle {
+                        center,
+                        radius: COLLIDE_BULLET_RADIUS,
+                    }),
+                    layers: COLLIDE_BULLET_LAYERS,
+                }),
+        );
+        for (entity, collider) in bench.world.query::<(Entity, &Collider)>() {
+            bench.items.push(GridItem {
+                key: ColliderKey::from_entity(entity),
+                shape: collider.shape,
+                layers: collider.layers,
+            });
+            bench.queries.push(ShapeQuery {
+                shape: collider.shape,
+                mask: COLLIDE_BULLET_LAYERS,
+            });
+        }
+
+        bench
+            .grid
+            .rebuild_par(executor, bench.items.iter().copied());
+        bench
+            .grid
+            .overlapping_batch(executor, &bench.queries, &mut bench.batch);
+        bench
+            .grid
+            .graze_ring(&ring, COLLIDE_BULLET_LAYERS, &mut bench.graze);
+
+        hits += (0..bench.batch.len())
+            .map(|index| bench.batch.hits(index).len() as u64)
+            .sum::<u64>()
+            + bench.graze.len() as u64;
+    }
+    black_box(hits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grimoire_ecs::{PermutedExecutor, SequentialExecutor};
+
+    #[test]
+    fn collide_benches_enter_every_object_and_find_hits_each_tick() {
+        for layout in [CollideLayout::Uniform, CollideLayout::Cluster] {
+            let mut bench = build_collide(layout);
+            let hits = run_collide_ticks(&mut bench, &SequentialExecutor, 3, 0);
+            assert_eq!(
+                bench.grid.len(),
+                (COLLIDE_BULLETS + COLLIDE_ENEMIES) as usize,
+                "{layout:?}"
+            );
+            assert_eq!(bench.batch.len(), COLLIDE_ENEMIES as usize, "{layout:?}");
+            assert!(!bench.graze.is_empty(), "{layout:?}: the player grazes");
+            let enemies_hit = (0..bench.batch.len())
+                .filter(|&index| !bench.batch.hits(index).is_empty())
+                .count();
+            assert!(enemies_hit > 0, "{layout:?}: some enemy touches a bullet");
+            assert!(hits > 0);
+            // Enemies are found only through their own layer, never by the bullet mask.
+            assert!((0..bench.batch.len()).all(|index| {
+                bench
+                    .batch
+                    .hits(index)
+                    .iter()
+                    .all(|hit| hit.layers == COLLIDE_BULLET_LAYERS)
+            }));
+        }
+    }
+
+    #[test]
+    fn collide_cluster_keeps_every_bullet_in_four_cells() {
+        let config = collide_grid_config();
+        let mut bench = build_collide(CollideLayout::Cluster);
+        for _ in 0..5 {
+            run_collide_ticks(&mut bench, &SequentialExecutor, 7, 0);
+            let mut cells = std::collections::BTreeSet::new();
+            for item in &bench.grid.items()[..COLLIDE_BULLETS as usize] {
+                let aabb = item.shape.aabb();
+                for corner in [aabb.min, aabb.max] {
+                    cells.insert((
+                        ((corner.x - config.origin.x) / config.cell_size).floor() as i64,
+                        ((corner.y - config.origin.y) / config.cell_size).floor() as i64,
+                    ));
+                }
+            }
+            assert!(cells.len() <= 4, "bullets span {} cells", cells.len());
+        }
+    }
+
+    #[test]
+    fn collide_uniform_spreads_bullets_over_the_arena() {
+        let mut bench = build_collide(CollideLayout::Uniform);
+        run_collide_ticks(&mut bench, &SequentialExecutor, 10, 0);
+        let config = collide_grid_config();
+        let cells: std::collections::BTreeSet<_> = bench.grid.items()[..COLLIDE_BULLETS as usize]
+            .iter()
+            .map(|item| {
+                let Shape::Circle(circle) = item.shape else {
+                    unreachable!("bullets are circles")
+                };
+                (
+                    ((circle.center.x - config.origin.x) / config.cell_size).floor() as i64,
+                    ((circle.center.y - config.origin.y) / config.cell_size).floor() as i64,
+                )
+            })
+            .collect();
+        assert!(
+            cells.len() >= 250,
+            "bullets occupy {} of the arena's 256 cells",
+            cells.len()
+        );
+    }
+
+    #[test]
+    fn collide_benches_are_identical_for_every_executor() {
+        for layout in [CollideLayout::Uniform, CollideLayout::Cluster] {
+            let mut sequential = build_collide(layout);
+            let expected = run_collide_ticks(&mut sequential, &SequentialExecutor, 4, 0);
+            let mut permuted = build_collide(layout);
+            let actual = run_collide_ticks(&mut permuted, &PermutedExecutor::reversed(), 4, 0);
+            assert_eq!(actual, expected, "{layout:?}");
+            assert_eq!(
+                grimoire_core::hash_of(&permuted.grid),
+                grimoire_core::hash_of(&sequential.grid)
+            );
+        }
+    }
 
     #[test]
     fn render_cpu_benches_prepare_every_bullet_and_the_full_light_budget() {

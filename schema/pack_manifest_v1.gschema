@@ -9,19 +9,22 @@
 # variable-length fields (nothing this schema language would help describe) or a cross-structure
 # validation that depends on data this manifest-only type never sees.
 #
-# `error_type` is `"self"`: the generated `PackManifestV1Error` is a standalone codec used by this
-# schema's own round-trip and golden-fixture tests, not (yet) `grimoire_assets`'s existing
-# `PackError`. `PackReader`/`PackWriter` keep their hand-written manifest code for now (Plan-0002
-# WP8.1 scope note): swapping them to call this generated codec is deferred to WP8.3, once it is
-# clear the swap can be made byte-for-byte and error-for-error identical to the existing,
-# already-tested behaviour without forcing `PackError` to grow rule-9-generic variants
-# (`FieldTooLong`, `InvalidUtf8`) it does not otherwise need.
+# `error_type` is `"self"`: the generated `PackManifestV1Error` stays this codec's own error type.
+# Since Plan-0002 WP8.3, `PackReader`/`PackWriter` encode and decode the manifest only through this
+# codec and map its errors onto `PackError::Manifest` (contract §12), so `PackError` needs no
+# rule-9-generic variants (`FieldTooLong`, `InvalidUtf8`) of its own. The cross-checks against the
+# header and TOC (`entry_count` equals the TOC count, each path's `AssetId` equals the TOC id of the
+# same index, both `PackError::ManifestMismatch`) stay in pack.rs, which checks the count before it
+# decodes, so the path vector never allocates beyond what the already validated TOC allows.
+#
+# The whole pack layout is documented in docs/formats/pack.md; this schema generates only the
+# manifest field table, docs/formats/pack-manifest.md.
 
 schema "pack_manifest_v1"
 version 1
 error_type "self"
-"The pack v1 manifest body (engine contract §12), standalone from `grimoire_assets::PackError`"
-"until Plan-0002 WP8.3 (see this file's header comment)."
+"The pack v1 manifest body (engine contract §12); the complete pack layout is documented in"
+"`docs/formats/pack.md`."
 
 doc "The manifest section of a pack v1 file: compiler provenance, one path per TOC entry (in TOC"
 doc "order), and an opaque application-defined block. Ends exactly at the end of the file; no"

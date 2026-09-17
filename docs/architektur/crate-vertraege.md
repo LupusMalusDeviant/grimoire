@@ -1650,7 +1650,8 @@ pub struct ReplayHeader {
     pub app_metadata: BTreeMap<String, String>,   // ≤ MAX_APP_METADATA Einträge
 }                                                 // Clone, Eq, Debug; for_this_build(content_manifest) -> Self
                                                   // (ENGINE_VERSION, ENGINE_BUILD, keine Swaps, keine Metadaten);
-                                                  // is_golden_eligible() -> bool (== swaps.is_empty())
+                                                  // is_golden_eligible() -> bool (== swaps.is_empty());
+                                                  // record_swap(&mut self, SwapRecord) -> Result<(), SimError>  (WP7.1)
 pub struct Replay { pub header: Option<ReplayHeader>, pub log: InputLog }  // None = Version 1; Clone, Eq, Debug
                                                   // FORMAT_VERSION = 2; from_bytes(&[u8]) -> Result<Replay, SimError>;
                                                   // to_bytes(&self) -> Result<Vec<u8>, SimError>
@@ -1707,13 +1708,19 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   Tausch vor dem ersten `step` hat `tick = 0`. Den Stand direkt nach der Installation des Contents beschreibt
   `content_manifest`. Unit-Bytes stehen nicht im Replay (§11.8). Ein Replay mit mindestens einem Eintrag ist nie
   golden (`is_golden_eligible() == false`); Golden-Master-Werkzeuge weisen es ab (§15.2).
+  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `ReplayHeader::record_swap` hängt einen Eintrag in
+  Tick-Reihenfolge an. Hat er den Tick des letzten Eintrags, ersetzt er dessen `content_manifest` (mehrere Tausche an
+  einer Grenze ergeben so den Endstand). Ein früherer Tick liefert `SwapOrder { index: swaps.len() }`, ein neuer
+  Eintrag über `MAX_SWAP_RECORDS` hinaus `TooManyEntries`; bei einem Fehler ändert sich nichts. `tick ≤ frames.len()`
+  prüft erst `to_bytes`. Den Eintrag liefert `grimoire_sigil` aus dem `SwapReport` (§11.8).
 - **Kein Simulationszustand:** Header-Felder gehen weder in `state_hash` noch in Snapshots noch in `replay` ein.
   `replay(sim, &r.log, hash_every)` bleibt unverändert. Den Header prüft der Aufrufer: Er baut die Simulation mit
   `log.seed` und entscheidet selbst, was ein abweichender `content_manifest` bedeutet.
 - **Build-Hash:** `ENGINE_BUILD` wird zur Übersetzungszeit im `const`-Kontext aus `GRIMOIRE_BUILD_HASH` gelesen
   (40 Hex-Kleinbuchstaben). Ein ungültiger Wert ist ein Übersetzungsfehler, ein fehlender ergibt `UNKNOWN`.
-  Engine-CI und Release-Workflow setzen die Variable auf den gebauten Commit. Lokale Builds und Builds aus einem
-  Cargo-git-Checkout sind ohne sie `UNKNOWN`. Replay-Dateien unterscheiden sich damit je Build: **Golden Master
+  Engine-CI und Release-Workflow setzen die Variable auf den gebauten Commit (*umgesetzt in WP7.1:* `ci.yml`,
+  `nightly.yml` und `release.yml` setzen `GRIMOIRE_BUILD_HASH: ${{ github.sha }}` für alle Jobs). Lokale Builds und
+  Builds aus einem Cargo-git-Checkout sind ohne sie `UNKNOWN`. Replay-Dateien unterscheiden sich damit je Build: **Golden Master
   vergleichen Checkpoint-Hashes, nie Replay-Bytes.**
 - `engine_version` ist Information. Kein Leser weist ein Replay deswegen ab; ein Version-Guard kommt mit PRD-0015
   FR-04, nicht in P1.
@@ -1726,6 +1733,11 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
 - **Dokumentation und Fixtures:** `docs/formats/replay.md`. Byteweise Golden-Fixtures liegen unter
   `crates/grimoire_sim/tests/fixtures/`: `replay_v1.bin`, `replay_v2_minimal.bin`, `replay_v2_full.bin` mit Swaps
   und Metadaten. Sie dienen auch Verbrauchern außerhalb von Rust als Referenz.
+  *Umsetzung (WP7.1, PO-Sammelentscheid 2026-09-17 „Replay-Fixtures der Engine“):* Die Fixtures halten das Format
+  fest, nicht die Tagesversion. Sie tragen die feste `engine_version` `"0.4.0"` und einen festen Build-Hash statt
+  `ENGINE_VERSION` und `ENGINE_BUILD`; ein Release und `GRIMOIRE_BUILD_HASH` ändern sie nicht, neu erzeugt werden sie
+  nur nach einer bewussten Formatänderung. Die Bytes blieben beim Entkoppeln gleich. Ein Test schreibt alle drei ohne
+  Encoder byteweise aus der Layout-Tabelle nach; `docs/formats/replay.md` zeigt sie kommentiert.
 - **Vertragstests (WP1.3):**
   - Rundreise beider Versionen.
   - Jede Kürzung einer gültigen Eingabe liefert `Err`.
@@ -1733,7 +1745,10 @@ pub enum SimError;   // zusätzlich (additiv, bleibt #[non_exhaustive]):
   - `swap_count = u32::MAX` bzw. `frame_count = u64::MAX` bei 64 Byte Eingabe liefert `Err` ohne Allokation.
   - Jedes Maximum + 1 liefert `Err`.
   - Die v1-Fixture ergibt `header = None` und dasselbe `InputLog` wie `InputLog::from_bytes`.
-  - `ENGINE_BUILD` ohne Variable ist `UNKNOWN`.
+  - `ENGINE_BUILD` ohne Variable ist `UNKNOWN`; mit Variable ist es deren Commit (WP7.1).
+  - WP7.1: `record_swap` hängt in Tick-Reihenfolge an, fasst Tausche einer Grenze zusammen und weist früheren Tick
+    und Überlauf ohne Änderung ab; eine aufgezeichnete Sigil-Sitzung mit Tauschen ist ohne die Units genau bis zum
+    ersten Swap-Tick reproduzierbar und mit ihnen vollständig (`grimoire_sigil/tests/replay_record.rs`).
 
 ### 8.2 Snapshots: Lesezugriff und geprüfte Wiederherstellung (Ergänzung P1)
 
@@ -1864,6 +1879,77 @@ pub mod stream {
 - **Querverweis Content-Epoche:** Die Content-Epoche geht über die Ressource `SigilContent` in `World::stable_hash`
   ein. Das Hash-Layout von `state_hash` ändert sich dadurch nicht. Hot-Swap und Restore mit fremder Epoche regelt
   §11.8.
+
+### 8.5 Subsystem-Hashes und Divergenz-Diagnose (Ergänzung P1, WP7.2)
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Umsetzung von OF-18.1 über den Beobachter aus §7.2 und
+§8.4. Welche Dichte Harness und Golden Master verwenden, schlägt [ADR-0018](../adr/0018-subsystem-hashes-erkennen-alle-n-ticks-eingrenzen-je-system.md)
+vor (Status Vorgeschlagen); die API trägt jede Dichte.
+
+```rust
+pub struct TraceGranularity;                      // private Felder; Copy, Eq, Hash, Debug
+                                                  // PER_SYSTEM_PER_TICK; every(NonZeroU64) -> Self (ohne System-Hashes);
+                                                  // with_system_hashes(self) -> Self; interval() -> NonZeroU64;
+                                                  // has_system_hashes() -> bool
+#[non_exhaustive]
+pub struct TraceCheckpoint { pub tick: u64, pub state_hash: u64, pub system_hashes: Vec<u64> }  // Clone, Eq, Debug; new(..)
+#[non_exhaustive]
+pub struct HashTrace { pub granularity: TraceGranularity, pub system_names: Vec<String>,
+                       pub checkpoints: Vec<TraceCheckpoint> }                                  // Clone, Eq, Debug; new(..)
+pub fn system_hash(world: &World) -> u64;         // frischer StableHasher über World::stable_hash, ohne Tick und Seed
+pub struct SystemHasher;                          // Default, Clone, Debug; impl SystemObserver;
+                                                  // new(), hashes() -> &[u64], clear()
+pub fn trace(sim: &mut Simulation, log: &InputLog, granularity: TraceGranularity) -> HashTrace;
+#[non_exhaustive]
+pub struct DivergentSystem { pub index: usize, pub name: String }   // Clone, Eq, Debug; subsystem() -> &str
+#[non_exhaustive]
+pub struct Divergence { pub tick: u64, pub last_matching_tick: Option<u64>,
+                        pub system: Option<DivergentSystem> }       // Clone, Eq, Debug, Display; is_exact() -> bool
+pub fn first_divergence(reference: &HashTrace, candidate: &HashTrace) -> Option<Divergence>;
+```
+
+**Semantik:**
+- **System-Hash:** `SystemHasher` bildet in `system_finished` `system_hash(world)` und legt ihn am Listenindex des
+  Systems ab (`SystemInfo::index`). Nach §7.2 ist das für exklusive Systeme der Zustand direkt nach ihrem Lauf, für
+  parallele der Zustand direkt nach Anwendung ihres Puffers, also bit-gleich mit `StageMode::Isolated`. System-Hashes
+  hängen damit weder von `StageMode` noch vom Executor ab. Ein System, das wegen eines Panics nicht fertig wird,
+  hinterlässt `0` an seinem und allen späteren Indizes.
+- **`trace`:** Der erste Checkpoint ist der Zustand vor dem ersten Schritt (`sim.tick()`, `state_hash`, keine
+  System-Hashes). Danach folgt ein Checkpoint nach jedem Schritt, der `sim.tick()` zu einem Vielfachen von
+  `interval` macht, und immer nach dem letzten Schritt. `tick` zählt wie `replay` nach dem Schritt. Mit
+  System-Hashes läuft genau der Schritt zu einem Checkpoint über `step_observed` mit `SystemHasher`; alle anderen
+  Schritte laufen ohne Beobachter. Zustände und `state_hash` sind exakt die von `replay`. Aufzeichnen ändert keinen
+  Hash (§8.4). `system_names` sind die Namen aus `Schedule::system_names` beim Aufruf.
+- **`first_divergence`:** Verglichen werden nur Ticks, die in beiden Traces vorkommen, aufsteigend. Ein Tick weicht
+  ab, wenn die Zustands-Hashes verschieden sind oder beide Checkpoints System-Hashes haben, die verschieden sind.
+  Am ersten solchen Tick ist `last_matching_tick` der letzte vorherige gemeinsame Tick mit gleichem Zustands-Hash
+  (`None`, wenn es keinen gibt). `system` ist der erste Listenindex mit verschiedenem System-Hash, sofern beide
+  Checkpoints System-Hashes haben und beide Traces dieselben `system_names` führen; sonst `None`. Traces
+  verschiedener Länge oder Dichte sind vergleichbar; ohne Abweichung in den gemeinsamen Ticks ist das Ergebnis
+  `None`.
+- **`is_exact`:** `last_matching_tick == Some(tick - 1)`. Nur dann entstand die Abweichung im Schritt zu `tick`, und
+  `system` ist das System, in dem sie entstand. Sonst liegt die Ursache in einem Schritt nach `last_matching_tick`,
+  und `system` ist nur das erste System, dessen Welt an `tick` abweicht. Eine Abweichung, die zwischen zwei Schritten
+  entsteht (`replace_unit`, `restore`), zeigt sich am ersten System des folgenden Schritts.
+- **Subsystem:** `DivergentSystem::subsystem` ist der Namensteil vor dem ersten `.` (`sigil` für `sigil.update`),
+  dasselbe Präfix, nach dem der Profiler Systeme gruppiert (§9.7). Ein Name ohne Punkt oder mit leerem Präfix ist
+  hier sein eigenes Subsystem; der Profiler zählt ihn zu `app`. Die Meldung nennt immer auch den vollen Systemnamen.
+- **Eingrenzung (ADR-0018, Option D):** Ein Aufrufer, der alle N Ticks erkennt, spielt beide Läufe mit `replay`
+  bis `last_matching_tick` ab und ruft danach `trace` mit `PER_SYSTEM_PER_TICK` nur über die Frames bis `tick` auf;
+  `first_divergence` über diese Fenster ist dann exakt.
+- **Kein Simulationszustand:** Traces gehen weder in Hash, Snapshot noch Replay ein. Ein Dateiformat für
+  gespeicherte Traces legt WP7.5 fest; `HashTrace::new` und `TraceCheckpoint::new` erlauben den Aufbau aus
+  gelesenen Daten.
+- **Tests (WP7.2, `grimoire_sim/tests/trace.rs`):** Checkpoints jeder Dichte stimmen mit `replay` überein;
+  System-Hashes folgen der Welt nach jedem System; Aufzeichnen ändert keinen `state_hash`; im Parallel-Szenario
+  identische Traces unter `Isolated` und `Grouped` mit sequentiellem und permutiertem Executor; ein eingebauter
+  Fehler in `collide.resolve` ab Tick 37 wird je System je Tick exakt gemeldet (Tick 38, System, Subsystem), alle 10
+  Ticks als Fenster (30, 40], mit System-Hashes an den Checkpoints als erstes abweichendes System ohne
+  Ursachen-Anspruch, und über die Fenster-Eingrenzung wieder exakt; verschiedene Schedules nennen kein System;
+  verschiedene Startzustände weichen an Tick 0 ohne übereinstimmenden Tick ab.
+- **Kosten (Spike, ADR-0018):** Der Beobachter-Haken kostet 5 `Ir` je Tick. Ein Welt-Hash bei 10.000 Bullets kostet
+  84 % eines Sigil-Schritts; je System je Tick die 6,1-fache, alle 60 Ticks die 1,03-fache Instruktionszahl eines
+  Schritts.
 
 ## 9. `grimoire` — Fassade
 
@@ -2025,7 +2111,7 @@ Engine-ADR „Crate-Map-Erweiterung P1“.
 |-------|----------|--------|---------|
 | `grimoire::adapters::sigil_render` | Sigil → Render | Extraktion Pool → `BulletVisual` → `BulletInstance` (mit Palettenraum und Interpolation) in `StageFrame::bullets` | §6, §11, API §9.9 (WP5.3) |
 | `grimoire::adapters::sigil_collide` | Sigil → Kollision | Broadphase über Bullets und `Collider`-Entities, Graze-Ring-Abfrage je Tick | §9.6 (Ressourcentypen `GrazeProbe`, `GrazeHits` mit den Skeletten in WP1.3, Plugin und Systeme WP11.2) |
-| `grimoire::adapters::assets` | Assets → Sigil | Sigil-Einträge aus `AssetSource` an `SigilUnit::from_bytes`, Bibliothek für `grimoire_sigil::install` | §11.2, §12 |
+| `grimoire::adapters::assets` | Assets → Sigil | Sigil-Einträge aus `AssetSource` an `SigilUnit::from_bytes`, Bibliothek für `grimoire_sigil::install` | §11.2, §12, API §9.11 (WP8.3) |
 | `grimoire::adapters::debug` | Debug ↔ Sim/Render | Uhrzugriff des Profilers über `PlatformContext::clock`, `SystemObserver`-Anbindung, Overlay in `StageFrame::debug_sprites`, Warteschlange für Swaps | §9.7, §13 |
 
 - Adapter-Systeme, die im Tick laufen, folgen §7: deklarierte Zugriffe, verzögerte Schreibzugriffe, heiße
@@ -2620,6 +2706,38 @@ pub struct OffscreenRun { pub width: u32, pub height: u32, pub frames: u64, pub 
   `tests/figure_pack.rs` lädt die Test-Figur über `load_figure_into` aus einem Plugin in
   `run_headless_frames`.
 
+### 9.11 Adapter Assets → Sigil (`grimoire::adapters::assets`)
+
+*Stufe A, PO-Freigabe offen.* Ergänzung P1, Plan 0002 WP8.3. §9.1 nennt Modul und Richtung; dieser Abschnitt legt
+die öffentliche API fest.
+
+```rust
+#[non_exhaustive]
+pub enum SigilAssetsError {                      // thiserror, Debug
+    Read { id: AssetId, source: AssetError },    // Lesen scheitert (etwa HashMismatch)
+    UnsupportedUnitVersion { id: AssetId, kind_version: u32, expected: u32 },
+    Unit { id: AssetId, source: UnitError },     // SigilUnit::from_bytes scheitert
+    UnitIdMismatch { id: AssetId, unit: UnitId },
+    Library(#[from] SigilError),                 // SigilLibrary::new scheitert
+}
+pub fn sigil_units(source: &dyn AssetSource) -> Result<Vec<SigilUnit>, SigilAssetsError>;
+pub fn sigil_library(source: &dyn AssetSource, registry: Arc<BehaviorRegistry>) -> Result<SigilLibrary, SigilAssetsError>;
+```
+
+**Semantik:**
+- `sigil_units` nimmt jeden Eintrag der Art `SIGIL` in `entries()`-Reihenfolge, liest ihn (die Quelle prüft SHA-256)
+  und dekodiert ihn mit `SigilUnit::from_bytes`; Einträge anderer Arten bleiben unberührt. Die Artversion muss
+  `SigilUnit::FORMAT_VERSION` sein (§12: die Artversion eines Sigil-Eintrags ist die Binärformatversion der Unit),
+  die `UnitId` der Unit muss gleich der `AssetId` des Eintrags sein (§11.1: beide aus demselben kanonischen
+  Content-Pfad). Der erste Verstoß beendet den Aufruf mit dem passenden Fehler.
+- `sigil_library` baut aus diesen Units mit `SigilLibrary::new` die Bibliothek für `grimoire_sigil::install` (§11.2,
+  §11.6). Eine Quelle ohne Sigil-Einträge ergibt eine leere Bibliothek.
+- Liest nur, schreibt keinen Zustand; kein Zustands-Hash ändert sich. Die Content-Epoche entspricht einer Bibliothek aus
+  denselben Unit-Bytes (Test).
+- **Tests:** `crates/grimoire/tests/sigil_assets.rs`: Pack mit der Unit-Fixture aus `PackWriter` → `PackReader` →
+  Bibliothek mit derselben Epoche → installiertes Pattern feuert; je ein Test für leere Quelle, fremde Artversion,
+  ungültige Unit-Bytes, abweichende Unit-Kennung und beschädigte Nutzdaten.
+
 ## 10. `grimoire_exec`
 
 ```rust
@@ -3068,6 +3186,7 @@ pub struct SwapReport {                          // Copy, Eq, Debug; nur von rep
 }
 pub fn replace_unit(sim: &mut Simulation, unit: SigilUnit) -> Result<SwapReport, SigilError>;
 pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(), SigilError>;
+impl From<SwapReport> for grimoire_sim::SwapRecord;   // WP7.1: { tick: effective_tick, content_manifest: epoch.manifest_hash }
 ```
 
 **Semantik:**
@@ -3111,6 +3230,11 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   Endstand. Unit-Bytes stehen in P1 nicht im Replay: Eine Swap-Session ist ohne dieselben Units nur bis zum ersten
   Swap-Tick reproduzierbar, gilt als nicht golden (`is_golden_eligible() == false`), und das Golden-Master-Werkzeug
   schreibt aus ihr keinen Master (§15.2, WP7.5).
+  *Umsetzung (WP7.1), Stufe A, PO-Freigabe offen:* `impl From<SwapReport> for SwapRecord` bildet genau diesen Eintrag;
+  eine aufzeichnende Sitzung schreibt `header.record_swap(report.into())` (§8.1). Die Zusammenfassung mehrerer Tausche
+  an einer Grenze übernimmt `record_swap`. Mit denselben Units ist eine Sitzung, die je Grenze höchstens einmal
+  tauscht, vollständig reproduzierbar; bei zusammengefassten Tauschen fehlt die Swap-Anzahl der Epoche, die in
+  `state_hash` eingeht.
 - **`restore_checked`** nutzt `Simulation::restore_checked` (§8.2): Die Prüfung liest
   `snapshot.resource::<SigilContent>()` und vergleicht dessen Epoche mit der geladenen. Sind beide gleich oder fehlen
   beide, wird wiederhergestellt. Sonst liefert es `ContentEpochMismatch { snapshot, loaded }` und ändert nichts; es
@@ -3227,13 +3351,15 @@ pub struct EventRequest { pub event: EventId }   // Component: Clone, Debug, Par
 
 *Freigegeben (WP1.2).*
 
-Format-Dokumentation: `docs/formats/pack.md` (Manifest-Feldtabelle generiert, WP8.1; Header/TOC/Ausrichtung bleiben
-Ablauflogik und stehen nur hier). Dieser Abschnitt ist die verbindliche Kurzfassung. Nach Projekt-ADR-0011
+Format-Dokumentation: `docs/formats/pack.md` (von Hand, das ganze Format: Kopf, Inhaltsverzeichnis, Ausrichtung,
+Arten, Prüfungen, Grenzen, Content-Hash, Golden-Fixtures) und `docs/formats/pack-manifest.md` (Feldtabelle des
+Manifests, generiert). Dieser Abschnitt ist die verbindliche Kurzfassung. Nach Projekt-ADR-0011
 (angenommen, Option 2e) erzeugt `grimoire_schemagen` aus `schema/pack_manifest_v1.gschema` einen Manifest-Codec
-(`crates/grimoire_assets/src/generated/pack_manifest.rs`, Typ `PackManifestBody`) und die Feldtabelle oben; er muss
-das hier festgelegte Byte-Layout exakt reproduzieren. WP8.1 lässt `PackManifestBody` bewusst noch unverdrahtet
-neben dem handgeschriebenen `PackReader`/`PackWriter`-Code (Begründung im Schema-Kommentar); die Verdrahtung ist
-WP8.3.
+(`crates/grimoire_assets/src/generated/pack_manifest.rs`, Typ `PackManifestBody`) und die Feldtabelle; er muss
+das hier festgelegte Byte-Layout exakt reproduzieren. *Klarstellung (WP8.3):* `PackReader` und `PackWriter`
+kodieren und dekodieren das Manifest ausschließlich über diesen Codec und bilden seine Fehler auf
+`PackError::Manifest` ab; Kopf, Inhaltsverzeichnis, Ausrichtung und die Abgleiche zwischen Manifest und
+Inhaltsverzeichnis bleiben handgeschrieben. Byte-Layout, Fehlervarianten und Grenzen ändern sich dadurch nicht.
 
 **Trait-Entscheid (PRD-0002 FR-02, §2a):**
 
@@ -3273,7 +3399,8 @@ pub struct PackManifest;             // compiler(), compiler_version(), path_of(
 pub struct PackWriter;               // Referenz-Schreiber für Tests und Fixtures: new(compiler, compiler_version),
                                      // add(&AssetPath, AssetKind, kind_version, &[u8]) -> Result<AssetId, PackError>,
                                      // application(Vec<u8>), finish() -> Result<Vec<u8>, PackError>
-pub struct Handle<T>;                // id() -> AssetId; Copy, Eq, Ord, Hash, Debug (unabhängig von T)
+pub struct Handle<T>;                // id() -> AssetId; Copy, Eq, Ord, Hash, Debug (unabhängig von T);
+                                     // trägt die Kennung des ausgebenden Stores (Klarstellung WP8.3, siehe unten)
 pub struct AssetStore;               // new(Box<dyn AssetSource>), source() -> &dyn AssetSource,
                                      // load<T: Send + Sync + 'static, E: Display>(&mut self, id, expected: AssetKind,
                                      //     decode: impl FnOnce(&[u8]) -> Result<T, E>) -> Result<Handle<T>, AssetError>,
@@ -3386,7 +3513,11 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
   - Es dekodiert höchstens einmal je `(AssetId, T)` und bildet Fehler von `decode` auf `AssetError::Decode` ab.
   - Die Dekodierfunktion kommt vom Aufrufer, weil `grimoire_assets` die Typen anderer Subsysteme nicht kennt und
     die Orphan-Regel ein Trait-Impl in der Fassade verbietet.
-  - `get` mit einem Handle eines anderen Stores oder Typs liefert `None`, nie Panic.
+  - `get` mit einem Handle eines anderen Stores oder Typs liefert `None`, nie Panic. *Klarstellung (WP8.3):* Ein
+    Handle trägt die Kennung des Stores, der es ausgegeben hat; `get` liefert `None` für das Handle eines anderen
+    Stores auch dann, wenn dieser Store dieselbe `AssetId` mit demselben Typ dekodiert hat. Gleichheit, Ordnung und
+    Hash eines Handles folgen `AssetId` und Store, nie `T`; Handles eines Stores ordnen nach `AssetId`. Bis WP8.3
+    fand `get` in diesem Fall den Wert des eigenen Stores, entgegen dem Satz oben.
   - Der Store ist weder `Clone` noch `StableHash`. Was die Simulation aus ihm übernimmt (geladene Units), regelt
     §11.2.
 - Hot-Swap einzelner Nicht-Sigil-Assets (PRD-0002 FR-10) ist in v1 nur reserviert (Nachrichtenbereich in §13).
@@ -3396,6 +3527,10 @@ pub enum PackError;                  // #[non_exhaustive], thiserror: Unexpected
   `content_hash`-Gleichheit.
 - **Verhaltenstests:**
   - Golden-Fixture `tests/fixtures/pack_v1_minimal.grimpack` (handgeprüft, Rundreise mit `PackWriter` byte-gleich)
+  - Golden-Fixture `tests/fixtures/pack_v1_sigil.grimpack` (WP8.3): eine echte `SigilUnit` und ein Anwendungs-Eintrag,
+    von Hand hergeleitet; `pack_v1_sigil.hex` ist die kommentierte Herleitung Feld für Feld, SHA-256 und `AssetId`
+    stammen aus unabhängigen Nachbildungen, nicht aus `grimoire_assets`. Ein Test prüft Datei gleich Herleitung, die
+    gelesenen Felder und die byte-gleiche Rundreise mit `PackWriter`.
   - Grenzfälle je `PackError`-Variante
   - die Fixture dient auch den C#-Konformanztests (Ort nach P-1)
 - Neue Drittabhängigkeit `sha2` über `[workspace.dependencies]` (§2 Regel 4), ohne Default-Features außer `std`;
@@ -3862,7 +3997,9 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     bleibt das Gitter unverändert, `out` wird geleert.
 - **Leistung:** `overlapping` und `graze_ring` allokieren nicht, sobald `out` ausreichend Kapazität hat; `rebuild`
   allokiert nach dem Einschwingen nicht. `BatchHits` behält seine Kapazität; `overlapping_batch` darf je Aufruf
-  abhängig von der Blockanzahl allokieren, nie je Treffer.
+  abhängig von der Blockanzahl allokieren, nie je Treffer. *Stufe K (Klarstellung, WP6.5):* `tests/alloc.rs` belegt
+  diese Zusagen mit einem zählenden Allokator, auch für den Debug-Build (dessen Schlüsselprüfung nutzt einen
+  wiederverwendeten Puffer).
 - **Konformanz (WP1.3):**
   - `tests/conformance.rs` ruft `grimoire_collide::conformance` generisch über einen Erzeuger
     `impl CollisionQuery` gegen `NullCollision`, `BruteForceQuery` und `SpatialGrid` auf. Geprüft wird: `out` wird
@@ -3873,6 +4010,16 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
     mit `SequentialExecutor`, `PermutedExecutor::new(1..=3)` und `reversed()`.
   - Goldener Hash `GOLDEN_QUERY_HASH` über die Treffer einer festen Szene. In `grimoire_exec/tests/hash_gate.rs`
     folgt dieselbe Szene mit 1, 2 und N Threads (Dev-Kante nach §1, PO-Entscheid V-1, §11.7).
+  - *Stufe K (Klarstellung, WP6.5):*
+    - Die Suite ist hinter dem Feature `conformance`, das kein Workspace-Mitglied einschaltet. CI führt sie deshalb
+      im eigenen Schritt „Test (grimoire_collide, feature conformance)“ aus.
+    - Ein weiterer Proptest prüft `overlapping_batch` gegen Einzelabfragen mit denselben Executoren und einem
+      wiederverwendeten `BatchHits`.
+    - Die Szene zu `GOLDEN_QUERY_HASH` passt in einen einzigen Block, erreicht die Thread-Pools also nie. Dazu
+      kommt die feste Blockszene `GOLDEN_BLOCK_QUERY_HASH` mit 3.000 Objekten und 64 Anfragen, die auf beiden
+      datenparallelen Wegen mehrere Blöcke bildet.
+    - Beide Szenen liegen in `grimoire_collide/tests/golden_scene/mod.rs` und laufen im Hash-Gate über
+      `rebuild_par`, `overlapping_batch` und `graze_ring`.
 - **Bench (WP6.5, PO-Entscheid P-3 A):** In `grimoire_bench` laufen die Szenarien `collide_uniform` und
   `collide_cluster`. Beide haben dieselbe Last: 10.000 Bullet-Kreise, 100 Dummy-Gegner mit `Collider`, je Tick
   `rebuild_par`, `overlapping_batch` der 100 Gegner und eine `graze_ring`-Abfrage. In `collide_cluster` liegen alle
@@ -3881,6 +4028,13 @@ pub const MAX_COORD: f32 = 1.0e9;   // Betragsgrenze für Koordinaten und Radien
   `collide_uniform`; `collide_cluster` wird als Trend geführt, und eine Überschreitung ergibt ein Folge-Issue für die
   P2-Entscheidung über hierarchische oder adaptive Gitter (PO-Entscheid V-17). Dazu das Beispiel
   `collide_query` (Konsole, nur gebaut).
+  *Stufe K (Klarstellung, WP6.5), Szenenparameter:*
+  - Gitter wie die Vorgabe des Adapters (§9.6).
+  - Bullets: Radius 0,3, auf `ColliderKey::pool` in Slot-Reihenfolge. Sie bewegen sich je Tick mit festen Geschwindigkeiten und bleiben in ihrem Quadrat: in `collide_uniform` 64 × 64 Einheiten um den Ursprung, in `collide_cluster` so, dass jede Hülle in den vier Zellen um den Ursprung liegt.
+  - Gegner: 100 Entities mit `Collider` auf einem 10 × 10-Raster, jede fünfte eine Kapsel. Sie folgen den Bullets in Query-Reihenfolge und stellen je eine Anfrage mit der Bullet-Maske.
+  - Graze-Ring: um den Ursprung mit 0,5 und 2,5.
+  - Gemessen wird `Ir` nur mit einem Thread (§15.1). N Threads (`ThreadPoolExecutor`, N = Kernzahl des Runners) messen nur Wanduhr.
+  - `collide_uniform` bekommt ein Urteil, sobald `bench-accept-baseline` einen Commit mit dem Szenario annimmt.
 - **Nicht in v0:** kontinuierliche Kollision — ein Objekt, das sich je Tick weiter als seinen Durchmesser bewegt,
   kann eine Überlappung überspringen. Außerdem nicht enthalten: Strahlabfragen, Parade-Bogen, Trefferantworten,
   hierarchisches Gitter.

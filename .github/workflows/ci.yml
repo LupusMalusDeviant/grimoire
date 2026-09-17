@@ -41,6 +41,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # Contract §8.1: the engine build hash of every replay v2 this build records (ENGINE_BUILD, read
+  # at compile time). Local builds and cargo git checkouts leave it unset and record UNKNOWN.
+  GRIMOIRE_BUILD_HASH: ${{ github.sha }}
 
 defaults:
   run:
@@ -179,6 +182,14 @@ jobs:
       # dedicated step so the player proxy (§9.5) is actually exercised in CI (Umsetzung WP1.3).
       - name: Test (grimoire, feature fixtures)
         run: cargo test -p grimoire --features fixtures --locked --no-fail-fast
+      # The same applies to the collision trait conformance suite (contract §2 rule 12, §14): it sits
+      # behind the non-default feature `conformance`, which no workspace member enables, so the Test
+      # step above compiles `grimoire_collide/tests/conformance.rs` to an empty binary. Until plan
+      # 0002 WP6.5 this suite had never run in CI; this step runs it and lints the feature code.
+      - name: Test (grimoire_collide, feature conformance)
+        run: |
+          cargo clippy -p grimoire_collide --all-targets --features conformance --locked -- -D warnings
+          cargo test -p grimoire_collide --features conformance --locked --no-fail-fast
       # Local test runs force the CPU adapter; prove that path (WARP on Windows, lavapipe on Linux).
       # macOS has no CPU adapter. --workspace keeps the feature resolution of the Test step, so the
       # wgpu build is reused instead of compiled again.

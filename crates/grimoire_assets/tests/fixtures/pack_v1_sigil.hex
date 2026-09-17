@@ -1,0 +1,87 @@
+# pack_v1_sigil.grimpack: hand-derived golden fixture of pack v1 (contract §12,
+# docs/formats/pack.md, Plan 0002 WP8.3). This listing is the derivation: every field is
+# written out from the format document. SHA-256 values come from Python hashlib and the
+# AssetIds from an independent re-implementation of StableHasher v1, not from grimoire_assets.
+# tests/pack_format.rs checks that the .grimpack file equals this listing byte for byte, that
+# PackReader reads exactly the fields noted here and that PackWriter reproduces the file.
+# Format: hex bytes separated by spaces; everything after "#" is a comment.
+
+# ---- header (64 bytes) ----
+47 52 49 4d 50 41 43 4b  # magic "GRIMPACK"
+01 00 00 00  # format version 1
+40 00 00 00  # header length 64
+e8 02 00 00 00 00 00 00  # file length 744
+40 00 00 00 00 00 00 00  # TOC offset 64
+02 00 00 00  # entry count 2
+00 00 00 00  # flags 0
+80 02 00 00 00 00 00 00  # manifest offset 640
+68 00 00 00 00 00 00 00  # manifest length 104
+00 00 00 00 00 00 00 00  # reserved 0
+
+# ---- TOC entry 0 (64 bytes): fixtures/bullet_showcase.sigil ----
+c7 98 76 aa e8 84 8b 34  # AssetId 0x348b84e8aa7698c7 = from_path("fixtures/bullet_showcase.sigil")
+01 00  # kind 0x0001
+00 00  # reserved 0
+01 00 00 00  # kind version 1
+c0 00 00 00 00 00 00 00  # payload offset 192 (multiple of 16)
+96 01 00 00 00 00 00 00  # payload length 406
+4d df db 0f 4d 84 a6 03 51 a0 27 ba 1f 75 a3 f5  # SHA-256 of the payload, bytes 0..16
+10 b6 0b c9 f1 76 89 f7 27 84 d0 93 f9 f1 c9 de  # SHA-256 of the payload, bytes 16..32
+
+# ---- TOC entry 1 (64 bytes): notes/readme.txt ----
+0e 17 7b b8 95 34 5e 9f  # AssetId 0x9f5e3495b87b170e = from_path("notes/readme.txt")
+00 80  # kind 0x8000
+00 00  # reserved 0
+07 00 00 00  # kind version 7
+60 02 00 00 00 00 00 00  # payload offset 608 (multiple of 16)
+20 00 00 00 00 00 00 00  # payload length 32
+ad eb a8 4a cf 77 7c e0 51 1b 66 eb be d1 bf 04  # SHA-256 of the payload, bytes 0..16
+2b 8f 1b 87 a1 68 0c 21 9c b8 a1 e9 68 30 99 9a  # SHA-256 of the payload, bytes 16..32
+
+# ---- payload 0 at offset 192: SigilUnit v1 (copy of crates/grimoire/tests/fixtures/bullet_showcase_unit_v1.bin) ----
+47 52 49 4d 53 49 47 4c 01 00 00 00 00 00 00 00
+c7 98 76 aa e8 84 8b 34 36 f2 3b d3 6c 49 39 4e
+6e 01 00 00 00 00 00 00 03 00 00 00 01 00 00 00
+00 00 00 00 4c 00 00 00 00 00 00 00 3e 00 00 00
+00 00 00 00 02 00 00 00 00 00 00 00 8a 00 00 00
+00 00 00 00 88 00 00 00 00 00 00 00 03 00 00 00
+00 00 00 00 12 01 00 00 00 00 00 00 5c 00 00 00
+00 00 00 00 03 00 7b 14 ae 3e 7b 14 ae 3e 00 00
+00 00 08 00 00 00 00 00 01 d9 9a 99 99 3e 9a 99
+99 3e 00 00 00 00 08 00 01 00 01 00 01 80 0a d7
+a3 3e 0a d7 a3 3e 00 00 00 00 00 00 02 00 00 00
+01 59 03 00 01 00 10 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 01 00 03 00 00 00 17 2b c8 3b 00 00
+00 00 00 00 00 00 02 00 03 00 09 98 44 3e db 0f
+c9 3f 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 03 00 05 00 35 fa 8e 3f
+e4 cb 96 40 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 01 00 01 00 00 00 a6 9b
+c4 3a 29 5c 0f 3e 00 00 00 00 03 00 00 00 00 00
+00 00 00 00 00 00 ff ff ff ff 14 00 00 00 cd cc
+4c 3d 00 00 00 00 00 00 00 00 01 00 01 00 00 00
+05 00 00 00 ff ff ff ff 03 00 00 00 7b 14 ae 3d
+00 00 00 00 00 00 00 00 02 00 02 00 00 00 0a 00
+00 00 ff ff ff ff 10 00 00 00 8f c2 75 3d 00 00
+00 00 00 00 00 00
+00 00 00 00 00 00 00 00 00 00  # zero padding to offset 608
+
+# ---- payload 1 at offset 608: application-defined kind 0x8000 ----
+67 72 69 6d 6f 69 72 65 20 70 61 63 6b 20 76 31
+20 67 6f 6c 64 65 6e 20 66 69 78 74 75 72 65 0a
+
+# ---- manifest at offset 640 (104 bytes) ----
+01 00 00 00  # manifest_version 1
+0c 00  # compiler: Str16 length 12
+68 61 6e 64 2d 64 65 72 69 76 65 64  # "hand-derived"
+05 00  # compiler_version: Str16 length 5
+77 70 38 2e 33  # "wp8.3"
+02 00 00 00  # entry_count 2
+1e 00  # path 0: Str16 length 30
+66 69 78 74 75 72 65 73 2f 62 75 6c 6c 65 74 5f 73 68 6f 77 63 61 73 65 2e 73 69 67 69 6c  # "fixtures/bullet_showcase.sigil"
+10 00  # path 1: Str16 length 16
+6e 6f 74 65 73 2f 72 65 61 64 6d 65 2e 74 78 74  # "notes/readme.txt"
+15 00 00 00  # application block length 21
+66 69 78 74 75 72 65 3a 70 61 63 6b 5f 76 31 5f 73 69 67 69 6c  # "fixture:pack_v1_sigil"
+# end of file at offset 744

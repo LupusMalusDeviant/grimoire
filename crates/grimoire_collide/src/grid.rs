@@ -66,6 +66,12 @@ pub enum CollideError {
 /// Cell range `[x0, x1] x [y0, y1]` (inclusive) of one item's [`Aabb`], clamped to grid bounds.
 type CellRange = (u32, u32, u32, u32);
 
+/// Queries per block of [`SpatialGrid::overlapping_batch`]. Not a contract value (contract §14:
+/// block sizes of the data-parallel broadphase are free); small, because one query costs far more
+/// than one row of a data-parallel ECS query, so a batch of about a hundred queries still spreads
+/// over several threads.
+const QUERY_BATCH_BLOCK: usize = 16;
+
 /// Uniform-grid broadphase; also a [`grimoire_ecs::Resource`] — simulation state, part of
 /// snapshots (contract §14).
 ///
@@ -82,9 +88,23 @@ pub struct SpatialGrid {
     cell_start: Vec<u32>,
     /// Item indices into `items`, grouped by cell, row-major (`y` outer, `x` inner).
     cell_items: Vec<u32>,
-    /// Scratch buffer reused by [`Self::build_cells`] for the counting-sort insertion cursor.
-    /// Purely an implementation detail: not public state, not hashed.
+    /// Scratch buffers, reused across rebuilds so a rebuild allocates nothing once warmed up
+    /// (contract §14, "Leistung"). Implementation details: not public state, not hashed.
+    scratch: RebuildScratch,
+}
+
+/// Reused working memory of [`SpatialGrid::rebuild`] and [`SpatialGrid::rebuild_par`].
+#[derive(Clone, Debug, Default)]
+struct RebuildScratch {
+    /// Cell range of `items[i]`, in item order.
+    ranges: Vec<CellRange>,
+    /// Per-block cell ranges of `rebuild_par`, concatenated into `ranges` afterwards.
+    range_blocks: Vec<Vec<CellRange>>,
+    /// Counting-sort insertion cursor of `build_cells`.
     cursor: Vec<u32>,
+    /// Sorted keys for the debug-only duplicate check.
+    #[cfg(debug_assertions)]
+    keys: Vec<crate::ColliderKey>,
 }
 
 impl StableHash for SpatialGrid {
@@ -159,7 +179,10 @@ impl SpatialGrid {
             items: Vec::new(),
             cell_start: vec![0; cell_count + 1],
             cell_items: Vec::new(),
-            cursor: vec![0; cell_count + 1],
+            scratch: RebuildScratch {
+                cursor: vec![0; cell_count + 1],
+                ..RebuildScratch::default()
+            },
         })
     }
 
@@ -183,7 +206,8 @@ impl SpatialGrid {
     }
 
     /// Replaces the grid's content with `items` (contract §14: an implicit [`Self::clear`] runs
-    /// first).
+    /// first). Allocates nothing once its buffers have grown to the item count (contract §14,
+    /// "Leistung").
     ///
     /// # Panics
     ///
@@ -194,14 +218,15 @@ impl SpatialGrid {
         self.clear();
         self.items.extend(items);
         #[cfg(debug_assertions)]
-        debug_validate(&self.items);
+        debug_validate(&self.items, &mut self.scratch.keys);
         let config = self.config;
-        let ranges: Vec<CellRange> = self
-            .items
-            .iter()
-            .map(|item| cell_range_of(&config, item.shape.aabb()))
-            .collect();
-        self.build_cells(&ranges);
+        self.scratch.ranges.clear();
+        self.scratch.ranges.extend(
+            self.items
+                .iter()
+                .map(|item| cell_range_of(&config, item.shape.aabb())),
+        );
+        self.build_cells();
     }
 
     /// Data-parallel form of [`Self::rebuild`] (contract §14, engine ADR-0006): reads `items`
@@ -220,33 +245,45 @@ impl SpatialGrid {
         items: impl IntoIterator<Item = GridItem>,
     ) {
         self.clear();
-        let items: Vec<GridItem> = items.into_iter().collect();
+        // Taken out of the grid until every block has finished: a panic drops the buffer and
+        // leaves the grid empty (contract §14), while a normal rebuild keeps its capacity.
+        let mut buffer = std::mem::take(&mut self.items);
+        buffer.extend(items);
         #[cfg(debug_assertions)]
-        debug_validate(&items);
+        debug_validate(&buffer, &mut self.scratch.keys);
         let config = self.config;
-        let blocks: Vec<&[GridItem]> = grimoire_ecs::slice_block_ranges(items.len())
-            .map(|range| &items[range])
+        let block_count = buffer.len().div_ceil(grimoire_ecs::QUERY_BLOCK_SIZE);
+        let range_blocks = &mut self.scratch.range_blocks;
+        if range_blocks.len() < block_count {
+            range_blocks.resize_with(block_count, Vec::new);
+        }
+        let work: Vec<(&[GridItem], &mut Vec<CellRange>)> = buffer
+            .chunks(grimoire_ecs::QUERY_BLOCK_SIZE)
+            .zip(range_blocks.iter_mut())
             .collect();
-        let ranges: Vec<CellRange> =
-            grimoire_ecs::run_blocks(executor, blocks, |block: &[GridItem]| {
+        grimoire_ecs::run_blocks(executor, work, |(block, ranges)| {
+            ranges.clear();
+            ranges.extend(
                 block
                     .iter()
-                    .map(|item| cell_range_of(&config, item.shape.aabb()))
-                    .collect::<Vec<_>>()
-            })
-            .into_iter()
-            .flatten()
-            .collect();
+                    .map(|item| cell_range_of(&config, item.shape.aabb())),
+            );
+        });
         // Reached only if no block panicked (`run_blocks` resumes the lowest-index panic before
-        // returning); until here `self` stays cleared, so a panic leaves the grid empty.
-        self.items = items;
-        self.build_cells(&ranges);
+        // returning).
+        self.scratch.ranges.clear();
+        for ranges in &self.scratch.range_blocks[..block_count] {
+            self.scratch.ranges.extend_from_slice(ranges);
+        }
+        self.items = buffer;
+        self.build_cells();
     }
 
     /// Data-parallel form of [`CollisionQuery::overlapping`] over many queries at once (contract
     /// §14): splits `queries` into fixed blocks through `executor`; `out.hits(i)` is
     /// bit-identical to calling [`CollisionQuery::overlapping`] with `queries[i]`, assembled in
-    /// query order.
+    /// query order. Allocates per call at most in proportion to the block count, never per hit:
+    /// `out` keeps each block's working memory for the next call.
     ///
     /// Read-only: a block panic leaves the grid unchanged and `out` cleared.
     pub fn overlapping_batch(
@@ -256,23 +293,32 @@ impl SpatialGrid {
         out: &mut BatchHits,
     ) {
         out.clear();
-        let blocks: Vec<&[ShapeQuery]> = grimoire_ecs::slice_block_ranges(queries.len())
-            .map(|range| &queries[range])
+        let block_count = queries.len().div_ceil(QUERY_BATCH_BLOCK);
+        if out.blocks.len() < block_count {
+            out.blocks.resize_with(block_count, BlockHits::default);
+        }
+        let work: Vec<(&[ShapeQuery], &mut BlockHits)> = queries
+            .chunks(QUERY_BATCH_BLOCK)
+            .zip(out.blocks.iter_mut())
             .collect();
-        let batches: Vec<Vec<Vec<Hit>>> =
-            grimoire_ecs::run_blocks(executor, blocks, |block: &[ShapeQuery]| {
-                block
-                    .iter()
-                    .map(|query| {
-                        let mut hits = Vec::new();
-                        self.overlapping(&query.shape, query.mask, &mut hits);
-                        hits
-                    })
-                    .collect::<Vec<_>>()
-            });
+        grimoire_ecs::run_blocks(executor, work, |(block, scratch)| {
+            scratch.lens.clear();
+            scratch.hits.clear();
+            for query in block {
+                self.overlapping(&query.shape, query.mask, &mut scratch.query);
+                scratch.hits.extend_from_slice(&scratch.query);
+                scratch.lens.push(scratch.query.len());
+            }
+        });
         // Reached only if no block panicked; `out` was already cleared above.
-        for hits in batches.into_iter().flatten() {
-            out.push(&hits);
+        for scratch in &out.blocks[..block_count] {
+            let mut start = 0;
+            for &len in &scratch.lens {
+                out.hits
+                    .extend_from_slice(&scratch.hits[start..start + len]);
+                out.ends.push(out.hits.len());
+                start += len;
+            }
         }
     }
 
@@ -291,14 +337,16 @@ impl SpatialGrid {
     }
 
     /// Counting-sort insertion of every item into `cell_start`/`cell_items`, row-major (`y`
-    /// outer, `x` inner; contract §14). `ranges[i]` is the cell span of `self.items[i]`.
-    fn build_cells(&mut self, ranges: &[CellRange]) {
-        let cell_count = self.config.columns as usize * self.config.rows as usize;
+    /// outer, `x` inner; contract §14). `scratch.ranges[i]` is the cell span of `self.items[i]`.
+    fn build_cells(&mut self) {
+        let config = self.config;
+        let cell_count = config.columns as usize * config.rows as usize;
+        let ranges = &self.scratch.ranges;
         self.cell_start.fill(0);
         for &(x0, x1, y0, y1) in ranges {
             for cy in y0..=y1 {
                 for cx in x0..=x1 {
-                    self.cell_start[cell_index(&self.config, cx, cy) + 1] += 1;
+                    self.cell_start[cell_index(&config, cx, cy) + 1] += 1;
                 }
             }
         }
@@ -308,13 +356,13 @@ impl SpatialGrid {
         let total = self.cell_start[cell_count] as usize;
         self.cell_items.clear();
         self.cell_items.resize(total, 0);
-        self.cursor.clear();
-        self.cursor.extend_from_slice(&self.cell_start);
+        let cursor = &mut self.scratch.cursor;
+        cursor.clear();
+        cursor.extend_from_slice(&self.cell_start);
         for (item_index, &(x0, x1, y0, y1)) in ranges.iter().enumerate() {
             for cy in y0..=y1 {
                 for cx in x0..=x1 {
-                    let cell = cell_index(&self.config, cx, cy);
-                    let slot = &mut self.cursor[cell];
+                    let slot = &mut cursor[cell_index(&config, cx, cy)];
                     self.cell_items[*slot as usize] = item_index as u32;
                     *slot += 1;
                 }
@@ -324,23 +372,22 @@ impl SpatialGrid {
 }
 
 /// In debug builds, panics if any item's shape is invalid or two items share a key (contract
-/// §14). Compiled away entirely in release builds.
+/// §14). Sorts a reused key buffer instead of building a set, so a warmed-up rebuild stays
+/// allocation-free in debug builds too. Compiled away entirely in release builds.
 #[cfg(debug_assertions)]
-fn debug_validate(items: &[GridItem]) {
-    use std::collections::BTreeSet;
-
-    let mut seen = BTreeSet::new();
+fn debug_validate(items: &[GridItem], keys: &mut Vec<crate::ColliderKey>) {
+    keys.clear();
     for item in items {
-        debug_assert!(
+        assert!(
             item.shape.is_valid(),
             "invalid shape for collider {:?}",
             item.key
         );
-        debug_assert!(
-            seen.insert(item.key),
-            "duplicate collider key {:?}",
-            item.key
-        );
+        keys.push(item.key);
+    }
+    keys.sort_unstable();
+    if let Some(pair) = keys.windows(2).find(|pair| pair[0] == pair[1]) {
+        panic!("duplicate collider key {:?}", pair[0]);
     }
 }
 
@@ -375,6 +422,19 @@ fn cell_index(config: &GridConfig, cx: u32, cy: u32) -> usize {
 pub struct BatchHits {
     ends: Vec<usize>,
     hits: Vec<Hit>,
+    /// Working memory of each block of the last batch, kept for the next one. Not observable.
+    blocks: Vec<BlockHits>,
+}
+
+/// One block's working memory in [`SpatialGrid::overlapping_batch`].
+#[derive(Clone, Default, Debug)]
+struct BlockHits {
+    /// Hit count of each query of the block, in query order.
+    lens: Vec<usize>,
+    /// The block's hits, concatenated in query order.
+    hits: Vec<Hit>,
+    /// Output buffer of the single query being answered.
+    query: Vec<Hit>,
 }
 
 impl BatchHits {
@@ -405,11 +465,6 @@ impl BatchHits {
     pub fn clear(&mut self) {
         self.ends.clear();
         self.hits.clear();
-    }
-
-    fn push(&mut self, hits: &[Hit]) {
-        self.hits.extend_from_slice(hits);
-        self.ends.push(self.hits.len());
     }
 }
 
@@ -593,43 +648,5 @@ mod tests {
     fn rebuild_panics_in_debug_on_duplicate_key() {
         let mut grid = SpatialGrid::new(small_config()).unwrap();
         grid.rebuild([item(0, 0.1, 0.1), item(0, 0.2, 0.2)]);
-    }
-
-    #[cfg(all(test, feature = "conformance"))]
-    mod conformance_tests {
-        use super::*;
-
-        fn sample_grid() -> SpatialGrid {
-            let mut grid =
-                SpatialGrid::new(GridConfig::new(Vec2::new(-10.0, -10.0), 1.0, 20, 20)).unwrap();
-            grid.rebuild([
-                item(0, 0.0, 0.0),
-                item(1, 0.5, 0.0),
-                GridItem {
-                    key: ColliderKey::pool(2, 0),
-                    shape: Shape::Circle(Circle {
-                        center: Vec2::new(-3.0, -3.0),
-                        radius: 0.2,
-                    }),
-                    layers: LayerMask::NONE,
-                },
-            ]);
-            grid
-        }
-
-        #[test]
-        fn spatial_grid_is_conformant() {
-            let grid = sample_grid();
-            let shape = Shape::Circle(Circle {
-                center: Vec2::ZERO,
-                radius: 1.5,
-            });
-            let ring = GrazeRing {
-                center: Vec2::ZERO,
-                inner_radius: 0.2,
-                outer_radius: 3.0,
-            };
-            crate::conformance::collision_query(&grid, &shape, &ring);
-        }
     }
 }

@@ -18,6 +18,11 @@
 //!    (`u32` length + bytes, at most 64 KiB). No timestamp anywhere: identical inputs to
 //!    [`PackWriter`] always produce byte-identical output.
 //!
+//! The manifest is encoded and decoded only by the schema-generated codec
+//! [`PackManifestBody`] (project ADR-0011, Plan-0002 WP8.3); this module handles the header, the
+//! TOC, the payload placement and the cross-checks between manifest and TOC, and maps the codec's
+//! errors onto [`PackError::Manifest`]. `docs/formats/pack.md` documents the whole layout.
+//!
 //! [`PackReader::from_bytes`] never panics on any input (contract §2 rule 9): every length and
 //! offset is checked against the remaining input and a documented upper bound before it is used
 //! to slice, index or allocate.
@@ -30,21 +35,18 @@ use std::sync::Arc;
 use grimoire_platform::FileSystem;
 
 use crate::error::{AssetError, PackError};
+use crate::generated::pack_manifest::{PackManifestBody, PackManifestV1Error};
 use crate::ids::{AssetEntry, AssetId, AssetKind, AssetPath, Sha256, sha256_of};
 use crate::source::AssetSource;
 use crate::{
-    MAX_ENTRIES, MAX_ENTRY_LEN, MAX_MANIFEST_LEN, MAX_PACK_LEN, MAX_PATH_LEN, PACK_ALIGN,
-    PACK_FORMAT_VERSION, PACK_MAGIC,
+    MAX_ENTRIES, MAX_ENTRY_LEN, MAX_MANIFEST_LEN, MAX_PACK_LEN, PACK_ALIGN, PACK_FORMAT_VERSION,
+    PACK_MAGIC,
 };
 
 /// Fixed size of the pack v1 header in bytes.
 const HEADER_LEN: u64 = 64;
 /// Fixed size of one TOC record in bytes.
 const TOC_ENTRY_LEN: u64 = 64;
-/// Upper bound (bytes) for the compiler name and compiler version manifest strings.
-const MAX_COMPILER_STR_LEN: usize = 64;
-/// Upper bound (bytes) for the opaque application block.
-const MAX_APPLICATION_LEN: usize = 64 * 1024;
 /// Fixed manifest format version written and required by pack v1.
 const MANIFEST_VERSION: u32 = 1;
 
@@ -138,22 +140,6 @@ impl<'a> Cursor<'a> {
         let low = u64::from(self.u32()?);
         let high = u64::from(self.u32()?);
         Ok(low | (high << 32))
-    }
-
-    /// Reads a `Str16`: a `u16` length prefix followed by that many UTF-8 bytes, rejecting a
-    /// declared length over `max_len` before allocating anything for the string.
-    fn str16(&mut self, max_len: usize) -> Result<String, PackError> {
-        let offset = self.offset();
-        let len = usize::from(self.u16()?);
-        if len > max_len {
-            return Err(PackError::Manifest(format!(
-                "string at offset {offset} has length {len}, exceeding the {max_len}-byte limit"
-            )));
-        }
-        let bytes = self.take(len)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| {
-            PackError::Manifest(format!("string at offset {offset} is not valid UTF-8"))
-        })
     }
 }
 
@@ -381,29 +367,15 @@ impl PackReader {
             offsets.push(offset);
         }
 
-        cursor.seek(manifest_offset);
-        let manifest_version = cursor.u32()?;
-        if manifest_version != MANIFEST_VERSION {
-            return Err(PackError::Manifest(format!(
-                "unsupported manifest_version {manifest_version}"
-            )));
-        }
-        let compiler = cursor.str16(MAX_COMPILER_STR_LEN)?;
-        let compiler_version = cursor.str16(MAX_COMPILER_STR_LEN)?;
-        let manifest_entry_count = cursor.u32()?;
-        if manifest_entry_count != entry_count {
-            // No single TOC index applies to a whole-count mismatch; report the manifest's own
-            // (wrong) count as the offending value.
-            return Err(PackError::ManifestMismatch {
-                index: manifest_entry_count,
-            });
-        }
+        // `manifest_offset + manifest_len == total_len` was checked above.
+        let manifest_bytes = &bytes[manifest_offset as usize..];
+        check_manifest_prefix(manifest_bytes, entry_count)?;
+        let body = PackManifestBody::decode(manifest_bytes).map_err(manifest_error)?;
         let mut paths = Vec::with_capacity(entries.len());
-        for (index, entry) in entries.iter().enumerate() {
+        for (index, (entry, path_str)) in entries.iter().zip(&body.paths).enumerate() {
             // `index` fits `u32`: bounded by `entry_count <= MAX_ENTRIES`.
             let index = index as u32;
-            let path_str = cursor.str16(MAX_PATH_LEN)?;
-            let path = AssetPath::new(&path_str).map_err(|_| {
+            let path = AssetPath::new(path_str).map_err(|_| {
                 PackError::Manifest(format!(
                     "manifest path {path_str:?} at index {index} is invalid"
                 ))
@@ -413,30 +385,16 @@ impl PackReader {
             }
             paths.push(path);
         }
-        let application_len = cursor.u32()? as usize;
-        if application_len > MAX_APPLICATION_LEN {
-            return Err(PackError::Manifest(format!(
-                "application block length {application_len} exceeds {MAX_APPLICATION_LEN} bytes"
-            )));
-        }
-        let application = cursor.take(application_len)?.to_vec();
-
-        if cursor.offset() != total_len {
-            return Err(PackError::Manifest(format!(
-                "{} trailing byte(s) after the manifest",
-                total_len - cursor.offset()
-            )));
-        }
 
         Ok(Self {
             bytes,
             entries,
             offsets,
             manifest: PackManifest {
-                compiler,
-                compiler_version,
+                compiler: body.compiler,
+                compiler_version: body.compiler_version,
                 paths,
-                application,
+                application: body.application,
             },
         })
     }
@@ -584,31 +542,13 @@ impl PackWriter {
         self.application = bytes;
     }
 
-    /// Serialises the pack.
+    /// Serialises the pack. The manifest is encoded by the schema-generated codec
+    /// [`PackManifestBody`].
     ///
     /// # Errors
-    /// Returns [`PackError::Manifest`] if the compiler name, compiler version or application
-    /// block exceeds its length limit, or if the resulting manifest exceeds [`MAX_MANIFEST_LEN`].
+    /// Returns [`PackError::Manifest`] if the compiler name or version exceeds 64 bytes, the
+    /// application block exceeds 64 KiB, or the resulting manifest exceeds [`MAX_MANIFEST_LEN`].
     pub fn finish(self) -> Result<Vec<u8>, PackError> {
-        if self.compiler.len() > MAX_COMPILER_STR_LEN {
-            return Err(PackError::Manifest(format!(
-                "compiler name {:?} exceeds {MAX_COMPILER_STR_LEN} bytes",
-                self.compiler
-            )));
-        }
-        if self.compiler_version.len() > MAX_COMPILER_STR_LEN {
-            return Err(PackError::Manifest(format!(
-                "compiler version {:?} exceeds {MAX_COMPILER_STR_LEN} bytes",
-                self.compiler_version
-            )));
-        }
-        if self.application.len() > MAX_APPLICATION_LEN {
-            return Err(PackError::Manifest(format!(
-                "application block of {} bytes exceeds {MAX_APPLICATION_LEN} bytes",
-                self.application.len()
-            )));
-        }
-
         let mut entries = self.entries;
         // The only place insertion order matters: sorting here (rather than requiring callers to
         // `add` in id order) is what makes `finish` deterministic regardless of `add` call order.
@@ -633,16 +573,19 @@ impl PackWriter {
         }
         let manifest_offset = offset;
 
+        let body = PackManifestBody {
+            manifest_version: MANIFEST_VERSION,
+            compiler: self.compiler,
+            compiler_version: self.compiler_version,
+            entry_count,
+            paths: entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_owned())
+                .collect(),
+            application: self.application,
+        };
         let mut manifest = Vec::new();
-        manifest.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
-        write_str16(&mut manifest, &self.compiler)?;
-        write_str16(&mut manifest, &self.compiler_version)?;
-        manifest.extend_from_slice(&entry_count.to_le_bytes());
-        for entry in &entries {
-            write_str16(&mut manifest, entry.path.as_str())?;
-        }
-        manifest.extend_from_slice(&(self.application.len() as u32).to_le_bytes());
-        manifest.extend_from_slice(&self.application);
+        body.encode(&mut manifest).map_err(manifest_error)?;
 
         let manifest_len = manifest.len() as u64;
         if manifest_len > MAX_MANIFEST_LEN {
@@ -681,12 +624,45 @@ impl PackWriter {
     }
 }
 
-/// Appends a `Str16` (length-prefixed UTF-8 string) to `buf`.
-fn write_str16(buf: &mut Vec<u8>, s: &str) -> Result<(), PackError> {
-    let bytes = s.as_bytes();
-    let len = u16::try_from(bytes.len())
-        .map_err(|_| PackError::Manifest(format!("string {s:?} exceeds the Str16 length limit")))?;
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(bytes);
+/// Maps an error of the generated manifest codec onto [`PackError::Manifest`] (contract §12:
+/// every manifest problem other than a disagreement with the TOC is a `Manifest` error).
+fn manifest_error(error: PackManifestV1Error) -> PackError {
+    PackError::Manifest(error.to_string())
+}
+
+/// Walks the manifest's fixed prefix (`manifest_version`, two `Str16`, `entry_count`) without
+/// allocating and checks it before the generated codec decodes the whole manifest:
+///
+/// - a `manifest_version` other than 1 is [`PackError::Manifest`];
+/// - an `entry_count` other than the TOC's is [`PackError::ManifestMismatch`] with the manifest's
+///   own count as `index` (contract §12), even when the paths after it no longer line up;
+/// - only then may the codec allocate the path vector, whose length is now bounded by the TOC
+///   count that `from_bytes` has already validated against the input length (contract §2 rule 9).
+///
+/// A prefix that ends early is left to the codec, which reports it as a `Manifest` error.
+fn check_manifest_prefix(manifest: &[u8], toc_entry_count: u32) -> Result<(), PackError> {
+    let mut cursor = Cursor::new(manifest);
+    let Ok(version) = cursor.u32() else {
+        return Ok(());
+    };
+    if version != MANIFEST_VERSION {
+        return Err(PackError::Manifest(format!(
+            "unsupported manifest_version {version}"
+        )));
+    }
+    for _ in 0..2 {
+        let Ok(len) = cursor.u16() else {
+            return Ok(());
+        };
+        if cursor.take(usize::from(len)).is_err() {
+            return Ok(());
+        }
+    }
+    let Ok(count) = cursor.u32() else {
+        return Ok(());
+    };
+    if count != toc_entry_count {
+        return Err(PackError::ManifestMismatch { index: count });
+    }
     Ok(())
 }

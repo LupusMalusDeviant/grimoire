@@ -555,3 +555,228 @@ fn manifest_path_mismatch() {
         Err(PackError::ManifestMismatch { index: 0 })
     ));
 }
+
+// ---- Manifest cross-checks through the generated codec (Plan 0002 WP8.3) ---------------------
+
+/// Offset of the manifest's `entry_count` in [`build_minimal_pack`]'s output: manifest version
+/// (4), compiler `Str16` "grimoire_assets-tests" (2 + 21), compiler version `Str16` "1.0.0" (2 + 5).
+fn minimal_manifest_entry_count_offset(bytes: &[u8]) -> usize {
+    let manifest_offset = u64::from_le_bytes(bytes[40..48].try_into().unwrap()) as usize;
+    manifest_offset + 4 + 2 + 21 + 2 + 5
+}
+
+#[test]
+fn a_manifest_count_below_the_toc_count_is_a_manifest_mismatch() {
+    let mut bytes = build_minimal_pack();
+    let offset = minimal_manifest_entry_count_offset(&bytes);
+    assert_eq!(
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()),
+        3
+    );
+    set_u32(&mut bytes, offset, 2);
+    assert!(matches!(
+        PackReader::from_bytes(Arc::from(bytes)),
+        Err(PackError::ManifestMismatch { index: 2 })
+    ));
+}
+
+#[test]
+fn a_huge_manifest_count_is_a_manifest_mismatch_before_any_path_is_decoded() {
+    let mut bytes = build_minimal_pack();
+    let offset = minimal_manifest_entry_count_offset(&bytes);
+    set_u32(&mut bytes, offset, u32::MAX);
+    assert!(matches!(
+        PackReader::from_bytes(Arc::from(bytes)),
+        Err(PackError::ManifestMismatch { index: u32::MAX })
+    ));
+}
+
+#[test]
+fn a_manifest_that_ends_early_or_has_trailing_bytes_is_a_manifest_error() {
+    let bytes = build_minimal_pack();
+    let manifest_offset = u64::from_le_bytes(bytes[40..48].try_into().unwrap()) as usize;
+
+    // Cut the last byte of the application block and shrink the declared lengths to match.
+    let mut short = bytes[..bytes.len() - 1].to_vec();
+    let file_len = short.len() as u64;
+    set_u64(&mut short, HEADER_FILE_LEN, file_len);
+    set_u64(&mut short, 48, file_len - manifest_offset as u64);
+    assert!(matches!(
+        PackReader::from_bytes(Arc::from(short)),
+        Err(PackError::Manifest(_))
+    ));
+
+    // One extra byte after the application block.
+    let mut long = bytes.clone();
+    long.push(0);
+    let file_len = long.len() as u64;
+    set_u64(&mut long, HEADER_FILE_LEN, file_len);
+    set_u64(&mut long, 48, file_len - manifest_offset as u64);
+    assert!(matches!(
+        PackReader::from_bytes(Arc::from(long)),
+        Err(PackError::Manifest(_))
+    ));
+}
+
+#[test]
+fn writer_rejects_manifest_strings_over_their_limits() {
+    let long_name = "c".repeat(65);
+    let error = PackWriter::new(&long_name, "1")
+        .finish()
+        .expect_err("a compiler name over 64 bytes");
+    assert!(matches!(error, PackError::Manifest(_)));
+
+    let mut writer = PackWriter::new("c", "1");
+    writer.application(vec![0; 64 * 1024 + 1]);
+    assert!(matches!(writer.finish(), Err(PackError::Manifest(_))));
+
+    let mut writer = PackWriter::new(&"c".repeat(64), &"v".repeat(64));
+    writer.application(vec![0; 64 * 1024]);
+    writer.finish().expect("exactly at every limit is valid");
+}
+
+// ---- Hand-derived golden fixture with a Sigil entry (Plan 0002 WP8.3) ------------------------
+
+const SIGIL_FIXTURE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/pack_v1_sigil.grimpack"
+);
+const SIGIL_LISTING_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/pack_v1_sigil.hex"
+);
+
+/// The bytes of the annotated derivation `pack_v1_sigil.hex`: hex bytes separated by spaces,
+/// everything after `#` a comment.
+fn sigil_listing_bytes() -> Vec<u8> {
+    let listing = std::fs::read_to_string(SIGIL_LISTING_PATH).expect("pack_v1_sigil.hex");
+    let mut bytes = Vec::new();
+    for (number, line) in listing.lines().enumerate() {
+        let data = line.split('#').next().unwrap_or_default();
+        for token in data.split_whitespace() {
+            let byte = u8::from_str_radix(token, 16).unwrap_or_else(|_| {
+                panic!(
+                    "pack_v1_sigil.hex line {}: `{token}` is not a hex byte",
+                    number + 1
+                )
+            });
+            assert_eq!(token.len(), 2, "line {}: `{token}`", number + 1);
+            bytes.push(byte);
+        }
+    }
+    bytes
+}
+
+fn sigil_fixture() -> Vec<u8> {
+    std::fs::read(SIGIL_FIXTURE_PATH).expect("pack_v1_sigil.grimpack")
+}
+
+fn hex_bytes<const N: usize>(hex: &str) -> [u8; N] {
+    let mut out = [0u8; N];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    out
+}
+
+#[test]
+fn sigil_fixture_equals_its_hand_derived_listing() {
+    let listing = sigil_listing_bytes();
+    assert_eq!(listing.len(), 744, "the listing documents a 744-byte file");
+    assert!(
+        sigil_fixture() == listing,
+        "pack_v1_sigil.grimpack differs from its derivation pack_v1_sigil.hex"
+    );
+}
+
+#[test]
+fn sigil_fixture_reads_exactly_the_fields_its_listing_documents() {
+    let reader = PackReader::from_bytes(Arc::from(sigil_fixture())).expect("fixture parses");
+    let expected: [(&str, u64, AssetKind, u32, u64, &str); 2] = [
+        (
+            "fixtures/bullet_showcase.sigil",
+            0x348b_84e8_aa76_98c7,
+            AssetKind::SIGIL,
+            1,
+            406,
+            "4ddfdb0f4d84a60351a027ba1f75a3f510b60bc9f17689f72784d093f9f1c9de",
+        ),
+        (
+            "notes/readme.txt",
+            0x9f5e_3495_b87b_170e,
+            AssetKind(0x8000),
+            7,
+            32,
+            "adeba84acf777ce0511b66ebbed1bf042b8f1b87a1680c219cb8a1e96830999a",
+        ),
+    ];
+    assert_eq!(reader.entries().len(), expected.len());
+    for (entry, (path, id, kind, kind_version, len, sha)) in reader.entries().iter().zip(expected) {
+        let path = AssetPath::new(path).unwrap();
+        assert_eq!(entry.id, AssetId(id));
+        assert_eq!(AssetId::from_path(&path), AssetId(id));
+        assert_eq!(entry.kind, kind);
+        assert_eq!(entry.kind_version, kind_version);
+        assert_eq!(entry.len, len);
+        assert_eq!(entry.sha256.0, hex_bytes::<32>(sha));
+        assert_eq!(reader.manifest().path_of(entry.id), Some(&path));
+        assert_eq!(reader.read(entry.id).unwrap().len() as u64, len);
+    }
+    let unit = reader.read(AssetId(0x348b_84e8_aa76_98c7)).unwrap();
+    assert_eq!(&unit[..8], b"GRIMSIGL", "the Sigil entry is a SigilUnit");
+    assert_eq!(
+        u64::from_le_bytes(unit[16..24].try_into().unwrap()),
+        0x348b_84e8_aa76_98c7,
+        "the unit's UnitId equals the pack entry's AssetId (contract §11.1)"
+    );
+    assert_eq!(
+        reader
+            .read(AssetId(0x9f5e_3495_b87b_170e))
+            .unwrap()
+            .as_ref(),
+        b"grimoire pack v1 golden fixture\n"
+    );
+    assert_eq!(reader.manifest().compiler(), "hand-derived");
+    assert_eq!(reader.manifest().compiler_version(), "wp8.3");
+    assert_eq!(reader.manifest().application(), b"fixture:pack_v1_sigil");
+}
+
+#[test]
+fn sigil_fixture_is_reproduced_byte_for_byte_by_the_writer() {
+    let bytes = sigil_fixture();
+    let reader = PackReader::from_bytes(Arc::from(bytes.clone())).expect("fixture parses");
+    let mut writer = PackWriter::new("hand-derived", "wp8.3");
+    // Added in reverse order: the writer sorts by id itself.
+    for entry in reader.entries().iter().rev() {
+        let path = reader.manifest().path_of(entry.id).unwrap();
+        writer
+            .add(
+                path,
+                entry.kind,
+                entry.kind_version,
+                &reader.read(entry.id).unwrap(),
+            )
+            .unwrap();
+    }
+    writer.application(reader.manifest().application().to_vec());
+    assert!(
+        writer.finish().unwrap() == bytes,
+        "PackWriter no longer reproduces the hand-derived fixture"
+    );
+}
+
+#[test]
+fn sigil_fixture_content_hash_equals_a_memory_source_with_the_same_content() {
+    let reader = PackReader::from_bytes(Arc::from(sigil_fixture())).expect("fixture parses");
+    let mut memory = grimoire_assets::MemorySource::new("memory");
+    for entry in reader.entries() {
+        let path = reader.manifest().path_of(entry.id).unwrap();
+        memory.insert(
+            path,
+            entry.kind,
+            entry.kind_version,
+            reader.read(entry.id).unwrap().into_owned(),
+        );
+    }
+    assert_eq!(reader.content_hash(), memory.content_hash());
+}
