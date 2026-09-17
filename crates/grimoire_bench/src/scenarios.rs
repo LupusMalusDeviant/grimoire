@@ -40,11 +40,22 @@
 //! despawns in every tick at 10,000 active bullets). Their wall-clock medians per tick are printed
 //! against the 1.0 ms budget ([`SIGIL_TICK_BUDGET_MS`]) as a trend line, never as a gate (engine
 //! ADR-0010); their `Ir` counts enter the regression gate.
+//!
+//! Plan 0002 WP3.6 adds the render CPU benches: `render_bullet_upload_10k` (the bullet pass's CPU
+//! preparation of 10,000 bullets) and `render_light_cluster_256` (the clustered lighting's CPU
+//! preparation of 256 point lights plus the bullet-cloud lights of 10,000 glowing bullets), both
+//! through `grimoire_render::measurement`, which runs the renderer's own CPU steps without a GPU.
+//! Their sum is printed against the WP3.3 budget of 1.5 ms ([`RENDER_UPLOAD_BUDGET_MS`]) as a trend
+//! line; their `Ir` counts enter the regression gate.
 
 use std::hint::black_box;
 
 use grimoire::adapters::sigil_render::extract_bullets;
-use grimoire::render::BulletInstance;
+use grimoire::render::measurement::CpuFramePreparation;
+use grimoire::render::{
+    BULLET_PASS_PALETTE_SPACE, BulletInstance, Camera25D, LightBudget, PointLight, StageFrame,
+    bullet_palette, bullet_silhouette,
+};
 use grimoire_core::impl_stable_hash;
 use grimoire_core::math::Vec2;
 use grimoire_ecs::{System, World, system_fn};
@@ -838,9 +849,133 @@ pub fn build_sigil_churn(seed: u64) -> Simulation {
     sim
 }
 
+// ---- Plan 0002 WP3.6: the render CPU benches ----------------------------------------------------
+
+/// Budget of bullet upload plus clustering on the render CPU per frame, in milliseconds (plan 0002
+/// WP3.3: "Bullet-Upload + Clustering ≤ 1,5 ms Render-CPU"). Printed next to the wall-clock
+/// medians as a budget line; never a CI gate on shared runners (engine ADR-0010).
+pub const RENDER_UPLOAD_BUDGET_MS: f64 = 1.5;
+
+/// Scenario name of the bullet-upload benchmark (contract §15.1).
+pub const BULLET_UPLOAD_SCENARIO: &str = "render_bullet_upload_10k";
+/// Scenario name of the light-clustering benchmark (contract §15.1).
+pub const LIGHT_CLUSTER_SCENARIO: &str = "render_light_cluster_256";
+/// Bullets both render benches prepare per frame.
+pub const RENDER_BULLETS: u32 = 10_000;
+/// Point lights of the light-clustering benchmark: the High budget.
+pub const RENDER_POINT_LIGHTS: u32 = 256;
+/// Frames per wall-clock sample of both render benches.
+pub const RENDER_WALLCLOCK_FRAMES: u32 = 200;
+/// Frames per Callgrind probe of both render benches.
+pub const RENDER_IR_FRAMES: u32 = 100;
+
+/// The render CPU benches' state: one stage frame with [`RENDER_BULLETS`] hostile bullets and
+/// [`RENDER_POINT_LIGHTS`] point lights under the tilted camera, and the reused preparation
+/// buffers.
+pub struct RenderCpuBench {
+    frame: StageFrame,
+    preparation: CpuFramePreparation,
+}
+
+/// Builds the render CPU benches' frame: every bullet valid and hostile (the common path, no
+/// compaction), in volleys of the three silhouettes and both palettes with varied glow, spread over
+/// the visible ground; lights on a 16x16 grid.
+#[must_use]
+pub fn build_render_cpu() -> RenderCpuBench {
+    let mut frame = StageFrame::new();
+    frame.camera_25d = Some(Camera25D::default());
+    for index in 0..RENDER_BULLETS {
+        let volley = index / 64;
+        frame.bullets.push(BulletInstance {
+            position: [
+                (index % 100) as f32 * 0.4 - 20.0,
+                (index / 100) as f32 * 0.4 - 20.0,
+            ],
+            radius: 0.3,
+            rotation: (index % 628) as f32 * 0.01,
+            silhouette: (volley % u32::from(bullet_silhouette::COUNT)) as u16,
+            palette: (volley % u32::from(bullet_palette::COUNT)) as u16,
+            palette_space: BULLET_PASS_PALETTE_SPACE,
+            glow: (volley % 4 * 80) as u8,
+            flags: 0,
+        });
+    }
+    for index in 0..RENDER_POINT_LIGHTS {
+        let mut light = PointLight::default();
+        light.position = [
+            (index % 16) as f32 * 2.5 - 20.0,
+            (index / 16) as f32 * 2.5 - 20.0,
+            1.0,
+        ];
+        light.color = [1.0, 0.8, 0.6];
+        light.intensity = 3.0;
+        light.range = 4.0;
+        frame.point_lights.push(light);
+    }
+    RenderCpuBench {
+        frame,
+        preparation: CpuFramePreparation::new(),
+    }
+}
+
+/// Runs `frames + extra_frames` bullet-upload preparations and returns the bytes the last one
+/// would upload. `extra_frames` is the nominal regression injection, like the other benches'.
+pub fn run_bullet_upload_frames(
+    bench: &mut RenderCpuBench,
+    frames: u32,
+    extra_frames: u32,
+) -> usize {
+    let mut bytes = 0;
+    for _ in 0..(frames + extra_frames) {
+        bytes = black_box(bench.preparation.bullet_upload(black_box(&bench.frame))).1;
+    }
+    bytes
+}
+
+/// Runs `frames + extra_frames` light-clustering preparations at the High budget for a 16:9
+/// target and returns how many lights the last one would upload.
+pub fn run_light_cluster_frames(
+    bench: &mut RenderCpuBench,
+    frames: u32,
+    extra_frames: u32,
+) -> usize {
+    let mut lights = 0;
+    for _ in 0..(frames + extra_frames) {
+        lights = black_box(bench.preparation.light_clustering(
+            black_box(&bench.frame),
+            LightBudget::High,
+            16.0 / 9.0,
+        ));
+    }
+    lights
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_cpu_benches_prepare_every_bullet_and_the_full_light_budget() {
+        let mut bench = build_render_cpu();
+        assert_eq!(
+            run_bullet_upload_frames(&mut bench, 2, 0),
+            RENDER_BULLETS as usize * std::mem::size_of::<BulletInstance>()
+        );
+        let lights = run_light_cluster_frames(&mut bench, 2, 0);
+        assert_eq!(
+            lights, RENDER_POINT_LIGHTS as usize,
+            "the High budget holds 256 lights; bullet-cloud lights beyond it are dropped"
+        );
+        let (stats, _) = bench.preparation.bullet_upload(&bench.frame);
+        assert_eq!(stats.bullets_drawn, RENDER_BULLETS);
+        // Below the budget, the glowing bullets' cloud lights join the frame's own lights.
+        bench.frame.point_lights.truncate(240);
+        let with_bullet_lights = run_light_cluster_frames(&mut bench, 1, 0);
+        assert!(
+            (241..=248).contains(&with_bullet_lights),
+            "{with_bullet_lights} lights"
+        );
+    }
 
     #[test]
     fn extra_units_rounds_up_to_a_whole_unit() {
@@ -955,6 +1090,8 @@ mod tests {
             EXTRACT_SCENARIO,
             SIGIL_UPDATE_10K_SCENARIO,
             SIGIL_CHURN_SCENARIO,
+            BULLET_UPLOAD_SCENARIO,
+            LIGHT_CLUSTER_SCENARIO,
         ] {
             assert!(!name.is_empty() && name.len() <= 64);
             assert!(

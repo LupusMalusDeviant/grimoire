@@ -94,5 +94,10 @@ measure_one sigil_extract sigil_extract_10k
 measure_one sigil_update sigil_update_6k
 measure_one sigil_update_10k sigil_update_10k
 measure_one sigil_churn sigil_churn_2k
+# Plan 0002 WP3.6: the render CPU benches — the bullet pass's preparation of 10,000 bullets and the
+# clustered lighting's preparation of 256 point lights, both without a GPU
+# (`grimoire_render::measurement`).
+measure_one bullet_upload render_bullet_upload_10k
+measure_one light_cluster render_light_cluster_256
 
 cat "$OUT"

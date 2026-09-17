@@ -1623,6 +1623,95 @@ fn bullets_under_the_tilted_camera_sit_on_their_ground_position() {
     assert_near(mirrored, [0, 0, 0, 255], 2, "nothing drawn elsewhere");
 }
 
+/// Centroid of the pixels of `image` whose green channel exceeds 200 while red and blue stay below
+/// 60, and how many there are.
+fn green_centroid(image: &[u8], width: u32) -> ([f32; 2], u32) {
+    let (mut sum_x, mut sum_y, mut count) = (0.0f32, 0.0f32, 0u32);
+    for (index, pixel) in image.as_chunks::<4>().0.iter().enumerate() {
+        if pixel[1] > 200 && pixel[0] < 60 && pixel[2] < 60 {
+            let index = index as u32;
+            sum_x += (index % width) as f32 + 0.5;
+            sum_y += (index / width) as f32 + 0.5;
+            count += 1;
+        }
+    }
+    let count_f = count.max(1) as f32;
+    ([sum_x / count_f, sum_y / count_f], count)
+}
+
+#[test]
+fn the_player_marker_under_the_tilted_camera_stands_on_its_ground_position() {
+    let _serial = gpu_serial();
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut camera = Camera25D::default();
+    camera.target = [1.0, 2.0];
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.camera_25d = Some(camera);
+    let ground = [3.0, 4.0];
+    frame
+        .marker_sprites
+        .push(circle(ground, 1.0, [0.0, 1.0, 0.0, 1.0]));
+
+    let stats = renderer.render_stage(&frame).expect("render_stage");
+    assert_eq!(stats.base.sprites_drawn, 1);
+    assert_eq!(stats.base.draw_calls, 1, "one billboard marker draw");
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let viewport = [SIZE as f32, SIZE as f32];
+    let projected = camera
+        .ground_to_screen(ground, viewport)
+        .expect("the marker is in view");
+    let (centroid, pixels) = green_centroid(&image, SIZE);
+    assert!(pixels >= 4, "the marker covers {pixels} pixels");
+    assert!(
+        (centroid[0] - projected[0]).abs() <= 1.0 && (centroid[1] - projected[1]).abs() <= 1.0,
+        "marker centred at {centroid:?}, its ground position projects to {projected:?}"
+    );
+
+    // Where the flat 2D camera (the placement before WP3.6) would have put it: clearly elsewhere,
+    // so the check above cannot pass by accident.
+    let flat = frame.base.camera;
+    let flat_position = [
+        (ground[0] - flat.center[0]) / (flat.world_height * 0.5) * 0.5 * viewport[0]
+            + viewport[0] * 0.5,
+        viewport[1] * 0.5
+            - (ground[1] - flat.center[1]) / (flat.world_height * 0.5) * 0.5 * viewport[1],
+    ];
+    assert!(
+        (flat_position[0] - projected[0]).abs() > 2.0
+            || (flat_position[1] - projected[1]).abs() > 2.0,
+        "the test distinguishes the ground projection from the old flat placement"
+    );
+}
+
+#[test]
+fn the_player_marker_without_the_tilted_camera_keeps_the_flat_camera() {
+    let _serial = gpu_serial();
+    let Some(mut renderer) = offscreen_renderer(SIZE, SIZE, 16) else {
+        return;
+    };
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.0, 0.0, 0.0, 1.0];
+    frame.base.camera = Camera2D {
+        center: [0.0, 0.0],
+        world_height: 64.0,
+    };
+    frame
+        .marker_sprites
+        .push(circle([10.0, 10.0], 3.0, [0.0, 1.0, 0.0, 1.0]));
+    renderer.render_stage(&frame).expect("render_stage");
+    let image = renderer.read_offscreen_rgba().expect("read-back");
+    let (centroid, pixels) = green_centroid(&image, SIZE);
+    assert!(pixels >= 20, "the marker covers {pixels} pixels");
+    // One world unit per pixel, centre at pixel (32, 32), Y up.
+    assert!(
+        (centroid[0] - 42.0).abs() <= 0.5 && (centroid[1] - 22.0).abs() <= 0.5,
+        "flat marker centred at {centroid:?}"
+    );
+}
+
 #[test]
 fn glowing_bullets_light_the_floor_through_the_bullet_light_path() {
     let _serial = gpu_serial();

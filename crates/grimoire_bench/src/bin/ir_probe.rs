@@ -10,7 +10,8 @@
 //! keeps calibrating the two P0 benches only. Plan 0002 WP5.4 adds three `sigil.*` tick bodies:
 //! `sigil_update` (`sigil_update_6k`, the WP5.1 micro-bench, now measured), `sigil_update_10k`
 //! (10,000 active bullets) and `sigil_churn` (`sigil_churn_2k`: 2,000 spawns and 2,000 despawns
-//! per tick).
+//! per tick). Plan 0002 WP3.6 adds the render CPU bodies `bullet_upload` (`render_bullet_upload_10k`)
+//! and `light_cluster` (`render_light_cluster_256`).
 //!
 //! Usage:
 //!   `ir_probe <ecs|sim|sigil_extract> baseline` — the real, uninjected candidate measurement.
@@ -30,17 +31,18 @@ use std::hint::black_box;
 use std::process::ExitCode;
 
 use grimoire_bench::scenarios::{
-    ECS_ENTITIES, ECS_IR_ROUNDS, EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, SIGIL_CHURN_BULLETS,
-    SIGIL_CHURN_IR_TICKS, SIGIL_CHURN_PER_TICK, SIGIL_ENTITIES, SIGIL_IR_TICKS,
-    SIGIL_UPDATE_10K_BULLETS, SIGIL_UPDATE_10K_IR_TICKS, SIM_ENTITIES, SIM_IR_TICKS,
-    build_ecs_world, build_sigil_churn, build_sigil_extract, build_sigil_update,
-    build_sigil_update_10k, build_sim, run_calibration_units, run_ecs_rounds,
+    ECS_ENTITIES, ECS_IR_ROUNDS, EXTRACT_BULLETS, EXTRACT_IR_ROUNDS, RENDER_BULLETS,
+    RENDER_IR_FRAMES, RENDER_POINT_LIGHTS, SIGIL_CHURN_BULLETS, SIGIL_CHURN_IR_TICKS,
+    SIGIL_CHURN_PER_TICK, SIGIL_ENTITIES, SIGIL_IR_TICKS, SIGIL_UPDATE_10K_BULLETS,
+    SIGIL_UPDATE_10K_IR_TICKS, SIM_ENTITIES, SIM_IR_TICKS, build_ecs_world, build_render_cpu,
+    build_sigil_churn, build_sigil_extract, build_sigil_update, build_sigil_update_10k, build_sim,
+    run_bullet_upload_frames, run_calibration_units, run_ecs_rounds, run_light_cluster_frames,
     run_sigil_extract_rounds, run_sigil_update_ticks, run_sim_ticks, sigil_update_fill_ticks,
 };
 
 /// Every bench body `baseline` and `params` accept.
-const BENCHES: &str =
-    "'ecs', 'sim', 'sigil_extract', 'sigil_update', 'sigil_update_10k' or 'sigil_churn'";
+const BENCHES: &str = "'ecs', 'sim', 'sigil_extract', 'sigil_update', 'sigil_update_10k', \
+                       'sigil_churn', 'bullet_upload' or 'light_cluster'";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -84,6 +86,10 @@ fn print_params(bench: &str) -> ExitCode {
         "sigil_churn" => println!(
             "bullets={SIGIL_CHURN_BULLETS},per_tick={SIGIL_CHURN_PER_TICK},ticks={SIGIL_CHURN_IR_TICKS}"
         ),
+        "bullet_upload" => println!("bullets={RENDER_BULLETS},frames={RENDER_IR_FRAMES}"),
+        "light_cluster" => println!(
+            "lights={RENDER_POINT_LIGHTS},bullets={RENDER_BULLETS},frames={RENDER_IR_FRAMES}"
+        ),
         other => {
             eprintln!("unknown bench {other:?}, expected {BENCHES}");
             return ExitCode::FAILURE;
@@ -121,6 +127,14 @@ fn run_baseline(bench: &str) -> ExitCode {
             let mut sim = build_sigil_churn(0xB5_11_C1_0C_C0_FF_EE_00);
             run_sigil_update_ticks(&mut sim, SIGIL_CHURN_IR_TICKS, 0);
             black_box(sim.tick());
+        }
+        "bullet_upload" => {
+            let mut bench = build_render_cpu();
+            black_box(run_bullet_upload_frames(&mut bench, RENDER_IR_FRAMES, 0));
+        }
+        "light_cluster" => {
+            let mut bench = build_render_cpu();
+            black_box(run_light_cluster_frames(&mut bench, RENDER_IR_FRAMES, 0));
         }
         other => {
             eprintln!("unknown bench {other:?}, expected {BENCHES}");

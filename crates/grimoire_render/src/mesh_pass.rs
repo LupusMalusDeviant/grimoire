@@ -840,6 +840,42 @@ fn build_light_list(
     (lights, dropped)
 }
 
+/// The CPU-side light data of one frame's clustered forward+ pass: the GPU light list, how many
+/// valid lights the budget dropped, and the clustering camera basis.
+pub(crate) struct LightUpload {
+    pub(crate) lights: Vec<GpuPointLight>,
+    pub(crate) over_budget: usize,
+    pub(crate) camera: ClusterCameraParams,
+}
+
+/// Prepares [`LightUpload`] for `point_lights` (the frame's lights followed by its bullet-cloud
+/// lights) under `light_budget`, `bullet_light_cap` and `camera`, a camera already known to give a
+/// usable view-projection for `aspect` (`None` otherwise). Shared by [`MeshPass::render`] and
+/// `crate::measurement`, so the benchmark gate counts the renderer's own CPU work (plan 0002 WP3.6).
+///
+/// Clustered forward+ camera basis (plan 0002 WP3.4): the same values, computed once, feed both
+/// `mesh.wgsl`'s uniform and the compute dispatch, so a fragment's froxel and a light's froxel agree
+/// by construction. Degenerate (but finite) when there is no usable camera this frame — nothing is
+/// drawn in that case, so which froxel a light lands in cannot affect the picture.
+pub(crate) fn light_upload(
+    point_lights: &[PointLight],
+    light_budget: usize,
+    bullet_light_cap: &BulletLightCap,
+    camera: Option<&Camera25D>,
+    aspect: f32,
+) -> LightUpload {
+    let (lights, over_budget) = build_light_list(point_lights, light_budget, bullet_light_cap);
+    let camera = match camera {
+        Some(camera) => stage3d::cluster_camera_params(camera, aspect, NEAR_PLANE, FAR_PLANE),
+        None => ClusterCameraParams::degenerate(NEAR_PLANE, FAR_PLANE),
+    };
+    LightUpload {
+        lights,
+        over_budget,
+        camera,
+    }
+}
+
 /// Builds the uniform `mesh.wgsl` reads: the view-projection matrix, the eye position, the key
 /// light and ambient term flattened into GPU-friendly vectors, the WP3.4 clustering camera basis
 /// (`cluster_camera`, matching what [`ClusterPass::dispatch`] uploads to the compute pass so both
@@ -1989,8 +2025,17 @@ impl MeshPass {
         }
 
         let eye = camera.map_or([0.0; 3], stage3d::eye_position);
-        let (gpu_lights, point_lights_over_budget) =
-            build_light_list(point_lights, self.light_budget, bullet_light_cap);
+        let LightUpload {
+            lights: gpu_lights,
+            over_budget: point_lights_over_budget,
+            camera: cluster_camera,
+        } = light_upload(
+            point_lights,
+            self.light_budget,
+            bullet_light_cap,
+            camera.filter(|_| usable_view_proj.is_some()),
+            aspect,
+        );
         if point_lights_over_budget > 0 {
             let total_valid = point_lights_over_budget + gpu_lights.len();
             log::warn!(
@@ -1998,18 +2043,6 @@ impl MeshPass {
                 self.light_budget
             );
         }
-        // Clustered forward+ camera basis (plan 0002 WP3.4): the same values, computed once, feed
-        // both `mesh.wgsl`'s uniform below and the compute dispatch further down, so a fragment's
-        // froxel and a light's froxel agree by construction. Degenerate (but finite) when there is
-        // no usable camera this frame — nothing is drawn in that case (`usable_view_proj.is_none()`
-        // already empties `order`/`skinned_order` above), so which froxel a light lands in cannot
-        // affect the picture.
-        let cluster_camera = match (camera, usable_view_proj) {
-            (Some(camera), Some(_)) => {
-                stage3d::cluster_camera_params(camera, aspect, NEAR_PLANE, FAR_PLANE)
-            }
-            _ => ClusterCameraParams::degenerate(NEAR_PLANE, FAR_PLANE),
-        };
         let cluster_stats = self.cluster_pass.dispatch(
             context,
             &gpu_lights,
