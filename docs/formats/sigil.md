@@ -472,10 +472,10 @@ final since WP1.3):
 | 18 | `palette_space` | `u8` (Sigil bullets: always `1`, "hostile"/enemy — PRD-0003 rule 4, `SIG0021`) |
 | 19 | `glow` | `u8` (linear, `0`–`255`; the compiler quantises the source `glow` float `0.0..=1.0`) |
 
-`silhouette`/`palette` are per-unit indices the compiler assigns by sorting the distinct
-identifiers it saw (alphabetically) and numbering them from `0` — there is no cross-unit silhouette
-or palette catalog yet (`grimoire_render`'s own docs: "P1 has no silhouette/palette table yet"); see
-[§11.4](#114-open-points-for-the-product-owner).
+`silhouette`/`palette` are **visual catalogue indices** ([§10.10](#1010-visual-catalogue)): the row of
+the source's silhouette name and of its `enemy.<name>` palette in the catalogue, the same number
+in every unit. Until the change recorded in §10.10 they were per-unit indices, numbered by sorting the
+names one unit used alphabetically.
 
 ### 10.4 `Programs` (kind 2)
 
@@ -635,6 +635,58 @@ and heading with `speed`; `become_emitter` despawns the bullet and fires one vol
 (its program, speed and offset) at its position and heading. These three end the list for the tick.
 Sub-bullets are one cascade level deeper than their parent.
 
+### 10.10 Visual catalogue
+
+PO decision 2026-09-17 (plan 0002 WP3.5/WP5.3), implemented in `grimoire_sigilc::catalog`.
+*Stufe I, PO-Freigabe offen:* the meaning of `BulletType`'s `silhouette` and `palette` changes from
+a per-unit alphabetical number to the catalogue index below, and a name outside the catalogue no
+longer compiles (`SIG0027`). The byte layout and `format_version` stay unchanged, so every existing
+unit still decodes; see the migration note in `CHANGELOG.md`.
+
+A Sigil source names a silhouette and an `enemy` palette. The compiler writes the name's row in this
+table into [§10.3](#103-bullettypes-kind-1)'s `silhouette`/`palette` fields, so an index means the
+same silhouette or palette in every unit, whatever else the unit contains, and the facade's identity
+mapping (contract §9.9) lands on the bullet pass table row of the same name.
+
+- The **drawn** rows are exactly the bullet pass tables `grimoire_render::bullet_silhouette` and
+  `grimoire_render::bullet_palette` (contract §6), row for row and name for name
+  (`bullet_silhouette::NAMES`, `bullet_palette::NAMES`).
+- The **reserved** rows are names the bullet pass does not draw yet. They compile, so content may use
+  them ahead of the art; the facade counts such bullets in `BulletExtractionStats::unmapped_visual`
+  and never hands them to the renderer. The reserved rows are the names the conformance corpus
+  already used, in alphabetical order after the drawn rows.
+- Rows are only ever **appended**, and the bullet pass implements them in catalogue order: a new
+  drawn table row turns the next reserved row into a drawn one or adds a new name at the end.
+  Renaming, reordering or removing a row changes what compiled units mean and is an incompatible
+  contract change (§2b).
+- Only the `enemy` palette space has a table; Sigil bullets use no other space (`SIG0021`).
+
+This table is the single source both implementations are held to: `grimoire_sigilc`'s
+`tests/visual_catalog.rs` checks `catalog::SILHOUETTES` and `catalog::ENEMY_PALETTES` against it,
+and the facade's `tests/visual_catalog.rs` checks the bullet pass tables and `map_visual` against
+it. Keep the markers and the row format when editing.
+
+<!-- visual-catalog:begin -->
+| Table | Index | Name | Drawn by the bullet pass |
+|---|---|---|---|
+| silhouette | 0 | `orb` | yes (`bullet_silhouette::ORB`) |
+| silhouette | 1 | `rice` | yes (`bullet_silhouette::RICE`) |
+| silhouette | 2 | `diamond` | yes (`bullet_silhouette::DIAMOND`) |
+| silhouette | 3 | `blade` | no (reserved) |
+| silhouette | 4 | `crescent` | no (reserved) |
+| silhouette | 5 | `petal` | no (reserved) |
+| silhouette | 6 | `ring` | no (reserved) |
+| silhouette | 7 | `shard` | no (reserved) |
+| silhouette | 8 | `star` | no (reserved) |
+| enemy palette | 0 | `hex_magenta` | yes (`bullet_palette::HEX_MAGENTA`) |
+| enemy palette | 1 | `poison_lime` | yes (`bullet_palette::POISON_LIME`) |
+| enemy palette | 2 | `amber` | no (reserved) |
+| enemy palette | 3 | `crimson` | no (reserved) |
+| enemy palette | 4 | `rose` | no (reserved) |
+| enemy palette | 5 | `teal` | no (reserved) |
+| enemy palette | 6 | `violet` | no (reserved) |
+<!-- visual-catalog:end -->
+
 ## 11. Compiler: resolution and composition
 
 Plan 0002 WP4.2, `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/src/compiler/`): name
@@ -690,7 +742,9 @@ transforms (`SIG0016`), and a `become_emitter` may only appear on a bullet of th
 PRD-0003's readability rules are enforced across the whole compiled unit (not per file): rule 3 —
 no two bullet types may share a `silhouette`, even with different `palette`s (`SIG0020`) — and
 rule 4 — `palette` must reference the `enemy` namespace, the only palette space Sigil bullets may
-use (`SIG0021`, contract §11.2's `palette_space`, [§10.3](#103-bullettypes-kind-1)).
+use (`SIG0021`, contract §11.2's `palette_space`, [§10.3](#103-bullettypes-kind-1)). Every silhouette
+name and every `enemy` palette name must be a row of the visual catalogue
+([§10.10](#1010-visual-catalogue), `SIG0027`).
 
 ### 11.4 Open points for the Product Owner
 
@@ -717,12 +771,9 @@ reasonable answer:
    yet). **WP4.3:** the command line takes the name→id table as a behaviour manifest
    (`--behaviors <file>`, [§13.3](#133-behaviour-manifest---behaviors-file)); which code writes the
    game's manifest is still the Product Owner's decision.
-5. **`silhouette`/`palette` indices are per-unit, not a shared cross-unit catalog** — there isn't
-   one yet ([§10.3](#103-bullettypes-kind-1)). Fine for one unit rendering itself consistently;
-   two different units can assign the same index to different silhouettes. Recommendation: once
-   `grimoire_render` gains a real silhouette/palette table (its own module docs already anticipate
-   this), revisit whether Sigil should reference it by stable name instead of a compiler-assigned
-   index.
+5. **`silhouette`/`palette` indices were per-unit, not a shared cross-unit catalog.** Decided (PO,
+   2026-09-17): a shared catalogue with stable names replaces the per-unit numbering. Implemented
+   as the visual catalogue ([§10.10](#1010-visual-catalogue)).
 
 ## 12. Schema diagnostic code table (`SIG0012`+)
 
@@ -746,6 +797,7 @@ Same stability rule: a code's meaning is fixed from its first release.
 | `SIG0024` | A present field has the wrong shape (wrong value kind, or a quantity with the wrong unit) for its construct. |
 | `SIG0025` | (`sigilc check`/`build`, WP4.3) The source's canonical content path cannot be formed: the file lies outside the content root, or its path relative to the root is not a valid `AssetPath` (contract §12) ending in `<name>.sigil`. `sigilc` never normalises a path ([§13.2](#132-content-root-and-canonical-content-path)). Node path empty, position 1:1. |
 | `SIG0026` | (`sigilc check`/`build`, WP4.3) The source file cannot be read: missing, not a regular readable file, larger than 1 MiB, or not UTF-8. Node path empty, position 1:1. |
+| `SIG0027` | A bullet's `silhouette` name, or the name of its `enemy.<name>` palette, is not a row of the visual catalogue ([§10.10](#1010-visual-catalogue)); the fix hint lists the catalogue's names. |
 
 ## 13. Command-line interface `sigilc`
 
@@ -854,7 +906,7 @@ in `crates/grimoire_sigilc` (the id and hash are this file's at the time of writ
       "unit_path": "01-ring-burst.sigil",
       "output": "out/01-ring-burst.unit",
       "unit_id": "0bf46d12ddd3b2f6",
-      "content_hash": "45da9dace158e815",
+      "content_hash": "9fc51e542fd70081",
       "size": 222,
       "diagnostics": []
     }

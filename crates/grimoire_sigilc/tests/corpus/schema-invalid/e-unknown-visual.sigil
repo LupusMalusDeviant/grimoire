@@ -1,0 +1,32 @@
+sigil 1
+// e-unknown-visual: a silhouette and an enemy palette whose names are not in the visual
+// catalogue (docs/formats/sigil.md section 10.10), so neither has an index that means the same
+// thing in every unit. Covers SIG0027.
+
+bullet wisp {
+  silhouette = wisp
+  palette = enemy.hex_magenta
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+bullet spark {
+  silhouette = orb
+  palette = enemy.azure
+  glow = 0.5
+  radius = 0.2u
+  damage = 1
+  flags = []
+}
+
+emitter burst {
+  bullet = wisp
+  repeat = 1
+  interval = 1t
+  speed = 0.1u/t
+  block ring {
+    count = 8
+  }
+}

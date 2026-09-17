@@ -14,7 +14,7 @@ bullet red_orb {
 
 bullet blue_orb {
   silhouette = orb
-  palette = enemy.azure
+  palette = enemy.violet
   glow = 0.5
   radius = 0.2u
   damage = 1

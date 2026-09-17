@@ -4,9 +4,9 @@ sigil 1
 // bullet_showcase_unit_v1.bin next to this file; grimoire_sigilc's tests/unit_fixtures.rs checks
 // the compiled bytes stay current.
 // Three bullet types, one per silhouette of the bullet pass, in both hostile palettes.
-// The silhouette and palette names are chosen so the compiler's per-unit, alphabetical index
-// (docs/formats/sigil.md, section 11, open point 5) lands on the bullet pass tables under the
-// identity mapping: orb 0, rice 1, shard 2 (the diamond); hex_magenta 0, poison_lime 1.
+// Silhouette and palette names come from the visual catalogue (docs/formats/sigil.md, section
+// 10.10), whose indices are the bullet pass table rows: orb 0, rice 1, diamond 2; hex_magenta 0,
+// poison_lime 1.
 
 meta {
   name = "Bullet Pass Showcase"
@@ -36,7 +36,7 @@ bullet rice {
 
 // Diamond shard in an accelerating fan towards the viewer.
 bullet shard {
-  silhouette = shard
+  silhouette = diamond
   palette = enemy.hex_magenta
   glow = 0.35
   radius = 0.32u
