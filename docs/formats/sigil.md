@@ -19,7 +19,8 @@ encoding, implemented in `grimoire_sigilc::compiler` (`crates/grimoire_sigilc/sr
 [§13](#13-command-line-interface-sigilc) is WP4.3: the command-line interface `sigilc` (`check`,
 `build`, `parse --json`, `set`, `fmt`), its JSON documents, the behaviour manifest, value paths and
 the canonical layout. [§14](#14-reference-patterns) is WP4.5: the reference patterns and their
-coverage table. Not covered here: `sigilc simulate` (Plan 0002 WP5.6), a `sigilc migrate`
+coverage table. [§15](#15-platform-identity-of-compiled-units) is WP4.4: the gate that compiles
+them on Windows, Linux and macOS and compares the bytes. Not covered here: `sigilc simulate` (Plan 0002 WP5.6), a `sigilc migrate`
 (there is no second source version yet) and the runtime interpreter (Plan 0002 WP5). A file that
 is syntactically valid by [§1](#1-overview)–[§4](#4-syntactic-grammar)'s rules can still be
 rejected by the schema pass.
@@ -1064,8 +1065,8 @@ They name silhouettes and palettes only from the drawn rows of the visual catalo
   that the transformations, the sub-emitter and the behaviour visibly act. It also compares the
   table below with the sources and checks that its union covers every kind the compiler accepts.
   The `set` and `fmt` gates (`tests/set_lossless.rs`, `tests/fmt_canonical.rs`) include them too.
-- Plan 0002 WP4.4 compiles them on Windows, Linux and macOS and compares the units byte for byte;
-  WP5.7 freezes their golden hashes.
+- The platform identity gate ([§15](#15-platform-identity-of-compiled-units)) compiles them on
+  Windows, Linux and macOS and compares the units byte for byte; WP5.7 freezes their golden hashes.
 
 The coverage table lists what each pattern's own file uses (an imported pattern's contents count
 for the file that declares them). **Features** are further constructs the set must show at least
@@ -1096,3 +1097,38 @@ Every kind appears at least once: blocks `ring` (01, 08-12), `spiral` (02, 10), 
 `reverse` (08, 10), `burst` (09), `change_type` (10, 11), `become_emitter` (11); triggers `time` (08,
 11), `distance` (09, 11), `event` (10); flags `grazeable` (all), `smashable` (01, 09, 11), `env_active`
 (04), `reflectable` (05).
+
+## 15. Platform identity of compiled units
+
+Plan 0002 WP4.4 (risk R4: compiler constants computed with platform maths would give different
+units, content hashes and golden masters per build machine). A compiled unit enters content hashes,
+golden masters and replays (contract §3, §11.1), so `sigilc` must write the same bytes on every
+platform. The determinism lints of `grimoire_sigilc` make platform-dependent operations visible in
+the Clippy run; this gate proves the outcome.
+
+**What is built.** In every job of the three-OS test matrix, `.github/scripts/build-sigil-units.sh`
+compiles, with that runner's `sigilc` and from the repository root with relative `/` paths:
+
+| Group | Sources | Content root | Behaviour manifest |
+|---|---|---|---|
+| `corpus` | `crates/grimoire_sigilc/tests/corpus/valid/*.sigil` | that directory | `tests/corpus/behaviors.json` |
+| `reference` | `crates/grimoire_sigilc/tests/reference/*.sigil` ([§14](#14-reference-patterns)) | that directory | `tests/reference/behaviors.json` |
+| `facade` | `crates/grimoire/tests/fixtures/*.sigil` | `crates/grimoire/tests` (the canonical paths of the unit fixtures) | — |
+
+It writes the units (`units/<group>/<canonical path>.unit`), each group's `sigilc build --json`
+report, and the `sigilc check --json` reports of `tests/corpus/invalid` and
+`tests/corpus/schema-invalid`, whose diagnostics must be platform-independent as well. A group that
+does not compile, or an invalid corpus file that does, fails the job.
+
+**What is compared.** The job `Sigil unit identity (WP4.4)` of the CI workflow downloads the three
+artifacts `sigil-units-<os>` and runs `.github/scripts/compare-sigil-units.sh`: every file must
+exist on every platform and be **byte-identical**. A differing byte, a missing or extra file, a
+platform without units, or fewer than three platforms after green test jobs fails the run; after a
+red test job a missing artifact is only a warning, but a difference still fails. The job summary
+lists the SHA-256 of every compared file. A self-test (`.github/scripts/test-compare-sigil-units.sh`)
+runs first, so a broken comparison cannot pass silently.
+
+**Where it runs.** On every pull request and every push to `main` with the debug-built `sigilc`
+(workflow `CI`), and in the nightly workflow with the release-built `sigilc` (artifacts
+`sigil-units-release-<os>`, job `Sigil unit identity (WP4.4, release)`), so optimisation cannot
+change a byte either.

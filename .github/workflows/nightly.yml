@@ -1,4 +1,5 @@
-# Nightly engine run: release-mode test suite on all three operating systems.
+# Nightly engine run: release-mode test suite and Sigil unit identity gate on all three operating
+# systems.
 # Scheduled runs are skipped when main had no commits in the last 24 hours.
 name: Nightly
 
@@ -99,6 +100,21 @@ jobs:
           path: target/float-probe/
           if-no-files-found: error
           retention-days: 14
+      # Plan 0002 WP4.4 with a release-built `sigilc`: optimisation must not change a single unit byte
+      # either (the pull request CI covers the debug build).
+      - name: Build Sigil units (WP4.4, release)
+        if: ${{ !cancelled() }}
+        env:
+          SIGILC_PROFILE: release
+        run: bash .github/scripts/build-sigil-units.sh target/sigil-units
+      - name: Upload Sigil units
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sigil-units-release-${{ matrix.os }}
+          path: target/sigil-units/
+          if-no-files-found: error
+          retention-days: 14
 
   float-compare:
     name: Float probe comparison (release)
@@ -123,3 +139,37 @@ jobs:
           # Missing core probes fail the comparison only if every test job succeeded.
           TESTS_RESULT: ${{ needs.test-release.result }}
         run: bash .github/scripts/compare-float-probes.sh float-probe "Release-Build (Nightly)"
+
+  sigil-identity:
+    name: Sigil unit identity (WP4.4, release)
+    needs: [changes, test-release]
+    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+      - name: Download Sigil units (windows-latest)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sigil-units-release-windows-latest
+          path: sigil-units/windows-latest
+      - name: Download Sigil units (ubuntu-latest)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sigil-units-release-ubuntu-latest
+          path: sigil-units/ubuntu-latest
+      - name: Download Sigil units (macos-latest)
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: sigil-units-release-macos-latest
+          path: sigil-units/macos-latest
+      - name: Compare Sigil units across operating systems
+        env:
+          # Missing artifacts fail the comparison only if every test job succeeded.
+          TESTS_RESULT: ${{ needs.test-release.result }}
+        run: bash .github/scripts/compare-sigil-units.sh sigil-units "Release-Build (Nightly)"

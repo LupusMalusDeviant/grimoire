@@ -11,8 +11,6 @@
 
 mod support;
 
-use std::collections::BTreeMap;
-
 use grimoire_sigilc::compiler::{LoadError, SourceLoader, compile};
 use grimoire_sigilc::{FormatError, SyntaxKind, format_canonical, parse};
 use proptest::prelude::*;
@@ -144,8 +142,10 @@ impl SourceLoader for DirLoader {
 }
 
 fn compiled(name: &str, source: &str) -> Option<Vec<u8>> {
-    let mut behaviors = BTreeMap::new();
-    behaviors.insert("orbit_parent".to_string(), 1);
+    let manifest = std::fs::read_to_string(corpus_root().join("behaviors.json"))
+        .expect("tests/corpus/behaviors.json");
+    let behaviors = grimoire_sigilc::behaviors::parse_behavior_manifest(&manifest)
+        .expect("the corpus behaviour manifest is valid");
     let loader = DirLoader(corpus_root().join("valid"));
     compile(name, source, &loader, &behaviors).bytes
 }
