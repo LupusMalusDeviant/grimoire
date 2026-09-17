@@ -1,0 +1,9 @@
+{
+  "schema": "grimoire.sigilc.target_path",
+  "schema_version": 1,
+  "points": [
+    { "tick": 0, "x": 0.0, "y": -4.0 },
+    { "tick": 20, "x": 3.0, "y": -4.0 },
+    { "tick": 40, "x": -2.5, "y": -3.0 }
+  ]
+}
