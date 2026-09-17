@@ -21,8 +21,8 @@
 # Environment:
 #   SIGILC          path of a `sigilc` executable to use instead of building one.
 #   SIGILC_PROFILE  cargo profile to build `sigilc` with when SIGILC is unset: `debug` (default) or
-#                   `release`. The binary is built together with the workspace's other binaries, so
-#                   a preceding `cargo test --workspace` in the same profile has already built it.
+#                   `release`. Only `grimoire_sigilc`'s binary and its dependencies are built;
+#                   building the whole workspace's binaries recompiled the GPU stack for minutes.
 #
 # Written for bash 3.2 as well (macOS runners): no associative arrays, no mapfile.
 set -euo pipefail
@@ -35,8 +35,8 @@ if [ -n "${SIGILC:-}" ]; then
   sigilc="$SIGILC"
 else
   case "$profile" in
-    debug) cargo build --workspace --bins --locked ;;
-    release) cargo build --workspace --bins --locked --release ;;
+    debug) cargo build --locked -p grimoire_sigilc --bin sigilc ;;
+    release) cargo build --locked -p grimoire_sigilc --bin sigilc --release ;;
     *)
       echo "::error title=Sigil-Units::Unbekanntes SIGILC_PROFILE '${profile}' (debug oder release)."
       exit 2
