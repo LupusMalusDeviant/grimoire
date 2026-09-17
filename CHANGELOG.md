@@ -18,6 +18,7 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ### Fixed
 - `grimoire_sigil`: Ein vorhandener, aber leerer optionaler Abschnitt (`Programs`, `Curves`) dekodierte wie ein fehlender und verletzte `to_bytes(from_bytes(b)) == b`; der Decoder meldet ihn jetzt als `NonCanonical` (Klarstellung zu Vertrag §11.1). `sigilc` hat solche Abschnitte nie geschrieben.
+- `grimoire` (Fassade): Stats-Overlay in jedem Build (Plan 0002 WP6.4, PRD-0002 FR-12, Vertrag §9.7), additiv (Stufe A, PO-Freigabe offen). `AppBuilder::overlay_key` (Vorgabe F3) schaltet `adapters::debug::StatsOverlay` um; die Fassade zeichnet es nach allen `extract_stage` in `StageFrame::debug_sprites`. Je Scope des Profils eine Zeile mit dem Mittelwert über 30 Frames in Millisekunden und einem Budgetbalken, grün im Budget, rot bei Überschreitung, mit Spitzenstrich; Schätzwerte tragen `~`. Ziffern und Buchstaben kommen aus einem im Code gezeichneten 5×7-Glyphenatlas (`adapters::debug::glyphs`, keine Schriftlizenz), gerastert in Quads für den unveränderten Sprite-Pass und über `ScreenSpace` pixelgenau platziert. Kein Hash ändert sich. Neue Render-Testszene `overlay` (`crates/grimoire/tests/overlay_scene.rs`) mit Windows-Referenz, im CI-Schritt der WP2.8-Szenen im Warnmodus. CI: Kandidatenbilder der Render-Testszenen landen jetzt in einem absoluten Verzeichnis, sodass der Upload sie findet; bisher schrieb jeder Test sie relativ zu seinem Paketverzeichnis, und das Artefakt blieb leer.
 
 ## [0.3.0] - 2026-09-17
 
