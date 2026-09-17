@@ -227,12 +227,19 @@ jobs:
       # `GRIMOIRE_GPU_ADAPTER=software` to no adapter at all (PRD-0018's adapter table; the same
       # module doc comment explains why), which this step's own "no reference"/skip reporting
       # already covers cleanly, so there is nothing macOS-specific to special-case here.
+      # Plan 0002 WP6.4 adds the scene `overlay` (the facade's stats overlay,
+      # `crates/grimoire/tests/overlay_scene.rs`), compared the same way and reported in the same
+      # log; `--workspace` keeps the Test step's feature resolution, like the offscreen step.
+      # Candidates go to one absolute directory: each test binary runs in its own package
+      # directory, so the relative default `target/wp28-snapshots` never reached the upload below.
       - name: Render WP2.8 deterministic test scenes
         env:
           GRIMOIRE_GPU_ADAPTER: software
+          GRIMOIRE_SNAPSHOT_CANDIDATE_DIR: ${{ github.workspace }}/target/wp28-snapshots
         run: |
           mkdir -p ci-logs
           cargo test -p grimoire_render --test snapshot_scenes --locked -- --ignored --nocapture 2>&1 | tee ci-logs/test-snapshot-scenes.log
+          cargo test --workspace --test overlay_scene --locked -- --ignored --nocapture 2>&1 | tee -a ci-logs/test-snapshot-scenes.log
       - name: Report WP2.8 snapshot scene results
         if: ${{ !cancelled() }}
         env:

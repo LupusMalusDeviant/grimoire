@@ -2378,6 +2378,57 @@ pub fn stats_frame(stats: &FrameStats, content: Option<ContentEpoch>) -> StatsFr
   über echte `Schedule`s, GPU-Schätzwert, Konformanz), `tests/profiler.rs` (Hash-Neutralität, Scope-Reihenfolge,
   Budgets aus dem Builder, Export). Beispiel `profiler_dump` (Konsole, in der CI nur gebaut).
 
+**Stats-Overlay (Ergänzung P1, Plan 0002 WP6.4)**
+
+*Stufe A, PO-Freigabe offen (§2b, gebündelte Freigabe).* Setzt „Details liefert WP6.4“ oben um;
+`AppBuilder::overlay_key` ist wie in §9.2 festgelegt umgesetzt (Vorgabe `Some(KeyCode::F3)`).
+
+```rust
+// grimoire::adapters::debug
+pub const DEFAULT_OVERLAY_KEY: KeyCode = KeyCode::F3;
+pub const OVERLAY_WINDOW_FRAMES: u32 = 30;
+pub fn overlay_scale(viewport_height: f32) -> u32;      // 1 je 270 Pixel Höhe, mindestens 1, höchstens 8
+pub struct StatsOverlay;                                  // Default, Clone, Debug; new(), is_visible(), set_visible(bool), toggle(),
+                                                          // record(&FrameStats, Option<&FrameProfile>),
+                                                          // draw(&mut self, &Camera2D, viewport: [f32; 2], &mut Vec<SpriteInstance>) -> usize
+// grimoire::adapters::debug::glyphs
+pub const GLYPH_WIDTH: u32 = 5; pub const GLYPH_HEIGHT: u32 = 7; pub const GLYPH_ADVANCE: u32 = 6;
+pub const GLYPH_ROWS: [(char, [u8; 7]); 55];              // Ziffern, A–Z, Leerzeichen und 18 Satzzeichen
+pub fn glyph(char) -> [u8; 7]; pub fn has_glyph(char) -> bool; pub fn text_width(&str) -> u32;
+pub struct ScreenSpace;                                   // Copy, PartialEq, Debug; new(&Camera2D, viewport) -> Option<Self>,
+                                                          // rect(x, y, width, height, color) -> SpriteInstance,
+                                                          // push_text(&mut Vec<SpriteInstance>, x, y, scale, &str, color) -> u32
+```
+
+- **Glyphenatlas:** Die 5×7-Glyphen sind Bitmuster im Code (`GLYPH_ROWS`), für diese Engine gezeichnet; es gibt
+  weder Schriftdatei noch Schriftlizenz. Kleinbuchstaben nutzen die Großbuchstaben, unbekannte Zeichen `?`. Der
+  Atlas ist eine Bitmaptabelle, keine Textur: Jede waagrechte Folge gesetzter Glyphenpixel wird ein
+  `SpriteInstance`-Quad (`shape::QUAD`), das der unveränderte Sprite-Pass zeichnet. `grimoire_render` ändert sich
+  nicht, `SpriteInstance` und seine Formkonstanten bleiben wie sie sind.
+- **Pixelgenau:** `ScreenSpace` rechnet ganze Bildschirmpixel (Ursprung oben links, Y nach unten) über die
+  `Camera2D` des Frames (`StageFrame::base.camera`, mit der der Sprite-Pass auch die Debug-Sprites zeichnet) in
+  Weltkoordinaten um. Kanten liegen auf Pixelgrenzen, jedes Glyphenpixel ist `overlay_scale` Bildschirmpixel breit
+  und hoch. Leerer Viewport oder entartete Kamera (nicht endlich, Höhe ≤ 0): nichts wird gezeichnet.
+- **Hauptschleife (ergänzt §9.3):** Ein nicht wiederholter Druck auf `overlay_key` schaltet das Overlay um; die
+  Taste erreicht `InputState` weiterhin wie jede andere. In Schritt 5 zeichnet die Fassade das sichtbare Overlay
+  nach allen `extract_stage` und der Kameraführung in `stage.debug_sprites`, vor `render_stage`. In Schritt 6
+  zeichnet sie nach allen `on_profile` jeden Frame mit `record` auf, auch unsichtbar, damit das Einschalten sofort
+  Werte zeigt. Das Overlay ist Präsentationszustand: kein Hash, kein Stufenplan ändert sich (Test).
+- **Inhalt:** Kopfzeile `FPS <fps> FT <mittlere Framezeit in ms>`, darunter eine Zeile je Scope des Profils in der
+  Reihenfolge `frame`, `sim`, Subsysteme (in Reihenfolge ihres ersten Auftretens), `extract`, `render`, `gpu`.
+  Angezeigt wird der Mittelwert über `OVERLAY_WINDOW_FRAMES` Frames (vor dem ersten vollen Fenster der laufende
+  Mittelwert), in Millisekunden mit zwei Nachkommastellen. Ein Schätzwert (§13 `estimate`) trägt `~` vor dem Namen
+  in Bernstein. Ohne Profiler (`profiler(false)`) zeigt das Overlay nur die Kopfzeile.
+- **Budgetbalken:** nur für Scopes mit Budget. Das Budget liegt bei drei Vierteln der Balkenbreite (grauer
+  Strich), die Füllung reicht bis zum Mittelwert. Sie ist **grün im Budget und rot bei Überschreitung**; ein
+  1-Pixel-Strich zeigt die Spitze des Fensters, rot, wenn sie das Budget überschritt.
+- **Tests:** Einheitstests (`glyphs.rs`: eindeutige Glyphen, pixelgenaue Rasterung bei Skalierung 1 und 2;
+  `overlay.rs`: Reihenfolge, Fenster, Farben, Platz in 160×90), `tests/overlay.rs` (F3 schaltet um, andere oder
+  keine Taste, nur Kopfzeile ohne Profiler, Hash-Neutralität, offscreen über `run_offscreen`: Overlay erscheint und
+  verschwindet), `tests/overlay_scene.rs` (Testszene `overlay`: Farbprüfung je Zeile ohne Referenz in jedem
+  `cargo test`, dazu der Referenzvergleich mit Toleranzmetrik und Warnmodus aus WP2.8 im CI-Schritt der
+  Render-Testszenen; Referenz zunächst nur für Windows).
+
 ### 9.8 InputMap-Preset: Zielachsen 2/3 (Ergänzung P1)
 
 *Freigegeben (WP1.2).* Gilt ab P1 statt des Satzes „Die Zielachsen 2 und 3 bleiben in P0 0

@@ -29,7 +29,9 @@
 //!    [`GamePlugin::focus`] returns `Some` drives the render-side camera follow spring
 //!    ([`grimoire_render::CameraFollow`], set up via [`AppBuilder::camera25d`], plan 0002 WP2.4)
 //!    and next frame's mouse-aim sampling ([`sample_aim`], contract §9.4) — never the simulation,
-//!    which only ever sees the resulting quantised axes. The renderer then draws the stage.
+//!    which only ever sees the resulting quantised axes. If the overlay key (default F3) has
+//!    toggled the stats overlay on, the loop adds it to the debug channel
+//!    ([`adapters::debug::StatsOverlay`], plan 0002 WP6.4). The renderer then draws the stage.
 //!    A lost surface skips the frame and is reported to the platform, which throttles the loop
 //!    while frames keep going unpresented; any other render error ends the run with that error.
 //! 4. Every plugin receives the [`FrameStats`], then the frame's profile
