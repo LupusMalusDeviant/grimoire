@@ -5,6 +5,9 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+### Added
+- `grimoire_debug`, `grimoire` (Fassade), `grimoire_render`: Profiler je Subsystem (Plan 0002 WP6.3, PRD-0002 FR-12), additiv (Stufe A, PO-Freigabe offen). `grimoire_debug` bekommt das uhrfreie Profiler-Datenmodell aus Vertrag §13: `FrameProfile` mit `ScopeId`, `ScopeTotal` (samt `budget` und `estimate`) und `StatsFrame`, das daraus eine `Stats`-Nutzlast baut; die Scope-API `ScopeRegistry` und `ScopeTimer`; `ProfileLog` mit CSV- und JSON-Export nach dem neuen Format `docs/formats/profiler-export.md` (`grimoire.profiler.export` v1). Die Fassade misst in jedem Frame mit der Plattform-Uhr die Scopes `frame`, `sim`, `extract`, `render` und `gpu`, führt jeden Tick über den Schedule-Beobachter `adapters::debug::ProfilerObserver` und verbucht jedes System unter dem Präfix seines Namens (`sigil`, `collide`, sonst `app`), mit Budgets aus PRD-0002/PRD-0004 (`adapters::debug::DEFAULT_BUDGETS`, änderbar über `AppBuilder::profiler_budgets`). `GamePlugin::on_profile` erhält das Profil nach `on_frame`; `AppBuilder::profiler(false)` schaltet ab. Kein Zustands-Hash ändert sich. `grimoire_render` misst die GPU-Zeit der Pässe über Timestamp-Queries (`StageStats::gpu_time`, ohne Warten auf die GPU, einige Frames verzögert); `grimoire_gpu` fordert `TIMESTAMP_QUERY` an, wo der Adapter es anbietet. Ohne Timestamp-Queries verbucht die Fassade die `render`-Zeit als gekennzeichneten Schätzwert statt einer Null. Beispiel `profiler_dump` (Konsole). Die Referenzbilder bleiben bitgleich.
+
 ## [0.3.0] - 2026-09-17
 
 ### Added
