@@ -149,21 +149,33 @@ pub fn install(
     world.insert_resource(PendingOutcomes::default());
 
     sim.schedule_mut()
-        .add_system(BeginSystem { registry })
-        .add_system(UpdateSystem {
-            cache: RuntimeCache::default(),
-            events: Vec::new(),
+        .add_system(BeginSystem {
+            fingerprint: registry.fingerprint(),
         })
+        .add_system(UpdateSystem::default())
         .add_system(ResolveSystem)
-        .add_system(EmitSystem)
-        .add_system(ClearSystem);
+        .add_system(EmitSystem::default())
+        .add_system(ClearSystem::default());
     Ok(())
+}
+
+/// Puts `pool` back into the world's existing [`BulletPool`] slot, which `std::mem::take` left
+/// holding an empty default pool (contract §11.7). Writing into the slot instead of calling
+/// `World::insert_resource` keeps the resource's position and avoids boxing it anew every tick
+/// (WP5.4: no allocation per spawn, despawn or tick in the pool path).
+fn put_pool_back(world: &mut World, pool: BulletPool) {
+    match world.resource_mut::<BulletPool>() {
+        Some(slot) => *slot = pool,
+        None => world.insert_resource(pool),
+    }
 }
 
 /// `sigil.begin` (contract §11.6): resets despawn events for the new tick and checks the loaded
 /// content's behavior-registry fingerprint against the one `install` was given.
 struct BeginSystem {
-    registry: Arc<BehaviorRegistry>,
+    /// Fingerprint of the registry `install` was given; the registry is immutable (contract
+    /// §11.5), so it is computed once instead of every tick.
+    fingerprint: u64,
 }
 
 impl System for BeginSystem {
@@ -174,7 +186,7 @@ impl System for BeginSystem {
     fn run(&mut self, world: &mut World) {
         let tick = world.resource::<Tick>().copied().unwrap_or_default().0;
         if let Some(content) = world.resource::<SigilContent>() {
-            let given = self.registry.fingerprint();
+            let given = self.fingerprint;
             let loaded = content.library().registry_fingerprint();
             assert!(
                 given == loaded,
@@ -191,11 +203,19 @@ impl System for BeginSystem {
 /// `sigil.update` (contract §11.6/§11.7): raises the tick's [`EventRequest`]s, then advances
 /// every live bullet through [`runtime::update_block`], one data-parallel block at a time through
 /// the world's executor.
+///
+/// Every field besides the cache is a working buffer (WP5.4): filled and consumed within one run,
+/// cleared but never shrunk, so a steady tick allocates nothing for events, despawns or
+/// sub-spawns, and none of it is state.
+#[derive(Default)]
 struct UpdateSystem {
     cache: RuntimeCache,
-    /// Working buffer: the event ids raised this tick, ascending and deduplicated. Filled and
-    /// consumed within one run, so it is never state.
+    /// The event ids raised this tick, ascending and deduplicated.
     events: Vec<u32>,
+    /// The live `EventRequest`s of this tick, in query order.
+    requests: Vec<(Entity, u32)>,
+    /// One outcome per pool block, reused across ticks.
+    outcomes: Vec<BlockOutcome>,
 }
 
 impl System for UpdateSystem {
@@ -217,11 +237,13 @@ impl System for UpdateSystem {
         // its entity is despawned in that order. An unregistered `EventRequest` (no game ever
         // spawned one) simply matches nothing.
         self.events.clear();
-        let requests: Vec<(Entity, u32)> = world
-            .query::<(Entity, &EventRequest)>()
-            .map(|(entity, request)| (entity, request.event.0))
-            .collect();
-        for (entity, event) in requests {
+        self.requests.clear();
+        self.requests.extend(
+            world
+                .query::<(Entity, &EventRequest)>()
+                .map(|(entity, request)| (entity, request.event.0)),
+        );
+        for &(entity, event) in &self.requests {
             self.events.push(event);
             world.despawn(entity);
         }
@@ -237,6 +259,11 @@ impl System for UpdateSystem {
             .unwrap_or_default();
 
         let blocks = pool.update_blocks_mut();
+        let block_count = blocks.len();
+        if self.outcomes.len() < block_count {
+            self.outcomes
+                .resize_with(block_count, BlockOutcome::default);
+        }
         let ctx = UpdateContext {
             library: content.library(),
             cache: &self.cache,
@@ -247,20 +274,18 @@ impl System for UpdateSystem {
             aim,
             events: &self.events,
         };
-        let results: Vec<BlockOutcome> = run_blocks(world.executor(), blocks, |mut block| {
-            runtime::update_block(&mut block, &ctx)
+        let work: Vec<_> = blocks.into_iter().zip(self.outcomes.iter_mut()).collect();
+        run_blocks(world.executor(), work, |(mut block, outcome)| {
+            runtime::update_block(&mut block, &ctx, outcome);
         });
 
-        world.insert_resource(pool);
-        let mut pending = world
-            .resource_mut::<PendingOutcomes>()
-            .map(std::mem::take)
-            .unwrap_or_default();
-        for mut outcome in results {
-            pending.despawns.append(&mut outcome.despawns);
-            pending.spawns.append(&mut outcome.spawns);
+        put_pool_back(world, pool);
+        if let Some(pending) = world.resource_mut::<PendingOutcomes>() {
+            for outcome in &self.outcomes[..block_count] {
+                pending.despawns.extend_from_slice(&outcome.despawns);
+                pending.spawns.extend_from_slice(&outcome.spawns);
+            }
         }
-        world.insert_resource(pending);
     }
 }
 
@@ -277,25 +302,30 @@ impl System for ResolveSystem {
     }
 
     fn run(&mut self, world: &mut World) {
-        let Some(mut pending) = world.resource_mut::<PendingOutcomes>().map(std::mem::take) else {
+        let Some(slot) = world.resource_mut::<PendingOutcomes>() else {
             return;
         };
-        if !pending.despawns.is_empty() || !pending.spawns.is_empty() {
-            let content = world.resource::<SigilContent>().cloned();
-            if let Some(pool) = world.resource_mut::<BulletPool>() {
-                for despawn in pending.despawns.drain(..) {
-                    pool.despawn_pending(despawn.index, despawn.cause);
-                }
-                if let Some(content) = &content {
-                    for spawn in pending.spawns.drain(..) {
-                        apply_sub_spawn(pool, content, spawn);
-                    }
+        if slot.despawns.is_empty() && slot.spawns.is_empty() {
+            return;
+        }
+        // Taken out and written back into the same slot, so both lists keep their capacity.
+        let mut pending = std::mem::take(slot);
+        let content = world.resource::<SigilContent>().cloned();
+        if let Some(pool) = world.resource_mut::<BulletPool>() {
+            for despawn in &pending.despawns {
+                pool.despawn_pending(despawn.index, despawn.cause);
+            }
+            if let Some(content) = &content {
+                for &spawn in &pending.spawns {
+                    apply_sub_spawn(pool, content, spawn);
                 }
             }
-            pending.despawns.clear();
-            pending.spawns.clear();
         }
-        world.insert_resource(pending);
+        pending.despawns.clear();
+        pending.spawns.clear();
+        if let Some(slot) = world.resource_mut::<PendingOutcomes>() {
+            *slot = pending;
+        }
     }
 }
 
@@ -330,7 +360,13 @@ fn apply_sub_spawn(pool: &mut BulletPool, content: &SigilContent, spawn: Pending
 }
 
 /// `sigil.emit` (contract §11.4/§11.6): fires every due [`Emitter`], in query order.
-struct EmitSystem;
+///
+/// Both fields are working buffers (WP5.4), cleared but never shrunk.
+#[derive(Default)]
+struct EmitSystem {
+    emitters: Vec<(Entity, Emitter)>,
+    shots: Vec<Shot>,
+}
 
 impl System for EmitSystem {
     fn name(&self) -> &str {
@@ -345,11 +381,13 @@ impl System for EmitSystem {
         let seed = world.resource::<SimSeed>().copied().unwrap_or_default().0;
         let aim = world.resource::<AimTarget>().copied().unwrap_or_default().0;
 
-        let emitters: Vec<(Entity, Emitter)> = world
-            .query::<(Entity, &Emitter)>()
-            .map(|(entity, emitter)| (entity, emitter.clone()))
-            .collect();
-        if emitters.is_empty() {
+        self.emitters.clear();
+        self.emitters.extend(
+            world
+                .query::<(Entity, &Emitter)>()
+                .map(|(entity, emitter)| (entity, emitter.clone())),
+        );
+        if self.emitters.is_empty() {
             return;
         }
 
@@ -358,13 +396,21 @@ impl System for EmitSystem {
         };
         let library = content.library();
 
-        for (entity, emitter) in emitters {
+        for (entity, emitter) in &self.emitters {
             fire_emitter(
-                &mut pool, &content, library, &emitter, entity, tick, seed, aim,
+                &mut pool,
+                &content,
+                library,
+                emitter,
+                *entity,
+                tick,
+                seed,
+                aim,
+                &mut self.shots,
             );
         }
 
-        world.insert_resource(pool);
+        put_pool_back(world, pool);
     }
 }
 
@@ -382,6 +428,7 @@ fn fire_emitter(
     tick: u64,
     seed: u64,
     aim: Option<Vec2>,
+    shots: &mut Vec<Shot>,
 ) {
     let Some(unit_index) = library.unit_index(emitter.unit) else {
         return;
@@ -431,11 +478,11 @@ fn fire_emitter(
     };
     let resolved = runtime::resolve_program(sigil_unit, pool_program);
 
-    let shots: Vec<Shot> = match resolved {
+    match resolved {
         Some((program, _)) => {
             let block_key = entity.to_bits() ^ u64::from(program.block.seed_hash);
             let mut rng = derive_block_rng(seed, tick, stream::EMIT, block_key);
-            blocks::program_shots(
+            blocks::program_shots_into(
                 program,
                 base_speed,
                 base_angle,
@@ -443,19 +490,23 @@ fn fire_emitter(
                 origin,
                 volley_index,
                 &mut rng,
-            )
+                shots,
+            );
         }
         // No program at all (`record.program == NO_PROGRAM`, or — unreachable for a decoded
         // unit, since the decoder already range-checks `EmitterRecord::program` — a stale
         // reference): the bullet type's plain spawn, no block/modifier stack.
-        None => vec![Shot {
-            angle: base_angle,
-            speed: base_speed,
-            offset: Vec2::ZERO,
-        }],
-    };
+        None => {
+            shots.clear();
+            shots.push(Shot {
+                angle: base_angle,
+                speed: base_speed,
+                offset: Vec2::ZERO,
+            });
+        }
+    }
 
-    for shot in shots {
+    for shot in shots.iter() {
         let spawn = BulletSpawn::new(
             emitter.unit,
             record.bullet_type,
@@ -479,7 +530,11 @@ fn fire_emitter(
 
 /// `sigil.clear` (contract §11.4/§11.6): applies every live [`ClearRequest`], in query order, then
 /// despawns the requesting entities.
-struct ClearSystem;
+#[derive(Default)]
+struct ClearSystem {
+    /// Working buffer: this tick's requests, in query order.
+    requests: Vec<(Entity, ClearFilter)>,
+}
 
 impl System for ClearSystem {
     fn name(&self) -> &str {
@@ -490,20 +545,22 @@ impl System for ClearSystem {
         let Some(content) = world.resource::<SigilContent>().cloned() else {
             return;
         };
-        let requests: Vec<(Entity, ClearFilter)> = world
-            .query::<(Entity, &ClearRequest)>()
-            .map(|(entity, request)| (entity, request.filter.clone()))
-            .collect();
-        if requests.is_empty() {
+        self.requests.clear();
+        self.requests.extend(
+            world
+                .query::<(Entity, &ClearRequest)>()
+                .map(|(entity, request)| (entity, request.filter.clone())),
+        );
+        if self.requests.is_empty() {
             return;
         }
         if let Some(mut pool) = world.resource_mut::<BulletPool>().map(std::mem::take) {
-            for (_, filter) in &requests {
+            for (_, filter) in &self.requests {
                 pool.clear(&content, filter, DespawnCause::Clear);
             }
-            world.insert_resource(pool);
+            put_pool_back(world, pool);
         }
-        for (entity, _) in requests {
+        for &(entity, _) in &self.requests {
             world.despawn(entity);
         }
     }
