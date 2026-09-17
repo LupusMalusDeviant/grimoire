@@ -1,8 +1,10 @@
 # C# tooling suite under tools/ (Plan 0002 WP9.1, PO decision P-1): restore, build and test the
 # solution on Windows, Linux and macOS with the SDK pinned in tools/global.json.
 # Runs only when something the suite builds from or tests against changes: its own sources, the schemas
-# its codecs are generated from, the workspace version it reads, and the engine's golden fixtures its
-# conformance tests read. The generated C# itself is kept current by ci.yml's drift check.
+# its codecs are generated from, the workspace version it reads, the engine's golden fixtures its
+# conformance tests read, and `grimoire_sigilc`, whose binary the asset compiler drives and whose
+# conformance corpus it runs (Plan 0002 WP9.2). The generated C# itself is kept current by ci.yml's
+# drift check.
 # Every run that is triggered is watched until it finishes:
 #   gh run watch <id> --exit-status        (red run: gh run view <id> --log-failed)
 name: Tools (.NET)
@@ -14,18 +16,26 @@ on:
       - "tools/**"
       - "schema/**"
       - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/grimoire_core/**"
+      - "crates/grimoire_sigilc/**"
       - "crates/grimoire_debug/tests/fixtures/**"
       - "crates/grimoire_debug/tests/handshake_golden.rs"
       - "crates/grimoire_assets/tests/fixtures/**"
+      - ".github/scripts/measure-pack-rebuild.sh"
       - ".github/workflows/tools.yml"
   pull_request:
     paths:
       - "tools/**"
       - "schema/**"
       - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/grimoire_core/**"
+      - "crates/grimoire_sigilc/**"
       - "crates/grimoire_debug/tests/fixtures/**"
       - "crates/grimoire_debug/tests/handshake_golden.rs"
       - "crates/grimoire_assets/tests/fixtures/**"
+      - ".github/scripts/measure-pack-rebuild.sh"
       - ".github/workflows/tools.yml"
   workflow_dispatch:
 
@@ -43,6 +53,9 @@ env:
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
   # Contract §13 "Socket-Tests": real loopback sockets only in CI, never on the development machine.
   GRIMOIRE_SOCKET_TESTS: "1"
+  # The corpus conformance tests need the real sigilc binary; without this they would skip, and a
+  # missing binary must never let the gate pass quietly.
+  GRIMOIRE_REQUIRE_SIGILC: "1"
 
 defaults:
   run:
@@ -68,9 +81,35 @@ jobs:
           cache-dependency-path: tools/**/packages.lock.json
       - name: SDK in use
         run: dotnet --version
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+        working-directory: .
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The asset compiler orchestrates this binary (project ADR-0010); the conformance corpus runs
+      # against it, exactly as the game's CI builds it from the pinned engine tag (WP9.3).
+      - name: Build sigilc (release)
+        run: cargo build --release -p grimoire_sigilc --bin sigilc --locked
+        working-directory: .
+      - name: Locate sigilc
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "GRIMOIRE_SIGILC=$GITHUB_WORKSPACE/target/release/sigilc.exe" >>"$GITHUB_ENV"
+          else
+            echo "GRIMOIRE_SIGILC=$GITHUB_WORKSPACE/target/release/sigilc" >>"$GITHUB_ENV"
+          fi
       - name: Restore (locked mode)
         run: dotnet restore Grimoire.Tools.slnx --locked-mode
       - name: Build (warnings are errors)
         run: dotnet build Grimoire.Tools.slnx --no-restore --configuration Release
       - name: Test
         run: dotnet test --solution Grimoire.Tools.slnx --no-build --configuration Release
+      # PRD-0016 NFR: a full pack rebuild stays below 60 s. One runner is enough for the number, and
+      # only a CI runner produces one at all.
+      - name: Measure a full pack rebuild (PRD-0016 NFR)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash .github/scripts/measure-pack-rebuild.sh
+          "$GITHUB_WORKSPACE/tools/src/Grimoire.AssetCompiler/bin/Release/net10.0/grimoire-ac"
+          "$GRIMOIRE_SIGILC"
+        working-directory: .

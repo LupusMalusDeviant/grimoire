@@ -17,6 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/FakeEngine.cs" Link="Shared/FakeEngine.cs" />
     <Compile Include="../Shared/RustFixtures.cs" Link="Shared/RustFixtures.cs" />
     <None Include="../../../crates/grimoire_debug/tests/handshake_golden.rs" Link="fixtures/handshake_golden.rs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

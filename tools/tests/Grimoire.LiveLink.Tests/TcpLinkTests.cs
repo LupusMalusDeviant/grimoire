@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Grimoire.Formats.Debug;
+using Grimoire.Tools.Tests;
 using Xunit;
 
 namespace Grimoire.LiveLink.Tests;

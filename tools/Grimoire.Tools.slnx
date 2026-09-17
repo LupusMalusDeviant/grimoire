@@ -1,9 +1,11 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Grimoire.AssetCompiler/Grimoire.AssetCompiler.csproj" />
     <Project Path="src/Grimoire.Formats/Grimoire.Formats.csproj" />
     <Project Path="src/Grimoire.LiveLink/Grimoire.LiveLink.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Grimoire.AssetCompiler.Tests/Grimoire.AssetCompiler.Tests.csproj" />
     <Project Path="tests/Grimoire.Formats.Tests/Grimoire.Formats.Tests.csproj" />
     <Project Path="tests/Grimoire.LiveLink.Tests/Grimoire.LiveLink.Tests.csproj" />
   </Folder>
