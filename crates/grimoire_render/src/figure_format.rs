@@ -188,6 +188,88 @@ pub enum FigureFormatError {
         /// Index of the offending vertex.
         vertex: u32,
     },
+    /// An `FNP_CLIP` payload did not start with [`crate::figure_clip::CLIP_MAGIC`]
+    /// (`crate::figure_clip`, engine ADR-0017).
+    #[error("payload does not start with the FNP_CLIP magic (found {0:?})")]
+    InvalidClipMagic([u8; 8]),
+    /// An `FNP_CLIP` header set a flag bit this version does not define. Reserved bits are
+    /// rejected rather than ignored, so a later version can define one without an older decoder
+    /// silently misreading the payload.
+    #[error("clip flags {0:#x} set a reserved bit")]
+    InvalidClipFlags(u32),
+    /// A count that a payload may not declare as zero was zero (`joint_count`, `frame_count`).
+    #[error("{0} must not be zero")]
+    ZeroCount(&'static str),
+    /// An `FNP_CLIP` header's authoring rate was not finite, not positive, or above
+    /// [`crate::figure_clip::MAX_CLIP_FRAME_RATE_HZ`].
+    #[error("clip frame rate {0} Hz is not a usable authoring rate")]
+    InvalidClipFrameRate(f32),
+    /// An `FNP_CLIP` track's storage byte was neither `0` (constant) nor `1` (sampled).
+    #[error("joint {joint}'s {what} track has storage byte {found}, which is neither 0 nor 1")]
+    InvalidClipTrackKind {
+        /// Index of the offending joint.
+        joint: u32,
+        /// Which of the joint's three tracks it was (`translation`, `rotation`, `scale`).
+        what: &'static str,
+        /// The offending storage byte.
+        found: u8,
+    },
+    /// An `FNP_CLIP` key held a NaN or an infinity, which would otherwise reach the joint palette.
+    #[error("joint {joint}'s {what} key at frame {frame} is not finite")]
+    NonFiniteClipValue {
+        /// Index of the offending joint.
+        joint: u32,
+        /// Frame the offending key sits on (`0` for a constant track).
+        frame: u32,
+        /// Which of the joint's three tracks it was.
+        what: &'static str,
+    },
+    /// An `FNP_CLIP` rotation key's norm was further from 1 than
+    /// [`crate::figure_clip::CLIP_QUATERNION_TOLERANCE`]. Never silently renormalised (engine
+    /// ADR-0017), unlike a mesh tangent's length, which is only checked.
+    #[error("joint {joint}'s rotation key at frame {frame} has norm {norm}, not 1")]
+    InvalidClipQuaternion {
+        /// Index of the offending joint.
+        joint: u32,
+        /// Frame the offending key sits on (`0` for a constant track).
+        frame: u32,
+        /// The offending key's norm.
+        norm: f32,
+    },
+    /// An `FNP_CLIP` marker's frame was lower than its predecessor's; markers are stored sorted by
+    /// frame.
+    #[error("clip marker {marker} sits on an earlier frame than its predecessor")]
+    ClipMarkersOutOfOrder {
+        /// Index of the first out-of-order marker.
+        marker: u32,
+    },
+    /// An `FNP_CLIP` marker's declared name bytes are not valid UTF-8.
+    #[error("clip marker {0}'s name is not valid UTF-8")]
+    InvalidClipMarkerName(u32),
+    /// Two poses, or a clip and a skeleton, disagree on how many joints there are.
+    #[error("clip poses {clip} joints, but {skeleton} were expected")]
+    ClipJointCountMismatch {
+        /// The joint count the clip (or the first pose) has.
+        clip: u32,
+        /// The joint count expected (the skeleton's, or the second pose's).
+        skeleton: u32,
+    },
+    /// A clip's stored skeleton fingerprint does not match the skeleton it was loaded against —
+    /// it was authored for a different rig that happens to have the same joint count.
+    #[error("clip was authored for skeleton {clip:#018x}, not {skeleton:#018x}")]
+    ClipSkeletonMismatch {
+        /// The fingerprint stored in the clip.
+        clip: u64,
+        /// The fingerprint of the skeleton it was checked against.
+        skeleton: u64,
+    },
+    /// [`crate::figure_clip::warped_clip_time`] was given anchors it cannot build a strictly
+    /// increasing, piecewise-linear mapping from.
+    #[error("time anchors are unusable: {reason}")]
+    InvalidTimeAnchors {
+        /// Which rule the anchors broke.
+        reason: &'static str,
+    },
 }
 
 /// Bounds-checked little-endian cursor over one payload byte slice. Every read returns
@@ -195,21 +277,26 @@ pub enum FigureFormatError {
 /// requested (contract §2 rule 9); mirrors the shape of `grimoire_assets::pack::Cursor` (private
 /// to that crate, and this crate may not depend on it — see this module's doc comment), rebuilt
 /// here for this payload format alone.
-struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.bytes.len() - self.pos
     }
 
-    fn take(&mut self, len: usize) -> Result<&'a [u8], FigureFormatError> {
+    /// Byte offset of the next read, for error reporting.
+    pub(crate) fn position(&self) -> usize {
+        self.pos
+    }
+
+    pub(crate) fn take(&mut self, len: usize) -> Result<&'a [u8], FigureFormatError> {
         match self.pos.checked_add(len) {
             Some(end) if end <= self.bytes.len() => {
                 let slice = &self.bytes[self.pos..end];
@@ -224,26 +311,26 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], FigureFormatError> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], FigureFormatError> {
         let slice = self.take(N)?;
         let mut out = [0u8; N];
         out.copy_from_slice(slice);
         Ok(out)
     }
 
-    fn u8(&mut self) -> Result<u8, FigureFormatError> {
+    pub(crate) fn u8(&mut self) -> Result<u8, FigureFormatError> {
         Ok(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Result<u16, FigureFormatError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, FigureFormatError> {
         Ok(u16::from_le_bytes(self.array()?))
     }
 
-    fn u32(&mut self) -> Result<u32, FigureFormatError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, FigureFormatError> {
         Ok(u32::from_le_bytes(self.array()?))
     }
 
-    fn u64(&mut self) -> Result<u64, FigureFormatError> {
+    pub(crate) fn u64(&mut self) -> Result<u64, FigureFormatError> {
         Ok(u64::from_le_bytes(self.array()?))
     }
 
@@ -251,11 +338,11 @@ impl<'a> Cursor<'a> {
         Ok(i32::from_le_bytes(self.array()?))
     }
 
-    fn f32(&mut self) -> Result<f32, FigureFormatError> {
+    pub(crate) fn f32(&mut self) -> Result<f32, FigureFormatError> {
         Ok(f32::from_le_bytes(self.array()?))
     }
 
-    fn f32_array<const N: usize>(&mut self) -> Result<[f32; N], FigureFormatError> {
+    pub(crate) fn f32_array<const N: usize>(&mut self) -> Result<[f32; N], FigureFormatError> {
         let mut out = [0.0f32; N];
         for slot in &mut out {
             *slot = self.f32()?;
@@ -289,7 +376,7 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
-    fn expect_exhausted(&self) -> Result<(), FigureFormatError> {
+    pub(crate) fn expect_exhausted(&self) -> Result<(), FigureFormatError> {
         if self.remaining() != 0 {
             return Err(FigureFormatError::TrailingBytes(self.remaining()));
         }
@@ -299,7 +386,11 @@ impl<'a> Cursor<'a> {
 
 /// Checks `count` (already read) against `limit`, before it is used to size any allocation
 /// (contract §2 rule 9).
-fn check_count(what: &'static str, count: u32, limit: u32) -> Result<u32, FigureFormatError> {
+pub(crate) fn check_count(
+    what: &'static str,
+    count: u32,
+    limit: u32,
+) -> Result<u32, FigureFormatError> {
     if count > limit {
         return Err(FigureFormatError::CountExceedsLimit {
             what,
@@ -708,7 +799,7 @@ pub fn decode_figure_manifest(bytes: &[u8]) -> Result<FigureManifest, FigureForm
     })
 }
 
-const IDENTITY_MATRIX: [[f32; 4]; 4] = [
+pub(crate) const IDENTITY_MATRIX: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
     [0.0, 0.0, 1.0, 0.0],
@@ -735,7 +826,7 @@ pub struct JointPose {
 
 /// Column-major local transform `T * R * S` for `pose` (translation column last, matching this
 /// crate's matrix convention, e.g. [`crate::MeshInstance::transform`]).
-fn trs_matrix(pose: JointPose) -> [[f32; 4]; 4] {
+pub(crate) fn trs_matrix(pose: JointPose) -> [[f32; 4]; 4] {
     let [x, y, z, w] = pose.rotation;
     let (xx, yy, zz) = (x * x, y * y, z * z);
     let (xy, xz, yz) = (x * y, x * z, y * z);
@@ -770,7 +861,7 @@ fn trs_matrix(pose: JointPose) -> [[f32; 4]; 4] {
 }
 
 /// Column-major 4x4 matrix product `a * b`.
-fn mat4_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+pub(crate) fn mat4_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut result = [[0.0f32; 4]; 4];
     for (col, result_col) in result.iter_mut().enumerate() {
         for (row, cell) in result_col.iter_mut().enumerate() {

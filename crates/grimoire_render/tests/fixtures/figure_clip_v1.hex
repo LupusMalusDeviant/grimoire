@@ -1,0 +1,61 @@
+# figure_clip_v1.bin: hand-derived golden fixture of the FNP_CLIP payload, version 1
+# (docs/formats/figure-clip.md, engine ADR-0017). This listing is the derivation: every field is
+# written out from the format document, and nothing here was produced by grimoire_render. The
+# skeleton fingerprint comes from an independent re-implementation of StableHasher v1, the f32
+# bit patterns from IEEE 754 by hand (24.0 = 0x41C00000, 1.0 = 0x3F800000, 0.5 = 0x3F000000,
+# -1.0 = 0xBF800000, 0.0 = 0x00000000).
+#
+# tests/figure_clip_fixture.rs checks that figure_clip_v1.bin equals this listing byte for byte
+# and that decode_clip reads exactly the fields noted here.
+# Format: hex bytes separated by spaces; everything after "#" is a comment.
+#
+# The clip: 2 joints (the "root" -> "limb" ribbon rig of tests/figure_pack.rs), 3 frames at 24 Hz,
+# looping, one marker. Joint 0 has a sampled translation and constant rotation and scale; joint 1
+# has a sampled rotation and constant translation and scale, so both storage kinds appear for both
+# a 3-component and a 4-component track. Joint 1's middle rotation key is the *negated* identity:
+# the same rotation as its neighbours, stored in the other hemisphere, which is the sign flip the
+# shorter-path rule has to undo (ADR-0017 measured 22 of them in the authored clips).
+
+# ---- header (40 bytes) ----
+46 4e 50 5f 43 4c 49 50  # magic "FNP_CLIP"
+01 00 00 00  # version 1
+01 00 00 00  # flags: bit 0 set, the clip loops
+02 00 00 00  # joint_count 2
+03 00 00 00  # frame_count 3
+00 00 c0 41  # frame_rate_hz 24.0
+76 12 9d 34 35 81 6c 9a  # skeleton fingerprint 0x9a6c8135349d1276
+                         #   = StableHasher v1 over u32 2, i32 -1, i32 0
+01 00 00 00  # marker_count 1
+
+# ---- joint 0 "root" ----
+# translation: sampled, one key per frame — the root rises and returns
+01  # storage 1 = sampled
+00 00 00 00  00 00 00 00  00 00 00 00  # frame 0: [0.0, 0.0, 0.0]
+00 00 00 00  00 00 00 3f  00 00 00 00  # frame 1: [0.0, 0.5, 0.0]
+00 00 00 00  00 00 00 00  00 00 00 00  # frame 2: [0.0, 0.0, 0.0], the loop closes on frame 0
+# rotation: constant for the whole clip
+00  # storage 0 = constant
+00 00 00 00  00 00 00 00  00 00 00 00  00 00 80 3f  # identity [0, 0, 0, 1]
+# scale: constant
+00  # storage 0 = constant
+00 00 80 3f  00 00 80 3f  00 00 80 3f  # [1.0, 1.0, 1.0]
+
+# ---- joint 1 "limb" ----
+# translation: constant, one unit further out along Z (the rig's own bind offset)
+00  # storage 0 = constant
+00 00 00 00  00 00 00 00  00 00 80 3f  # [0.0, 0.0, 1.0]
+# rotation: sampled, with a sign flip in the middle
+01  # storage 1 = sampled
+00 00 00 00  00 00 00 00  00 00 00 00  00 00 80 3f  # frame 0: [0, 0, 0, 1]
+00 00 00 00  00 00 00 00  00 00 00 00  00 00 80 bf  # frame 1: [0, 0, 0, -1], the sign flip
+00 00 00 00  00 00 00 00  00 00 00 00  00 00 80 3f  # frame 2: [0, 0, 0, 1]
+# scale: constant
+00  # storage 0 = constant
+00 00 80 3f  00 00 80 3f  00 00 80 3f  # [1.0, 1.0, 1.0]
+
+# ---- markers (sorted by frame, zero-based) ----
+01 00 00 00  # frame 1 (Blender frame 2 in the authoring report: the converter subtracts one)
+03  # name length 3
+68 69 74  # "hit"
+
+# Total: 40 + 67 + 75 + 8 = 190 bytes.

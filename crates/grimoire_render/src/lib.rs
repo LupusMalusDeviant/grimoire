@@ -33,7 +33,9 @@
 //! made of (mesh, material, raw texture, skeleton, figure manifest) into these types; it takes
 //! only raw bytes (never a `grimoire_assets` type — the engine crate map forbids that edge), so the
 //! `grimoire` facade is where a `.pack` file's entries actually become a registered, drawable
-//! figure.
+//! figure. [`figure_clip`] is the animation half of the same story (engine ADR-0017): it decodes
+//! the `FNP_CLIP` payload and samples a pose out of it without holding any playback state, so the
+//! pose stays a pure function of world state plus the interpolation alpha.
 
 use std::time::Duration;
 
@@ -41,6 +43,7 @@ mod bullet_lights;
 mod bullet_pass;
 pub mod cluster_layout;
 mod cluster_pass;
+pub mod figure_clip;
 pub mod figure_format;
 mod gpu_timer;
 pub mod measurement;
