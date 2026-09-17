@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Asset compiler v1 `grimoire-ac` (Plan 0002 WP9.2, project ADR-0010): it discovers content,
+       normalises paths to AssetPath, drives `sigilc build` with JSON output, passes its diagnostics
+       through unchanged and writes pack and manifest. It contains no Sigil grammar, no validation rule
+       and no interpreter — that is `grimoire_sigilc` alone (ADR-0010 building block 1). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>grimoire-ac</AssemblyName>
+    <RootNamespace>Grimoire.AssetCompiler</RootNamespace>
+    <Description>Asset compiler: content discovery, sigilc orchestration, pack v1 writing.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Grimoire.Formats/Grimoire.Formats.csproj" />
+    <ProjectReference Include="../Grimoire.LiveLink/Grimoire.LiveLink.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="GrimoireEngineVersion" Value="$(GrimoireEngineVersion)" />
+    <AssemblyMetadata Include="GrimoireBuildHash" Value="$(GrimoireBuildHash)" />
+    <InternalsVisibleTo Include="Grimoire.AssetCompiler.Tests" />
+  </ItemGroup>
+</Project>

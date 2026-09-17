@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Tests of the asset compiler: discovery, pack writing and the watch loop against a fake compiler
+       and the contract-§13 engine double, plus the WP4.1 conformance corpus against the real `sigilc`
+       binary (skipped when none is there, required when GRIMOIRE_REQUIRE_SIGILC=1, which CI sets). The
+       corpus is copied from crates/ at build time, so there is no second copy that could drift. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <RootNamespace>Grimoire.AssetCompiler.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Grimoire.AssetCompiler/Grimoire.AssetCompiler.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/FakeEngine.cs" Link="Shared/FakeEngine.cs" />
+    <None Include="../../../crates/grimoire_sigilc/tests/corpus/**/*.sigil" Link="fixtures/corpus/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_sigilc/tests/corpus/**/*.json" Link="fixtures/corpus/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_sigilc/tests/reference/*.sigil" Link="fixtures/reference/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../crates/grimoire_sigilc/tests/reference/behaviors.json" Link="fixtures/reference/behaviors.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
