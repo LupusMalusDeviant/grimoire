@@ -1,14 +1,14 @@
 //! Crate-wide error type for the content and pool APIs (contract §11.2/§11.3).
 
 use crate::behavior::BehaviorId;
+use crate::content::ContentEpoch;
 use crate::unit::{UnitError, UnitId};
 
 /// Errors reported by the content and `BulletPool` APIs of this crate.
 ///
 /// `#[non_exhaustive]`: `AlreadyInstalled` and `RegistryMismatch` (`install()`, contract §11.6)
-/// arrive with WP5.1; `NotInstalled`, `SwapLimit` and `ContentEpochMismatch` still belong to
-/// hot-swap (§11.8, WP5.5) and stay omitted rather than stubbed, so that work package can add them
-/// without breaking existing matches.
+/// arrived with WP5.1; `NotInstalled`, `SwapLimit` and `ContentEpochMismatch` (hot-swap, §11.8)
+/// with WP5.5.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SigilError {
@@ -80,5 +80,22 @@ pub enum SigilError {
         loaded: u64,
         /// Fingerprint of the registry passed to [`crate::install`].
         given: u64,
+    },
+    /// [`crate::replace_unit`] was called on a simulation without installed Sigil content.
+    #[error("no sigil content is installed on this simulation")]
+    NotInstalled,
+    /// [`crate::replace_unit`] would exceed `u32::MAX` swaps since installation.
+    #[error("the content epoch has reached the maximum number of swaps")]
+    SwapLimit,
+    /// [`crate::restore_checked`] was given a snapshot whose content epoch differs from the
+    /// loaded one; nothing was restored.
+    #[error(
+        "snapshot content epoch {snapshot:?} does not match the loaded content epoch {loaded:?}"
+    )]
+    ContentEpochMismatch {
+        /// Epoch stored in the snapshot, `None` if it holds no Sigil content.
+        snapshot: Option<ContentEpoch>,
+        /// Epoch of the loaded content, `None` if none is installed.
+        loaded: Option<ContentEpoch>,
     },
 }

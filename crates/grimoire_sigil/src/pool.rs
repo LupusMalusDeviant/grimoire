@@ -837,8 +837,6 @@ impl BulletPool {
     /// entity allocator's rule (contract §7/§11.3).
     fn despawn_slot(&mut self, index: u32, cause: DespawnCause) {
         let i = index as usize;
-        self.alive[i] = false;
-        self.alive_count -= 1;
         self.events.push(BulletEvent {
             id: BulletId {
                 index,
@@ -849,10 +847,35 @@ impl BulletPool {
             position: self.position[i],
             cause,
         });
+        self.free_slot(index);
+    }
+
+    /// Marks slot `index` dead and recycles or retires it, without recording an event.
+    fn free_slot(&mut self, index: u32) {
+        let i = index as usize;
+        self.alive[i] = false;
+        self.alive_count -= 1;
         if let Some(next) = self.generation[i].checked_add(1) {
             self.generation[i] = next;
             self.free_list.push_back(index);
         }
+    }
+
+    /// Despawns every live bullet of library unit `unit_index`, in ascending slot order, for
+    /// `replace_unit` (contract §11.8): their type and program indices point into the replaced
+    /// layout. Records no [`BulletEvent`] (the contract's `DespawnCause::Swap` without events), so
+    /// the event list of the last tick stays as it was until `sigil.begin` clears it. Returns the
+    /// number despawned.
+    pub(crate) fn despawn_unit_for_swap(&mut self, unit_index: u16) -> u32 {
+        let mut despawned = 0u32;
+        for index in 0..self.slot_count {
+            let i = index as usize;
+            if self.alive[i] && self.unit[i] == unit_index {
+                self.free_slot(index);
+                despawned += 1;
+            }
+        }
+        despawned
     }
 }
 
