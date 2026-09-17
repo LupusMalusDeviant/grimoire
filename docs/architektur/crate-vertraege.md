@@ -2406,7 +2406,8 @@ Kopf (Little-Endian, 40 Byte):
   oder nach dem letzten — ergibt `NonCanonical`, nicht `SectionLayout`; so bleibt `to_bytes` eine reine Funktion der
   dekodierten Felder, ohne dass der Decoder rohe Lückenbytes vorhalten müsste, um sie zu reproduzieren. Abschnittsarten in
   v1: 1 `BulletTypes` (Pflicht), 2 `Programs`
-  (Bausteine und Modifikatorstapel), 3 `Emitters` (Pflicht), 4 `Transforms`, 5 `Curves`, 6 `BehaviorRefs` und
+  (Bausteine und Modifikatorstapel), 3 `Emitters` (Pflicht), 4 `Transforms` (je Bullet-Typ Behavior-Bindung und
+  Transformationsliste, §11.9), 5 `Curves`, 6 `BehaviorRefs` und
   7 `Names` (nur Diagnose, gehasht, ohne Laufzeitwirkung). Eine unbekannte Art ergibt `UnknownSection`; neue Arten
   heben `FORMAT_VERSION`. Das innere Layout jeder Art beschreibt `docs/formats/sigil.md` (WP4.1/WP4.2, P-9 A) unter
   denselben Regeln.
@@ -2419,11 +2420,13 @@ Kopf (Little-Endian, 40 Byte):
   validiert strukturell erneut, was der Compiler zusichert: Indizes im Bereich, jede `f32` endlich, bekannte
   Enum-Tags, Kaskadentiefe höchstens `MAX_CASCADE_DEPTH`, keine Rekursion in Sub-Emittern, jede referenzierte
   `BehaviorId` in `BehaviorRefs`. Die Lesbarkeitsregeln (Silhouetten-Unterscheidung, Palettenraum) prüft nur der
-  Compiler (WP4.2).
+  Compiler (WP4.2). Tiefe und Rekursion prüft der Decoder seit WP5.2 am Abschnitt `Transforms` (§11.9).
 - **Kanonisch:** `to_bytes` ist der Referenz-Encoder, den `sigilc` und die Tests nutzen. Für jede gültige Eingabe
   gilt `to_bytes(from_bytes(b)?) == b`. Der Decoder lehnt deshalb nicht kanonische Bytes ab (reservierte Felder ≠ 0,
   falsche Reihenfolge, `-0.0` statt `+0.0`) und liefert `NonCanonical`. Damit sind Units auf Windows, Linux und
-  macOS byte-identisch prüfbar (WP4.4).
+  macOS byte-identisch prüfbar (WP4.4). *Klarstellung (WP5.2):* Nicht kanonisch ist auch ein vorhandener, aber
+  leerer optionaler Abschnitt (`Programs`, `Curves`, `Transforms` mit Anzahl `0`), den der Encoder nie schreibt;
+  zuvor dekodierte er wie ein fehlender Abschnitt und verletzte damit die Gleichung.
 - **`UnitId`** vergibt `sigilc` aus dem kanonischen Content-Pfad der Quelle nach derselben Regel wie
   `AssetId::from_path` (§12, `StableHasher` v1); ergibt die Ableitung 0, meldet `sigilc` einen Fehler. Damit
   bezeichnen Pack-Eintrag, Swap-Nachricht (§13) und Laufzeit eine Unit mit derselben Zahl.
@@ -2637,6 +2640,9 @@ pub struct BehaviorRegistry;                     // Debug, Send + Sync; version(
   (`u32`) und den Namen (`str`), nie über Funktionsadressen. Er geht in den Manifest-Hash (§11.8) und damit in
   `state_hash` und den Replay-v2-Header ein. Zwei Registries mit denselben Einträgen in anderer
   `register`-Reihenfolge ergeben denselben Fingerprint und dieselben Hashes (Test WP5.2).
+- **Aufruf** (WP5.2, Stufe A, PO-Freigabe offen): Welcher Bullet-Typ welches Behavior mit welchen `params` aufruft,
+  steht im Abschnitt `Transforms` der Unit; `sigil.update` ruft es je lebendem Bullet dieses Typs einmal je Tick
+  auf (Reihenfolge und Zustand §11.9).
 - **Behavior-Versionierung** (additiv, PO-Entscheid V-20, 2026-09-15; schließt die offene Frage aus PR #2): Der
   `fingerprint` schließt bewusst die Funktionsidentität aus (§8.4) — eine geänderte Behavior-Funktion bei
   unverändertem `version`/`BehaviorId`/Namen bliebe damit sonst unentdeckt. Jede semantische Änderung an einer
@@ -2672,8 +2678,9 @@ pub mod system_names {                           // &'static str, erscheinen in 
   1. `sigil.begin`: Vergleicht den Registry-Fingerprint mit `SigilContent` (Panic
      ``behavior registry fingerprint {a:#018x} does not match the loaded content ({b:#018x})``), leert die
      Ereignisse und setzt `events_tick = Tick`.
-  2. `sigil.update`: Pool-Blöcke (§11.7). Setzt `previous_position = position`, erhöht `age`, prüft
-     `lifetime_ticks`, führt das Programm aus (Baustein-Bewegung, Modifikatoren), dann das Behavior, dann die Bounds
+  2. `sigil.update` (genaue Reihenfolge und Ereignisse seit WP5.2: §11.9): Pool-Blöcke (§11.7). Setzt
+     `previous_position = position`, erhöht `age`, prüft `lifetime_ticks`, führt das Programm aus
+     (Baustein-Bewegung, Modifikatoren), dann das Behavior, dann die Bounds
      (`bounds_min`/`bounds_max`, außerhalb → `Bounds`). Transformationen mit In-place-Wirkung (Typwechsel,
      Richtungsumkehr) wirken im Block. Despawns und Sub-Spawns (Platzen, Sub-Emitter) sammelt jeder Block in
      Slot-Reihenfolge.
@@ -2725,7 +2732,8 @@ pub mod stream {                                 // Einträge der Strom-Tabelle 
   dann herausgenommen, und die Simulation ist nur per `restore` weiterverwendbar (§7, exklusive Systeme).
 - **Lesende Konsumenten** (Broadphase-Adapter, §9.6; Render-Extraktion, §9.1) nutzen `BulletPool::iter()` bzw.
   `BulletPool::blocks()` mit derselben Blockregel und, wenn sie parallelisieren, `run_blocks` mit `world.executor()`.
-- **Hash-Gate:** Ein Szenario mit mehr als drei Pool-Blöcken, Behaviors, Streuung und Clear läuft wie §8 mit
+- **Hash-Gate** (umgesetzt in WP5.2: `grimoire_sigil/tests/pool_scenario`, zusätzlich mit Transformationen und
+  Ereignissen): Ein Szenario mit mehr als drei Pool-Blöcken, Behaviors, Streuung und Clear läuft wie §8 mit
   `SequentialExecutor`, `PermutedExecutor` (Seeds 1 und 2, rückwärts) und in `grimoire_exec/tests/hash_gate.rs` mit
   1, 2 und N Threads; alle Checkpoints sind identisch.
   - **Dev-Kanten des Hash-Gates** (PO-Entscheid V-1): `hash_gate.rs` bindet Szenarien anderer Crates per `#[path]`
@@ -2811,6 +2819,78 @@ pub fn restore_checked(sim: &mut Simulation, snapshot: &SimSnapshot) -> Result<(
   - zwei Swaps derselben Unit ergeben unterschiedliche Epochen;
   - Swap von 3 auf 1 Emitter und zurück auf 3 panict nicht und ergibt mit `SequentialExecutor` und
     `PermutedExecutor` identische Hashes; ein vom Spiel erzeugter `Emitter` mit ungültigem Index bleibt inaktiv.
+
+### 11.9 Transformationen, Trigger, Ereignisse und Behavior-Aufruf (Ergänzung WP5.2)
+
+*Entwurf WP5.2 — Stufe A, PO-Freigabe offen.*
+
+```rust
+pub struct EventId(pub u32);                     // Copy, Eq, Ord, Hash, Debug, StableHash; from_name(&str) -> EventId
+pub struct EventRequest { pub event: EventId }   // Component: Clone, Debug, PartialEq, Eq, StableHash
+```
+
+**Semantik:**
+- **Format:** Der Abschnitt `Transforms` (Art 4, Layout `docs/formats/sigil.md` §10.9) trägt je Bullet-Typ
+  höchstens einen Eintrag, aufsteigend nach Typindex: eine optionale Behavior-Bindung (`BehaviorId` und bis zu
+  8 `f32`-Parameter) und bis zu 8 Transformationen (`reverse`, `change_type`, `burst`, `become_emitter`) mit je
+  einem Trigger (`time`, `distance`, `event`). `BulletTypes` bleibt bei 20 Byte und `BehaviorRefs` eine Menge; das
+  schließt die in WP5.1 gemeldete Lücke, dass ein Behavior aus der Tick-Phase nicht aufrufbar war.
+  `FORMAT_VERSION` bleibt `1`: Art 4 war seit WP1.3 reserviert und undurchsichtig, und `sigilc`, einziger Erzeuger
+  (P-2), hat sie nie geschrieben. Der Decoder lehnt beliebige Bytes in Art 4 jetzt ab.
+- **Decoder** (§11.1, §2 Regel 9): Indizes im Bereich (`IndexOutOfRange`), gebundene Behavior-IDs in
+  `BehaviorRefs` (`UnknownTag { what: "transforms.behavior" }`), Obergrenzen (`Limit`), unbenutzte Felder null
+  (`NonCanonical`). Die Kaskadenprüfung geht von den Bullet-Typen der primären Emitter (Rolle `0`) auf Stufe `0`
+  aus; `burst` und `become_emitter` führen eine Stufe tiefer, `change_type` bleibt auf der Stufe. Eine Stufe über
+  `MAX_CASCADE_DEPTH` ergibt `CascadeTooDeep { depth }`, eine Rekursion über `burst`/`become_emitter` also immer.
+  Das entspricht der Prüfung des Compilers (`SIG0018`); ein reiner `change_type`-Zyklus ist für den Decoder
+  zulässig (der Compiler lehnt ihn weiter ab, `SIG0019`).
+- **`EventId::from_name`** = die unteren 32 Bit von `StableHasher` v1 über `write_str("grimoire.sigil-event.v1")`
+  und `write_str(name)`. Compiler und Spiel bilden die ID aus demselben Namen; die Unit braucht keine Namenstabelle.
+  Zwei Namen können kollidieren.
+- **`EventRequest`:** `sigil.update` sammelt zu Beginn alle lebenden Anforderungen in Query-Reihenfolge, despawnt
+  ihre Entities in dieser Reihenfolge und löst jedes `event`-Trigger dieses Ereignisses in diesem Tick genau einmal
+  aus, gleich wie viele Anforderungen es nennen. Eine Anforderung aus einer früheren Stufe desselben Ticks wirkt im
+  selben Tick, sonst im nächsten (wie `ClearRequest`, §11.4). Parallele Systeme fordern Ereignisse strukturell an.
+  `install` registriert `EventRequest` bewusst nicht, weil jede Registrierung die Komponentenanzahl in
+  `World::stable_hash` (§7) jeder installierten Sitzung ändern würde; die Komponente registriert sich mit der ersten
+  Anforderung.
+- **Reihenfolge je lebendem Slot in `sigil.update`:** `previous_position = position`, `age += 1`, Modifikatoren des
+  Programms, `position += velocity`, Behavior, Transformationen, Lebensdauer (`lifetime_ticks` des dann aktuellen
+  Typs), Bounds. *Klarstellung:* Die Lebensdauer prüft die Laufzeit seit WP5.1 nach der Bewegung; §11.6 nennt sie
+  im Wortlaut vor dem Programm.
+- **Behavior:** `BehaviorInput { tick, age, params, target }` mit `target` aus `AimTarget` und `BulletMotion` aus den
+  Spalten; das Ergebnis wird zurückgeschrieben. `Despawn` ergibt `DespawnCause::Behavior`, die Transformationen
+  laufen dann nicht mehr. `SimRng` ist der Blockgenerator `derive_block_rng(seed, tick, stream::UPDATE, blockindex)`,
+  in Slot-Reihenfolge fortgeschaltet; aus ihm ziehen auch `scatter`-Bausteine von Sub-Spawns (§11.7).
+- **Uhr eines Typs:** `age` und die Weglänge seit Annahme des aktuellen Typs. Die Weglänge summiert die Länge der
+  tatsächlichen Verschiebung je Tick (`position - previous_position`, also mit `sine_offset` und Behavior-Bewegung)
+  in `state[0]`, nur für Typen mit `distance`-Trigger; `sine_offset` belegt `state[1..=3]` (WP5.1). Ein Behavior
+  darf die so belegten Plätze seines Typs nicht schreiben (Review, §3).
+- **Trigger:** `time T` löst im Update aus, in dem `age == max(T, 1)`; `distance D` in dem Update, in dem die
+  Weglänge `D` erstmals erreicht (`D <= 0`: erstes Update); `event E` in jedem Tick mit lebender Anforderung für
+  `E`. Die Transformationen eines Typs laufen in Listenreihenfolge.
+- **Wirkungen:** `reverse` negiert `velocity`, addiert π auf `angle`, und die Liste läuft weiter. `change_type`
+  setzt Typ und `flags` des Zieltyps, `age = 0` und, falls der Zieltyp einen `distance`-Trigger hat, `state[0] = 0`;
+  Position, Geschwindigkeit, Programm, Kaskadentiefe und übriger Zustand bleiben. `burst` despawnt den Bullet
+  (`DespawnCause::Transform`, mit Ereignis) und erzeugt eine Salve des `burst`-Programms an seiner Position mit
+  seinem `angle` als Basisrichtung und `speed` als Basistempo. `become_emitter` despawnt ebenso und erzeugt eine
+  Salve des Ziel-Emitters (Programm, `speed`, Versatz) an der Position mit `angle` als Basisrichtung, als Salve `0`;
+  `delay`, `repeat` und `interval` des Ziel-Emitters wirken dabei nicht. Nach `change_type`, `burst` und
+  `become_emitter` endet die Liste für diesen Tick. Salven entstehen in Slot-Reihenfolge im Block.
+- **Sub-Spawns** faltet `sigil.resolve` nach allen Despawns in Blockreihenfolge (§11.6) mit der Tiefe des
+  Elternteils plus eins (`checked_add`); eine Tiefe über `MAX_CASCADE_DEPTH` und `PoolFull` verwerfen den Spawn und
+  zählen ihn in `dropped_spawns`. Sub-Bullets bewegen sich ab dem nächsten Tick.
+- **Nicht Zustand:** der aus Unit und Registry abgeleitete Laufzeit-Cache, der Ereignispuffer und die Arbeitslisten
+  zwischen `sigil.update` und `sigil.resolve`; alle sind zwischen Ticks leer bzw. rein abgeleitet. Die Hash-Layouts
+  (§11.3, §7) bleiben unverändert; die bestehenden Goldens bleiben gleich.
+- **Flags** (PRD-0004 FR-04) werden geparst, je Bullet in `flags` gespeichert, von `change_type` nachgeführt und
+  gehasht; eine Wirkung haben sie in P1 nicht.
+- **Tests (WP5.2):** Decoder-Fehlerbilder samt Proptest und handabgeleitetem Fixture `transforms_unit_v1.bin`;
+  je Transformation und Trigger ein Laufzeittest; Kaskadendeckel zur Laufzeit; Ereignisse; Behavior-Aufruf; zwei
+  Welten mit anders registrierter Registry und anderem Executor mit identischen Hashes (§11.5); typgefilterter
+  Clear im selben Tick samt Ereignissen (PRD-0004 FR-12); Snapshot-Roundtrip mitten in einer Kaskade; goldener
+  Hash einer Kaskaden-Unit; Hash-Gate-Szenario §11.7 mit `SequentialExecutor`, `PermutedExecutor` und 1, 2 und N
+  Threads; `sigilc` übersetzt `03-subemitter-cascade.sigil`, die Laufzeit erreicht jede Generation auf ihrer Tiefe.
 
 ## 12. `grimoire_assets` — Pack v1 und `AssetSource`
 
