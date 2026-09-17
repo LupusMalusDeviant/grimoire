@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use grimoire_core::Vec2;
 use grimoire_ecs::World;
-use grimoire_platform::PlatformWindow;
+use grimoire_platform::{PlatformWindow, RawInputEvent};
 use grimoire_render::{RenderFrame, RenderStats, StageFrame};
 use grimoire_sim::Simulation;
 
@@ -18,7 +18,8 @@ use crate::render_assets::{PluginError, RenderAssets};
 /// 2. [`GamePlugin::register_assets`] once per plugin, in registration order, with the loop's
 ///    renderer (every frame loop, never [`crate::AppBuilder::run_headless`]).
 /// 3. [`GamePlugin::window_created`] once per plugin on the desktop, after the renderer exists.
-/// 4. Per frame: all simulation ticks due, then [`GamePlugin::extract`] and
+/// 4. Per frame: [`GamePlugin::presentation_input`] for every event that arrived since the last
+///    frame, then all simulation ticks due, then [`GamePlugin::extract`] and
 ///    [`GamePlugin::extract_stage`] for every plugin in registration order, rendering, then
 ///    [`GamePlugin::on_frame`] for every plugin, then [`GamePlugin::on_profile`] for every plugin
 ///    (unless the profiler is off).
@@ -89,6 +90,30 @@ pub trait GamePlugin {
     fn focus(&self, world: &World, alpha: f32) -> Option<Vec2> {
         let _ = (world, alpha);
         None
+    }
+
+    /// Receives raw keyboard and mouse events that only affect presentation (contract §9.12):
+    /// camera presets, debug views, a screenshot key. The event reaches this plugin and nothing
+    /// else — there is no path from here into a tick, a world hash, a snapshot or a replay, so a
+    /// recording made while these keys are pressed is byte-identical to one without them.
+    ///
+    /// Gameplay input keeps its own path: bind it in the [`crate::InputMap`], where it becomes
+    /// part of the `TickInput` the simulation reads and a recording stores.
+    ///
+    /// Called once per event, for every plugin in registration order, at the start of the frame
+    /// after the event arrived (contract §9.3 step 0): before the timestep advances, before every
+    /// tick of that frame and before [`GamePlugin::extract`]. Every frame delivers, including one
+    /// without ticks, so a paused or single-stepped game keeps reacting. Events are delivered once
+    /// each, in arrival order, and never coalesced. The loop drops events only when more than
+    /// 4,096 pile up before a frame, and logs how many.
+    ///
+    /// Only the frame loops deliver ([`crate::AppBuilder::run`],
+    /// [`crate::AppBuilder::run_offscreen`], [`crate::AppBuilder::run_headless_frames`] and its
+    /// event-scripted form); [`crate::AppBuilder::run_headless`] has no platform events at all.
+    /// Losing focus is not an input event: the loop releases held keys itself and this hook sees
+    /// nothing.
+    fn presentation_input(&mut self, event: &RawInputEvent) {
+        let _ = event;
     }
 
     /// Receives the measurements of the frame that was just rendered.

@@ -5,6 +5,9 @@ Versionierung nach [SemVer](https://semver.org/lang/de/). Einträge entstehen au
 
 ## [Unreleased]
 
+### Added
+- `grimoire` (Fassade): Haken für reine Darstellungstasten (Vertrag §9.12 neu, Stufe A, PO-Freigabe 2026-09-18). `GamePlugin::presentation_input(&RawInputEvent)` bekommt rohe Tasten- und Mausereignisse, die nie in einen Tick, einen Welt-Hash, einen Snapshot oder eine Aufzeichnung geraten: Der Haken übergibt das Ereignis und sonst nichts, insbesondere keine `World`. Damit braucht eine Kamera-Voreinstellung oder Debug-Ansicht keine `InputMap`-Bindung mehr, nur um eine Taste zu sehen; der `InputMap`-Weg für Spieleingaben bleibt unverändert. Die Schleife sammelt die Ereignisse in `event` und liefert sie zu Beginn des nächsten Frames aus, je Ereignis an jedes Plugin in Registrierungsreihenfolge, vor dem Zeitschritt, vor jedem Tick des Frames und vor `extract`; auch ein Frame ohne Tick liefert, damit ein pausiertes Spiel ansprechbar bleibt. Warten mehr als 4.096 Ereignisse auf einen Frame, verwirft die Schleife die neuesten und meldet die Zahl im Log. `tests/presentation_input.rs` belegt: Derselbe Lauf mit und ohne diese Tastendrücke ergibt byte-gleiche Replay-Daten und dieselben Hashes — und als Gegenprobe ändert dieselbe Taste als `InputMap`-Bindung die Aufzeichnung sehr wohl.
+
 ## [0.5.0] - 2026-09-17
 
 ### Added
