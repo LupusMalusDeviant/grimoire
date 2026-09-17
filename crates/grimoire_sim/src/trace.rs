@@ -234,11 +234,15 @@ pub struct DivergentSystem {
 
 impl DivergentSystem {
     /// The subsystem the system belongs to: the part of its name before the first `.`
-    /// (`"sigil"` for `"sigil.update"`), or the whole name if it has none. The facade's profiler
-    /// groups systems the same way.
+    /// (`"sigil"` for `"sigil.update"`), the prefix the facade's profiler groups systems by. A name
+    /// without a dot, or with an empty prefix, is its own subsystem here (the profiler counts it to
+    /// its `app` scope).
     #[must_use]
     pub fn subsystem(&self) -> &str {
-        self.name.split('.').next().unwrap_or(&self.name)
+        match self.name.split_once('.') {
+            Some((prefix, _)) if !prefix.is_empty() => prefix,
+            _ => &self.name,
+        }
     }
 }
 
@@ -360,4 +364,37 @@ pub fn first_divergence(reference: &HashTrace, candidate: &HashTrace) -> Option<
         });
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn system(name: &str) -> DivergentSystem {
+        DivergentSystem {
+            index: 0,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_subsystem_is_the_name_prefix_before_the_first_dot() {
+        assert_eq!(system("sigil.update").subsystem(), "sigil");
+        assert_eq!(system("collide.broadphase.cells").subsystem(), "collide");
+        assert_eq!(system("hazard").subsystem(), "hazard");
+        assert_eq!(system(".hidden").subsystem(), ".hidden");
+    }
+
+    #[test]
+    fn exactness_needs_a_match_one_tick_earlier() {
+        let divergence = |tick, last_matching_tick| Divergence {
+            tick,
+            last_matching_tick,
+            system: None,
+        };
+        assert!(divergence(38, Some(37)).is_exact());
+        assert!(!divergence(40, Some(30)).is_exact());
+        assert!(!divergence(0, None).is_exact());
+        assert!(!divergence(u64::MAX, Some(u64::MAX)).is_exact());
+    }
 }

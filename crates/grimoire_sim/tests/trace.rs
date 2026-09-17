@@ -310,6 +310,44 @@ fn a_per_system_reference_narrows_a_coarse_candidate_only_to_common_ticks() {
     );
 }
 
+/// The two-stage diagnosis ADR-0018 proposes: detect every N ticks, then replay both runs plainly
+/// to the last matching checkpoint and record only the window up to the detecting checkpoint per
+/// system per tick.
+#[test]
+fn detecting_every_n_ticks_then_tracing_only_the_window_per_system_finds_the_exact_system() {
+    let log = log(9, 60);
+    let detected = first_divergence(&recorded(false, every(10)), &recorded(true, every(10)))
+        .expect("the faulty run diverges");
+    let start = detected.last_matching_tick.expect("tick 30 matched") as usize;
+    let end = detected.tick as usize;
+    let window = |faulty: bool| {
+        let mut sim = build(log.seed, faulty, false);
+        let before = InputLog {
+            seed: log.seed,
+            tick_rate_hz: log.tick_rate_hz,
+            frames: log.frames[..start].to_vec(),
+        };
+        replay(&mut sim, &before, 0);
+        let inside = InputLog {
+            seed: log.seed,
+            tick_rate_hz: log.tick_rate_hz,
+            frames: log.frames[start..end].to_vec(),
+        };
+        trace(&mut sim, &inside, TraceGranularity::PER_SYSTEM_PER_TICK)
+    };
+    let reference = window(false);
+    assert_eq!(reference.checkpoints.first().map(|c| c.tick), Some(30));
+    assert_eq!(reference.checkpoints.len(), 11, "start plus ticks 31 to 40");
+    let exact = first_divergence(&reference, &window(true)).expect("the window diverges");
+    assert!(exact.is_exact());
+    assert_eq!(exact.tick, FAULT_TICK + 1);
+    assert_eq!(exact.last_matching_tick, Some(FAULT_TICK));
+    assert_eq!(
+        exact.system.map(|system| system.name),
+        Some("collide.resolve".to_string())
+    );
+}
+
 #[test]
 fn different_schedules_name_no_system() {
     let log = log(9, 60);
