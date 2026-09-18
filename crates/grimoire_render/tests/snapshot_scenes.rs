@@ -54,6 +54,14 @@
 //!   `::warning::` annotation and the test passes. The macOS runner has no software adapter, so the
 //!   scenes are skipped there anyway (see "References per platform").
 //!
+//! A new scene is therefore adopted in two commits: the first brings the scene and the references
+//! the author's own platform can produce, and its CI run writes the other platform's candidate to
+//! that platform's artifact; the second commits the candidate unchanged. In between,
+//! [`blocking_comparison_fails_on_a_real_regression`] has no pair to compare for that scene and
+//! skips it with a `grimoire-snapshot-selftest:` line (asserting first that it would still block
+//! on both platforms) — otherwise the unit-test step would fail before the scene step could
+//! produce the candidate the second commit needs, and the adoption could never happen.
+//!
 //! [`blocking_comparison_fails_on_a_real_regression`] proves the rule without a GPU in every
 //! `cargo test`: two references that differ like a real regression (blob instead of key-light
 //! shadows, a camera tilted 15 degrees off) trip the tolerance and fail on both blocking platforms,
@@ -1617,6 +1625,15 @@ fn read_reference(name: &str, platform: &str) -> Image {
     Image::read_png(&path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
 }
 
+/// `name`'s reference for `platform`, or `None` when that platform has none yet — the state a scene
+/// is in between the commit that adds it and the commit that adopts the other platform's candidate
+/// (this module's doc comment, "References per platform"). Only the cross-platform pair check below
+/// needs this: the missing reference itself is what [`check_scene`] fails on, on every blocking
+/// platform, which the same test asserts separately.
+fn try_read_reference(name: &str, platform: &str) -> Option<Image> {
+    Image::read_png(&reference_path_for(name, platform)).ok()
+}
+
 /// Proves the blocking rule on the committed references, without a GPU, in every `cargo test`:
 /// a rendering that differs from the reference like a real regression fails on Windows and Linux
 /// and only warns on macOS, a missing reference fails on Windows and Linux, and the WARP and
@@ -1651,12 +1668,26 @@ fn blocking_comparison_fails_on_a_real_regression() {
     }
     assert!(failure("pbr_materials", "macos", None).is_none());
 
+    let mut compared = 0;
     for name in VARIANCE_SCENES {
-        let metric = support::compare(
-            &read_reference(name, "windows"),
-            &read_reference(name, "linux"),
-        )
-        .expect("same size");
+        let (Some(windows), Some(linux)) = (
+            try_read_reference(name, "windows"),
+            try_read_reference(name, "linux"),
+        ) else {
+            // A scene whose reference this platform has not adopted yet. It is not allowed through
+            // the gate — that is exactly what the next two lines assert — but there is no pair to
+            // compare, and failing here would stop the run before the scene step could render the
+            // candidate the adoption needs.
+            for platform in support::BLOCKING_PLATFORMS {
+                assert!(
+                    failure(name, platform, None).is_some(),
+                    "{name} has no reference on both blocking platforms and must still block"
+                );
+            }
+            println!("grimoire-snapshot-selftest: name={name} skipped=reference-not-adopted-yet");
+            continue;
+        };
+        let metric = support::compare(&windows, &linux).expect("same size");
         assert!(
             metric.within_tolerance(),
             "{name}: WARP and lavapipe references differ beyond tolerance: {metric:?}"
@@ -1664,5 +1695,13 @@ fn blocking_comparison_fails_on_a_real_regression() {
         for platform in support::BLOCKING_PLATFORMS {
             assert!(failure(name, platform, Some(&metric)).is_none());
         }
+        compared += 1;
     }
+    assert!(
+        compared >= VARIANCE_SCENES.len() - 2,
+        "at most one scene (with its variants) may sit between the commit that adds it and the \
+         commit that adopts the other platform's candidate; only {compared} of {} reference pairs \
+         were compared",
+        VARIANCE_SCENES.len()
+    );
 }
