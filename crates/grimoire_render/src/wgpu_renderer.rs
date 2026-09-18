@@ -726,6 +726,7 @@ impl WgpuRenderer {
                         &frame.shadow_config,
                         &frame.blob_shadows,
                         &frame.joint_matrices,
+                        frame.rim_light,
                         &mut self.gpu_timer,
                     )?;
                     cluster_stats = Some(mesh_pass_stats.cluster);

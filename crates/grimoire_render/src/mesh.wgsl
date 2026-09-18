@@ -143,9 +143,15 @@ struct Camera {
     // (`WgpuRenderer::render_stage_with_specular_aa`, a WP2.5/OF-3.5 measurement hook — production
     // rendering through `render_stage` always uses 1.0).
     specular_aa_strength: f32,
-    _pad1: u32,
-    _pad2: u32,
-    _pad3: u32,
+    // Rim light of the actor layer (contract §6, M3, `stage3d::RimLight`), already sanitised on the
+    // CPU side: `rim_strength` is exactly 0.0 when the frame's rim light is inactive, which is what
+    // switches the term in `fs_main` off — there is no second pipeline and no extra pass.
+    rim_strength: f32,
+    // Falloff exponent of the view-facing rim term.
+    rim_power: f32,
+    // Per-channel upper bound of the rim term (PRD-0003 rules 1 and 2: an actor's rim may never
+    // compete with the bullet layer).
+    rim_max: f32,
     // World-to-light-space view-projection for the key-light shadow map
     // (`stage3d::key_light_view_projection`).
     light_view_proj: mat4x4<f32>,
@@ -153,6 +159,8 @@ struct Camera {
     // single tap). z: `1.0` to sample the shadow map this frame, `0.0` to skip it entirely. w
     // unused.
     shadow_params: vec4<f32>,
+    // rgb: rim-light colour in linear RGB, already multiplied by nothing else. w unused.
+    rim_color: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -620,6 +628,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let env = env_brdf_approx(f0, roughness, n_dot_v);
     let ambient = (ambient_dir * base_color * (1.0 - metallic) * (vec3<f32>(1.0) - env) + ambient_reflect * env) * occlusion;
 
-    let color = direct + ambient + in.emissive.rgb;
+    // Rim light of the actor layer (contract §6, M3). Only instances the game marked as actors
+    // (`MeshRole::Actor`, carried in `material_params.z`) receive it, so the floor and the props
+    // keep the picture they had before. The term is a view-facing Fresnel-style falloff, so it
+    // concentrates on the silhouette without drawing an outline (ADR-0014 forbids outline and cel
+    // shading) and without a post-processing pass over the whole frame.
+    //
+    // It is clamped to `rim_max` per channel, which is what keeps it below the bullet layer
+    // (PRD-0003 rule 1 and rule 2) whatever an actor's material does, and it takes no slot in the
+    // clustered light budget because it never becomes a light.
+    var rim = vec3<f32>(0.0);
+    if camera.rim_strength > 0.0 && in.material_params.z > 0.5 {
+        let falloff = pow(saturate(1.0 - n_dot_v), camera.rim_power);
+        rim = min(
+            camera.rim_color.rgb * (falloff * camera.rim_strength),
+            vec3<f32>(camera.rim_max),
+        );
+    }
+
+    let color = direct + ambient + in.emissive.rgb + rim;
     return vec4<f32>(color, alpha);
 }

@@ -72,7 +72,9 @@ use crate::cluster_pass::{ClusterCameraParams, ClusterFrameStats, ClusterPass};
 use crate::gpu_timer::{GpuTimer, PassTimestamps};
 use crate::mesh::{MeshData, MeshError, MeshRegistry};
 use crate::shadow_pass::{ShadowCaster, ShadowPass};
-use crate::stage3d::{self, AmbientLight, Camera25D, DirectionalLight, MAX_SKIN_JOINTS};
+use crate::stage3d::{
+    self, AmbientLight, Camera25D, DirectionalLight, MAX_SKIN_JOINTS, MeshRole, RimLight,
+};
 use crate::texture::{TextureData, TextureError, TextureRegistry};
 use crate::{
     BlobShadowInstance, BulletLightCap, LightBudget, MeshHandle, MeshInstance, Msaa, PbrMaterial,
@@ -126,7 +128,8 @@ mod instance_gpu {
         /// [`crate::PbrMaterial::emissive_factor`] of the instance's material, `w` unused.
         pub emissive: [f32; 4],
         /// `x` = [`crate::PbrMaterial::metallic_factor`], `y` = [`crate::PbrMaterial::roughness_factor`],
-        /// `z`/`w` reserved (always `0`).
+        /// `z` = `1.0` for a [`crate::MeshRole::Actor`] instance and `0.0` for the environment (the
+        /// rim light of contract §6 applies to actors only), `w` reserved (always `0`).
         pub material_params: [f32; 4],
     }
 }
@@ -204,11 +207,18 @@ mod camera_gpu {
         /// `cluster_pass::ClusterCameraParams`.
         pub cluster_proj: [f32; 4],
         pub specular_aa_strength: f32,
-        pub _pad1: u32,
-        pub _pad2: u32,
-        pub _pad3: u32,
+        /// Rim light of the actor layer (contract §6, M3), sanitised by
+        /// [`crate::RimLight::sanitized`]: `rim_strength` is `0.0` whenever the frame's rim light
+        /// is inactive, which switches the term off in `mesh.wgsl` without a pipeline variant.
+        pub rim_strength: f32,
+        /// Falloff exponent of the rim term.
+        pub rim_power: f32,
+        /// Upper bound of the rim term per channel.
+        pub rim_max: f32,
         pub light_view_proj: [[f32; 4]; 4],
         pub shadow_params: [f32; 4],
+        /// Rim light colour in linear RGB, `w` unused.
+        pub rim_color: [f32; 4],
     }
 }
 use camera_gpu::CameraGpu;
@@ -894,7 +904,12 @@ fn camera_uniform(
     specular_aa: bool,
     light_view_proj: [[f32; 4]; 4],
     shadow_params: [f32; 4],
+    rim_light: RimLight,
 ) -> CameraGpu {
+    // Contract §6 (M3): an inactive or broken rim light uploads a strength of 0, which switches
+    // the term off in `mesh.wgsl` without a second pipeline.
+    let rim = rim_light.sanitized();
+    let rim_strength = if rim.is_active() { rim.strength } else { 0.0 };
     let (light_dir, key_color) = match key_light.filter(|light| light.is_valid()) {
         Some(light) => {
             let length_squared = light.direction.iter().map(|c| c * c).sum::<f32>();
@@ -947,11 +962,12 @@ fn camera_uniform(
             cluster_camera.far,
         ],
         specular_aa_strength: if specular_aa { 1.0 } else { 0.0 },
-        _pad1: 0,
-        _pad2: 0,
-        _pad3: 0,
+        rim_strength,
+        rim_power: rim.power,
+        rim_max: rim.max_contribution,
         light_view_proj,
         shadow_params,
+        rim_color: [rim.color[0], rim.color[1], rim.color[2], 0.0],
     }
 }
 
@@ -1936,6 +1952,7 @@ impl MeshPass {
         shadow_config: &ShadowConfig,
         blob_shadows: &[BlobShadowInstance],
         joint_matrices: &[[[f32; 4]; 4]],
+        rim_light: RimLight,
         gpu_timer: &mut GpuTimer,
     ) -> Result<MeshPassStats, GpuError> {
         let view_proj =
@@ -1962,10 +1979,15 @@ impl MeshPass {
                     material.emissive_factor[2],
                     0.0,
                 ];
+                // `z` carries the actor flag of contract §6 (M3): only an actor receives the
+                // frame's rim light, the environment never does.
                 let material_params = [
                     material.metallic_factor,
                     material.roughness_factor,
-                    0.0,
+                    match mesh.role {
+                        MeshRole::Actor => 1.0,
+                        MeshRole::Environment => 0.0,
+                    },
                     0.0,
                 ];
                 if let Some(skin) = mesh.skin {
@@ -2098,6 +2120,7 @@ impl MeshPass {
             specular_aa,
             light_view_proj,
             shadow_params,
+            rim_light,
         );
         context
             .queue()
@@ -2470,12 +2493,15 @@ mod tests {
     }
 
     #[test]
-    fn camera_gpu_is_304_bytes() {
+    fn camera_gpu_is_320_bytes() {
         // WP3.4 dropped the fixed 32-light array (1024 bytes) and `light_count` (4 bytes) in
         // favour of group 4's storage buffers, adding the camera-local basis and clustering
         // projection scalars (4 `vec4`s, 64 bytes) plus one more `u32` pad (keeping the
         // `specular_aa_strength` block a 16-byte multiple): 1264 - 1024 - 4 + 64 + 4 = 304.
-        assert_eq!(std::mem::size_of::<CameraGpu>(), 304);
+        //
+        // M3's rim light (contract §6) spends the three pads on `rim_strength`, `rim_power` and
+        // `rim_max` — no growth there — and adds one `vec4` for `rim_color`: 304 + 16 = 320.
+        assert_eq!(std::mem::size_of::<CameraGpu>(), 320);
     }
 
     #[test]
@@ -2688,6 +2714,7 @@ mod tests {
             true,
             IDENTITY,
             [0.0; 4],
+            RimLight::default(),
         );
         assert_eq!(uniform.light_dir, [0.0; 4], "no key light direction");
         assert_eq!(uniform.key_light, [0.0; 4], "no key light colour");
@@ -2715,6 +2742,7 @@ mod tests {
             true,
             IDENTITY,
             [0.0; 4],
+            RimLight::default(),
         );
         assert_eq!(&uniform.ambient_sky[..3], color, "sky");
         assert_eq!(
@@ -2742,6 +2770,7 @@ mod tests {
             true,
             IDENTITY,
             [0.0; 4],
+            RimLight::default(),
         );
         // `light_dir` points *from a surface towards the light*: the negated travel direction.
         assert_eq!(&uniform.light_dir[..3], [0.0, 0.0, 1.0]);
@@ -2768,6 +2797,7 @@ mod tests {
             true,
             IDENTITY,
             [0.0; 4],
+            RimLight::default(),
         );
         assert_eq!(uniform.view_proj, matrix);
     }
@@ -2783,6 +2813,7 @@ mod tests {
             false,
             IDENTITY,
             [0.0; 4],
+            RimLight::default(),
         );
         assert_eq!(&uniform.eye[..3], [1.0, 2.0, 3.0]);
         assert_eq!(uniform.specular_aa_strength, 0.0);
@@ -2806,6 +2837,7 @@ mod tests {
             true,
             light_view_proj,
             shadow_params,
+            RimLight::default(),
         );
         assert_eq!(uniform.light_view_proj, light_view_proj);
         assert_eq!(uniform.shadow_params, shadow_params);
@@ -2832,6 +2864,7 @@ mod tests {
             true,
             IDENTITY,
             [0.0; 4],
+            RimLight::default(),
         );
         assert_eq!(&uniform.right[..3], [1.0, 0.0, 0.0]);
         assert_eq!(&uniform.up[..3], [0.0, 0.0, 1.0]);
@@ -3343,5 +3376,75 @@ mod tests {
                 "byte {byte}: {round_tripped} vs {value}"
             );
         }
+    }
+
+    /// The ambient used by the rim-light tests below; nothing about it touches the rim fields.
+    fn test_ambient() -> AmbientLight {
+        AmbientLight::Flat {
+            color: [1.0, 1.0, 1.0],
+            intensity: 0.2,
+        }
+    }
+
+    fn rim_uniform(rim: RimLight) -> CameraGpu {
+        camera_uniform(
+            IDENTITY,
+            [0.0, 0.0, 0.0],
+            None,
+            &test_ambient(),
+            &test_cluster_camera(),
+            true,
+            IDENTITY,
+            [0.0; 4],
+            rim,
+        )
+    }
+
+    #[test]
+    fn camera_uniform_carries_the_rim_light_through() {
+        let rim = RimLight {
+            color: [0.2, 0.4, 0.6],
+            strength: 0.5,
+            power: 2.5,
+            max_contribution: 0.25,
+        };
+        let uniform = rim_uniform(rim);
+        assert_eq!(uniform.rim_strength, 0.5);
+        assert_eq!(uniform.rim_power, 2.5);
+        assert_eq!(uniform.rim_max, 0.25);
+        assert_eq!(uniform.rim_color, [0.2, 0.4, 0.6, 0.0]);
+    }
+
+    #[test]
+    fn camera_uniform_switches_an_inactive_rim_light_off() {
+        // `mesh.wgsl` reads `rim_strength > 0.0` as "apply the term at all", so an inactive rim
+        // light has to arrive as an exact zero — there is no second pipeline to switch to.
+        let no_headroom = RimLight {
+            max_contribution: 0.0,
+            ..RimLight::default()
+        };
+        for rim in [RimLight::off(), no_headroom] {
+            assert_eq!(rim_uniform(rim).rim_strength, 0.0);
+        }
+        assert!(rim_uniform(RimLight::default()).rim_strength > 0.0);
+    }
+
+    #[test]
+    fn camera_uniform_never_uploads_a_broken_rim_light() {
+        let broken = RimLight {
+            color: [f32::NAN, -1.0, f32::INFINITY],
+            power: f32::NAN,
+            max_contribution: f32::INFINITY,
+            ..RimLight::default()
+        };
+        let uniform = rim_uniform(broken);
+        assert!(uniform.rim_strength.is_finite());
+        assert!(uniform.rim_power.is_finite() && uniform.rim_power > 0.0);
+        assert!(uniform.rim_max.is_finite());
+        assert!(
+            uniform.rim_color.iter().all(|c| c.is_finite() && *c >= 0.0),
+            "{:?}",
+            uniform.rim_color
+        );
     }
 }

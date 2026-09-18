@@ -21,6 +21,12 @@
 //! - `camera_tilt`: the same simple scene (a floor and one box) rendered at several
 //!   [`grimoire_render::Camera25D::tilt_degrees`] values — proves the perspective projection: a
 //!   shallower tilt reveals more of the box's side faces and pushes the horizon down the frame.
+//! - `actor_rim_off` / `actor_rim_on` (M3): a very dark figure on the dim arena floor, rendered
+//!   without and with [`grimoire_render::StageFrame::rim_light`] — the readability case the game's
+//!   asset-import pilot measured. [`actor_rim_scene`] repeats the pilot's own measurement (WCAG
+//!   luminance, the figure's brightest tenth against the floor's median) before the reference
+//!   comparison and proves structurally that the rim light touches no pixel outside the actor and
+//!   stays below the bullet beside it; [`actor_rim_cost`] reports what it costs on this runner.
 //!
 //! # Tolerance metric
 //!
@@ -100,9 +106,10 @@ use grimoire_render::procedural::{
 };
 use grimoire_render::{
     AmbientLight, BULLET_PASS_PALETTE_SPACE, BlobShadowInstance, BulletInstance, Camera25D,
-    DirectionalLight, LightBudget, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial,
-    PointLight, RenderError, Renderer, RendererConfig, ShadowConfig, ShadowMode, SpriteInstance,
-    StageFrame, StageRendererConfig, WgpuRenderer, bullet_palette, bullet_silhouette, shape,
+    DirectionalLight, LightBudget, MaterialHandle, MeshHandle, MeshInstance, MeshRole, PbrMaterial,
+    PointLight, RenderError, Renderer, RendererConfig, RimLight, ShadowConfig, ShadowMode,
+    SpriteInstance, StageFrame, StageRendererConfig, WgpuRenderer, bullet_palette,
+    bullet_silhouette, shape,
 };
 
 #[path = "support/mod.rs"]
@@ -1055,10 +1062,434 @@ fn bullets_on_top_scene() {
     );
 }
 
+// --- Scene 5: actor_rim (M3 rim light) -----------------------------------------------------------
+//
+// The readability case the game's asset-import pilot measured: a very dark figure standing on the
+// dim arena floor, whose brightest tenth barely separates from that floor (contrast 1.02-1.05:1 for
+// the pilot's witch, against 1.51:1 for a figure that reads). PRD-0003 forbids an outline and cel
+// shading (ADR-0014) and rule 5 caps how much bullet light may reach the environment, so M3 answers
+// with a light on the actor layer instead: `StageFrame::rim_light`, applied to every mesh the game
+// marked `MeshRole::Actor`.
+//
+// The scene is rendered three times: without the figure (the floor the figure has to be told apart
+// from), with the figure and the rim off, and with the figure and the default rim on. That gives
+// the same measurement the pilot made, before and after, on the CI runner's software adapter, plus
+// two structural proofs that need no reference image:
+//
+// - the environment is bit-identical with the rim on and off, so the rim cannot brighten the floor
+//   the way a post-processing pass would (PRD-0003 rule 5's concern), and
+// - the rimmed actor stays darker than the bullet beside it, which keeps its own contrast against
+//   the floor far above the 4.5:1 of PRD-0003 rule 2 (rules 1 and 2: layer 6 always wins).
+//
+// Shadows are off in this scene on purpose: a blob shadow would only darken the floor under the
+// figure and make the contrast numbers look better than the lighting alone earns.
+
+/// Ground position of the dark figure.
+const ACTOR_RIM_FIGURE: [f32; 2] = [0.0, 0.0];
+/// Ground position of the single hostile bullet beside it.
+const ACTOR_RIM_BULLET: [f32; 2] = [3.3, -0.6];
+/// Radius of that bullet in world units.
+const ACTOR_RIM_BULLET_RADIUS: f32 = 0.85;
+
+fn actor_rim_camera() -> Camera25D {
+    let mut camera = Camera25D::default();
+    camera.target = [0.0, 0.4];
+    camera.tilt_degrees = 62.0;
+    camera.fov_y_degrees = 48.0;
+    camera.distance = 11.0;
+    camera
+}
+
+/// The scene above. `with_figure == false` renders the floor alone (same lights, same bullet), which
+/// is the reference surface of the measurement; `rim` is the frame's [`RimLight`].
+fn actor_rim_frame(renderer: &mut WgpuRenderer, with_figure: bool, rim: RimLight) -> StageFrame {
+    let floor = renderer
+        .register_mesh(floor_tile_grid(10, 2.0))
+        .expect("valid mesh");
+    let figure = renderer
+        .register_mesh(capsule_actor(0.55, 1.6, 12, 3))
+        .expect("valid mesh");
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.012, 0.014, 0.020, 1.0];
+    frame.camera_25d = Some(actor_rim_camera());
+    frame.rim_light = rim;
+    // A dim, low key light from the side: enough to show the floor's tiles, far too little to model
+    // the figure's silhouette — the situation the pilot captured.
+    frame.key_light = Some(key_light([0.55, 0.35, -0.75], [0.85, 0.88, 1.0], 0.55));
+    frame.ambient = AmbientLight::Hemisphere {
+        sky_color: [0.085, 0.092, 0.120],
+        ground_color: [0.020, 0.020, 0.026],
+        intensity: 1.0,
+    };
+    frame
+        .materials
+        .push(material([0.096, 0.095, 0.100, 1.0], 0.0, 0.92)); // 0: arena floor
+    frame
+        .materials
+        .push(material([0.045, 0.040, 0.058, 1.0], 0.0, 0.75)); // 1: the dark figure
+
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    if with_figure {
+        // `capsule_actor(0.55, 1.6, ..)`'s half-height along Z is `1.6 / 2 + 0.55 = 1.35`.
+        let mut actor = mesh_instance(
+            figure,
+            MaterialHandle(1),
+            translation([ACTOR_RIM_FIGURE[0], ACTOR_RIM_FIGURE[1], 1.35]),
+        );
+        actor.role = MeshRole::Actor;
+        frame.meshes.push(actor);
+    }
+    // One hostile bullet beside the figure: the layer the rim must never compete with.
+    frame.bullets.push(BulletInstance {
+        position: ACTOR_RIM_BULLET,
+        radius: ACTOR_RIM_BULLET_RADIUS,
+        rotation: 0.0,
+        silhouette: bullet_silhouette::ORB,
+        palette: bullet_palette::HEX_MAGENTA,
+        palette_space: BULLET_PASS_PALETTE_SPACE,
+        glow: 200,
+        flags: 0,
+    });
+    frame
+}
+
+/// Relative luminance of an sRGB byte triple, WCAG 2.x — the method the game's asset-import pilot
+/// used for its figure/floor numbers (`assets_src/asset_import/measure_capture.py`), reproduced
+/// here so the before/after numbers are comparable with its stage-4 table.
+fn relative_luminance(rgb: [u8; 3]) -> f64 {
+    fn linearize(channel: u8) -> f64 {
+        let c = f64::from(channel) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * linearize(rgb[0]) + 0.7152 * linearize(rgb[1]) + 0.0722 * linearize(rgb[2])
+}
+
+/// WCAG contrast ratio between two relative luminances, `(lighter + 0.05) / (darker + 0.05)`.
+fn contrast_ratio(a: f64, b: f64) -> f64 {
+    let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Relative luminance of the pixel with index `pixel` (in pixels, not bytes).
+fn luminance_at(image: &Image, pixel: usize) -> f64 {
+    let index = pixel * 4;
+    relative_luminance([
+        image.rgba[index],
+        image.rgba[index + 1],
+        image.rgba[index + 2],
+    ])
+}
+
+/// The `fraction` quantile of `values` by nearest rank; `fraction == 0.5` is the median and
+/// `fraction == 0.9` the lower edge of the "brightest tenth" the pilot reported.
+fn quantile(mut values: Vec<f64>, fraction: f64) -> f64 {
+    assert!(!values.is_empty(), "no pixels to measure");
+    values.sort_by(|a, b| a.partial_cmp(b).expect("no NaN luminance"));
+    let rank = ((values.len() - 1) as f64 * fraction).round() as usize;
+    values[rank]
+}
+
+/// Indices of the pixels the figure covers: every pixel that changed when the figure was added to
+/// the otherwise identical frame. With shadows off, that is exactly the figure's silhouette
+/// including its anti-aliased edge.
+fn figure_pixels(floor_only: &Image, with_figure: &Image) -> Vec<usize> {
+    (0..(floor_only.width * floor_only.height) as usize)
+        .filter(|&pixel| {
+            let index = pixel * 4;
+            (0..4).any(|channel| {
+                floor_only.rgba[index + channel].abs_diff(with_figure.rgba[index + channel]) >= 2
+            })
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "M3 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
+fn actor_rim_scene() {
+    let Some(mut renderer) = try_offscreen_renderer() else {
+        return;
+    };
+
+    let frame = actor_rim_frame(&mut renderer, false, RimLight::off());
+    let floor_only = render_frame(&mut renderer, &frame);
+    let frame = actor_rim_frame(&mut renderer, true, RimLight::off());
+    let off = render_frame(&mut renderer, &frame);
+    let frame = actor_rim_frame(&mut renderer, true, RimLight::default());
+    let on = render_frame(&mut renderer, &frame);
+
+    let figure = figure_pixels(&floor_only, &off);
+    assert!(
+        figure.len() >= 200,
+        "the figure should cover a measurable area, got {} pixels",
+        figure.len()
+    );
+
+    // The floor the figure stands in front of, measured on exactly the pixels the figure covers.
+    let floor_median = quantile(
+        figure
+            .iter()
+            .map(|&p| luminance_at(&floor_only, p))
+            .collect(),
+        0.5,
+    );
+    let measure = |image: &Image| {
+        let values: Vec<f64> = figure.iter().map(|&p| luminance_at(image, p)).collect();
+        let max = values
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, |a: f64, b: f64| a.max(b));
+        (quantile(values.clone(), 0.5), quantile(values, 0.9), max)
+    };
+    let (off_median, off_p90, _off_max) = measure(&off);
+    let (on_median, on_p90, on_max) = measure(&on);
+
+    // The bullet beside the figure: the brightest tenth of the disc around its projected centre.
+    let bullet_centre = actor_rim_camera()
+        .ground_to_screen(ACTOR_RIM_BULLET, [WIDTH as f32, HEIGHT as f32])
+        .expect("the bullet is in view");
+    let bullet: Vec<usize> = (0..(WIDTH * HEIGHT) as usize)
+        .filter(|&pixel| {
+            let x = (pixel as u32 % WIDTH) as f32 + 0.5 - bullet_centre[0];
+            let y = (pixel as u32 / WIDTH) as f32 + 0.5 - bullet_centre[1];
+            x * x + y * y <= 9.0
+        })
+        .collect();
+    let bullet_p90 = quantile(bullet.iter().map(|&p| luminance_at(&on, p)).collect(), 0.9);
+
+    let contrast_off_p90 = contrast_ratio(off_p90, floor_median);
+    let contrast_on_p90 = contrast_ratio(on_p90, floor_median);
+    println!(
+        "grimoire-rim-contrast: floor_median_luminance={floor_median:.4} \
+         figure_median_off={off_median:.4} figure_median_on={on_median:.4} \
+         figure_p90_off={off_p90:.4} figure_p90_on={on_p90:.4} \
+         contrast_median_off={:.3} contrast_median_on={:.3} \
+         contrast_p90_off={contrast_off_p90:.3} contrast_p90_on={contrast_on_p90:.3} \
+         figure_max_on={on_max:.4} bullet_p90={bullet_p90:.4} \
+         bullet_contrast_on={:.3} figure_pixels={}",
+        contrast_ratio(off_median, floor_median),
+        contrast_ratio(on_median, floor_median),
+        contrast_ratio(bullet_p90, floor_median),
+        figure.len()
+    );
+
+    // 1. Without the rim the figure is the pilot's flat silhouette: its brightest tenth barely
+    //    separates from the floor (the pilot measured 1.02-1.05:1 for the witch).
+    assert!(
+        contrast_off_p90 < 1.15,
+        "without the rim light the figure should read as a flat silhouette, got {contrast_off_p90:.3}:1"
+    );
+    // 2. With it, the brightest tenth reaches at least the band a figure that reads already had
+    //    (the pilot's round-4 imp: 1.51:1).
+    assert!(
+        contrast_on_p90 >= 1.5,
+        "the rim light should lift the figure's brightest tenth to at least 1.5:1, got {contrast_on_p90:.3}:1"
+    );
+    // 3. The rim is an actor light, not a post effect: every pixel the figure does not cover is
+    //    bit-identical with the rim on and off, floor and bullet included (PRD-0003 rule 5).
+    let mut in_figure = vec![false; (WIDTH * HEIGHT) as usize];
+    for &pixel in &figure {
+        in_figure[pixel] = true;
+    }
+    let environment_changed = (0..(WIDTH * HEIGHT) as usize)
+        .filter(|&pixel| !in_figure[pixel])
+        .filter(|&pixel| {
+            let index = pixel * 4;
+            off.rgba[index..index + 4] != on.rgba[index..index + 4]
+        })
+        .count();
+    assert_eq!(
+        environment_changed, 0,
+        "the rim light must not touch a single pixel outside the actor"
+    );
+    // 4. Bounded against the bullet layer (PRD-0003 rules 1 and 2): the rimmed actor stays darker
+    //    than the bullet beside it, which keeps its own contrast against the floor above 4.5:1.
+    assert!(
+        on_max < bullet_p90,
+        "the rimmed actor ({on_max:.4}) must stay below the bullet layer ({bullet_p90:.4})"
+    );
+    assert!(
+        contrast_ratio(bullet_p90, floor_median) >= 4.5,
+        "the bullet keeps PRD-0003 rule 2's contrast over the floor"
+    );
+
+    check_scene("actor_rim_off", &off);
+    check_scene("actor_rim_on", &on);
+}
+
+/// Width of the [`actor_rim_cost`] measurement frame: four times the scene resolution above, so
+/// the rim term actually covers a meaningful number of fragments, still small enough for a
+/// software rasterizer on a CI runner.
+const RIM_COST_WIDTH: u32 = 480;
+/// Height of the [`actor_rim_cost`] measurement frame.
+const RIM_COST_HEIGHT: u32 = 270;
+/// Actors in the measurement frame.
+const RIM_COST_ACTORS: u32 = 12;
+/// Frames rendered per side (rim off, rim on); they alternate, so a runner that slows down halfway
+/// through slows down both sides equally.
+const RIM_COST_FRAMES: u32 = 24;
+
+/// A floor, sixteen point lights and a row of actors, at [`RIM_COST_WIDTH`]x[`RIM_COST_HEIGHT`].
+fn actor_rim_cost_frame(renderer: &mut WgpuRenderer, rim: RimLight) -> StageFrame {
+    let floor = renderer
+        .register_mesh(floor_tile_grid(12, 3.0))
+        .expect("valid mesh");
+    let figure = renderer
+        .register_mesh(capsule_actor(0.55, 1.6, 12, 3))
+        .expect("valid mesh");
+
+    let mut camera = actor_rim_camera();
+    camera.distance = 24.0;
+
+    let mut frame = StageFrame::new();
+    frame.base.clear_color = [0.012, 0.014, 0.020, 1.0];
+    frame.camera_25d = Some(camera);
+    frame.rim_light = rim;
+    frame.key_light = Some(key_light([0.55, 0.35, -0.75], [0.85, 0.88, 1.0], 0.55));
+    frame.ambient = AmbientLight::Hemisphere {
+        sky_color: [0.085, 0.092, 0.120],
+        ground_color: [0.020, 0.020, 0.026],
+        intensity: 1.0,
+    };
+    frame
+        .materials
+        .push(material([0.096, 0.095, 0.100, 1.0], 0.0, 0.92));
+    frame
+        .materials
+        .push(material([0.045, 0.040, 0.058, 1.0], 0.0, 0.75));
+    frame.meshes.push(mesh_instance(
+        floor,
+        MaterialHandle(0),
+        translation([0.0, 0.0, 0.0]),
+    ));
+    for index in 0..RIM_COST_ACTORS {
+        let column = (index % 6) as f32 - 2.5;
+        let row = (index / 6) as f32 - 0.5;
+        let mut actor = mesh_instance(
+            figure,
+            MaterialHandle(1),
+            translation([column * 2.6, row * 4.0, 1.35]),
+        );
+        actor.role = MeshRole::Actor;
+        frame.meshes.push(actor);
+    }
+    for index in 0..16u8 {
+        frame.point_lights.push(point_light(
+            [
+                f32::from(index % 4) * 6.0 - 9.0,
+                f32::from(index / 4) * 6.0 - 9.0,
+                1.5,
+            ],
+            [1.0, 0.6, 0.3],
+            8.0,
+            4.0,
+        ));
+    }
+    frame
+}
+
+/// What the rim light costs, measured on this runner (plan 0002 M3). It is not a new pass and not a
+/// new draw call: the term lives in the mesh pass's fragment shader behind a per-instance flag, and
+/// the whole CPU side of it is four floats in the camera uniform (`CameraGpu` grew from 304 to 320
+/// bytes, once per frame) plus one `match` per mesh instance. What is left to measure is fragment
+/// work, so this test renders the same frame `RIM_COST_FRAMES` times with the rim off and on,
+/// alternating, and reports the median and the fastest frame of each side. Each timed frame ends
+/// with the offscreen read-back, which waits for the device: without it the timer would stop at
+/// submission and measure nothing of the fragment work the rim adds. The read-back costs the same
+/// on both sides, so it cancels out of the difference.
+///
+/// The absolute numbers are a *software rasterizer* on a CI runner, not the GPU the contract's
+/// §9.7 budgets describe (render CPU 3 ms, GPU 8 ms) — the WP6.6 full-curtain measurement showed
+/// how far apart those two are. Only the difference between the two sides means anything here, and
+/// the test never fails on it: like [`scene_variance`], it reports. What it does assert is the
+/// structural claim, which cannot drift: with the rim on and off the frame draws the same meshes
+/// and the same clustered lights, so the rim takes no slot in the light budget.
+#[test]
+#[ignore = "M3 measurement: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this test's doc comment)"]
+fn actor_rim_cost() {
+    let config = RendererConfig {
+        vsync: false,
+        initial_sprite_capacity: 16,
+        allow_software_fallback: true,
+    };
+    let mut renderer = match WgpuRenderer::new_offscreen(RIM_COST_WIDTH, RIM_COST_HEIGHT, config) {
+        Ok(renderer) => renderer,
+        Err(RenderError::NoAdapter) => {
+            println!(
+                "grimoire-rim-cost: platform={} skipped=no-adapter",
+                support::platform_dir()
+            );
+            return;
+        }
+        Err(error) => panic!("offscreen renderer creation failed: {error}"),
+    };
+    let adapter = renderer.adapter_report_line();
+    let adapter = adapter
+        .trim_start_matches("grimoire-gpu-adapter: ")
+        .to_string();
+    let off = actor_rim_cost_frame(&mut renderer, RimLight::off());
+    let on = actor_rim_cost_frame(&mut renderer, RimLight::default());
+
+    let off_stats = renderer.render_stage(&off).expect("render_stage");
+    let on_stats = renderer.render_stage(&on).expect("render_stage");
+    assert_eq!(
+        off_stats.meshes_drawn, on_stats.meshes_drawn,
+        "the rim light draws nothing of its own"
+    );
+    assert_eq!(
+        off_stats.point_lights_drawn, on_stats.point_lights_drawn,
+        "the rim light takes no slot in the clustered light budget"
+    );
+    assert_eq!(on_stats.meshes_drawn, RIM_COST_ACTORS + 1);
+
+    let (mut off_times, mut on_times) = (Vec::new(), Vec::new());
+    for index in 0..RIM_COST_FRAMES {
+        for (frame, times) in [(&off, &mut off_times), (&on, &mut on_times)] {
+            let start = std::time::Instant::now();
+            renderer.render_stage(frame).expect("render_stage");
+            let pixels = renderer.read_offscreen_rgba().expect("read-back");
+            let elapsed = start.elapsed().as_secs_f64() * 1e3;
+            assert!(!pixels.is_empty());
+            // The first pair warms caches and pipelines up; it is not part of the measurement.
+            if index > 0 {
+                times.push(elapsed);
+            }
+        }
+    }
+    let summarise = |mut times: Vec<f64>| {
+        times.sort_by(|a, b| a.partial_cmp(b).expect("no NaN duration"));
+        (times[0], times[times.len() / 2])
+    };
+    let (off_min, off_median) = summarise(off_times);
+    let (on_min, on_median) = summarise(on_times);
+    println!(
+        "grimoire-rim-cost: platform={} size={RIM_COST_WIDTH}x{RIM_COST_HEIGHT} \
+         actors={RIM_COST_ACTORS} meshes={} lights={} frames={} \
+         frame_off_median_ms={off_median:.3} frame_on_median_ms={on_median:.3} \
+         frame_off_min_ms={off_min:.3} frame_on_min_ms={on_min:.3} \
+         delta_median_ms={:.3} delta_min_ms={:.3} contract_render_cpu_budget_ms=3.0 \
+         adapter=[{adapter}]",
+        support::platform_dir(),
+        on_stats.meshes_drawn,
+        on_stats.point_lights_drawn,
+        RIM_COST_FRAMES - 1,
+        on_median - off_median,
+        on_min - off_min,
+    );
+}
+
 // --- OF-18.2: variance per adapter (WP3.6) --------------------------------------------------------
 
 /// Every reference scene of this file, by reference name.
-const VARIANCE_SCENES: [&str; 9] = [
+const VARIANCE_SCENES: [&str; 11] = [
     "pbr_materials",
     "shadows_keylight",
     "shadows_blob",
@@ -1068,6 +1499,8 @@ const VARIANCE_SCENES: [&str; 9] = [
     "camera_tilt_90",
     "lights_256",
     "bullets_on_top",
+    "actor_rim_off",
+    "actor_rim_on",
 ];
 
 /// A new renderer of the right configuration with the frame of the scene `name` built on it, or
@@ -1099,6 +1532,8 @@ fn scene_by_name(name: &str) -> Option<(WgpuRenderer, StageFrame)> {
         }
         "lights_256" => lights_256_frame(&mut renderer),
         "bullets_on_top" => bullets_on_top_frame(&mut renderer, true),
+        "actor_rim_off" => actor_rim_frame(&mut renderer, true, RimLight::off()),
+        "actor_rim_on" => actor_rim_frame(&mut renderer, true, RimLight::default()),
         tilt => {
             let degrees: f32 = tilt
                 .trim_start_matches("camera_tilt_")
