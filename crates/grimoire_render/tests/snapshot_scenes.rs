@@ -203,6 +203,27 @@ fn annotation_level(platform: &str) -> &'static str {
 /// written out for review). The two last outcomes fail the test on a blocking platform and are
 /// only reported elsewhere (this module's doc comment, "Blocking per platform").
 fn check_scene(name: &str, image: &Image) {
+    if let Some(message) = check_scene_reporting(name, image) {
+        panic!("{message}");
+    }
+}
+
+/// Every variant of a scene at once: each one is compared and reported, each one writes its
+/// candidate, and only then does the test fail — with all of their messages. A scene with several
+/// variants would otherwise stop at the first one, and one CI run would yield one candidate, so
+/// adopting a new multi-variant scene (this module's doc comment, "Blocking per platform") would
+/// take as many runs as it has variants.
+fn check_scenes(scenes: &[(&str, &Image)]) {
+    let messages: Vec<String> = scenes
+        .iter()
+        .filter_map(|(name, image)| check_scene_reporting(name, image))
+        .collect();
+    assert!(messages.is_empty(), "{}", messages.join("\n"));
+}
+
+/// [`check_scene`] without the panic: returns the failure message instead, or `None` when this
+/// platform accepts what was rendered.
+fn check_scene_reporting(name: &str, image: &Image) -> Option<String> {
     let platform = support::platform_dir();
     let path = reference_path(name);
     if update_references_requested() {
@@ -213,7 +234,7 @@ fn check_scene(name: &str, image: &Image) {
             "grimoire-snapshot-updated: name={name} path={}",
             path.display()
         );
-        return;
+        return None;
     }
 
     if !path.exists() {
@@ -236,15 +257,13 @@ fn check_scene(name: &str, image: &Image) {
             )
             .as_bytes(),
         );
-        if let Some(message) = failure(name, platform, None) {
-            panic!("{message}");
-        }
-        return;
+        return failure(name, platform, None);
     }
 
     let reference = Image::read_png(&path)
         .unwrap_or_else(|error| panic!("reading reference {}: {error}", path.display()));
     let Some(metric) = support::compare(&reference, image) else {
+        // Not a rendering difference but a harness mismatch: no candidate helps here.
         panic!(
             "reference {} is {}x{}, rendered image is {}x{}: scene resolution changed, update the \
              reference deliberately ({ENV_UPDATE_REFERENCES}=1)",
@@ -289,9 +308,20 @@ fn check_scene(name: &str, image: &Image) {
             .as_bytes(),
         );
     }
-    if let Some(message) = failure(name, platform, Some(&metric)) {
-        panic!("{message}");
-    }
+    failure(name, platform, Some(&metric))
+}
+
+/// Serialises every test in this file that touches a GPU device, for the same reason
+/// `tests/offscreen.rs` does it (see `GPU_SERIAL` there: two devices at once crashed the Windows
+/// software adapter), and additionally because [`actor_rim_cost`] times what it renders — a scene
+/// rendering on another thread at the same time would measure the runner's contention, not the rim
+/// light.
+static GPU_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn gpu_serial() -> std::sync::MutexGuard<'static, ()> {
+    GPU_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Creates an offscreen renderer on whatever adapter [`grimoire_gpu::AdapterOverride::from_env`]
@@ -438,6 +468,7 @@ fn pbr_materials_frame(renderer: &mut WgpuRenderer) -> StageFrame {
 #[test]
 #[ignore = "WP2.8 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
 fn pbr_materials_scene() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer() else {
         return;
     };
@@ -510,6 +541,7 @@ fn shadows_frame(renderer: &mut WgpuRenderer) -> StageFrame {
 #[test]
 #[ignore = "WP2.8 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
 fn shadows_scene() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer() else {
         return;
     };
@@ -586,6 +618,7 @@ fn camera_tilt_frame(renderer: &mut WgpuRenderer, tilt_degrees: f32) -> StageFra
 #[test]
 #[ignore = "WP2.8 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
 fn camera_tilt_scene() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer() else {
         return;
     };
@@ -663,6 +696,7 @@ fn is_near_an_edge(image: &Image, x: u32, y: u32) -> bool {
 #[test]
 #[ignore = "texture-quality B1 measurement, run explicitly (see this test's doc comment)"]
 fn edge_adjacency_of_snapshot_mismatches() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer() else {
         return;
     };
@@ -842,6 +876,7 @@ fn lights_256_frame(renderer: &mut WgpuRenderer) -> StageFrame {
 #[test]
 #[ignore = "WP3.6 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
 fn lights_256_scene() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer_high_budget() else {
         return;
     };
@@ -1029,6 +1064,7 @@ fn disc_statistics(image: &Image, centre: [f32; 2], radius_px: f32) -> (i32, i32
 #[test]
 #[ignore = "WP3.6 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
 fn bullets_on_top_scene() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer() else {
         return;
     };
@@ -1223,6 +1259,7 @@ fn figure_pixels(floor_only: &Image, with_figure: &Image) -> Vec<usize> {
 #[test]
 #[ignore = "M3 snapshot scene: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this file's module doc comment)"]
 fn actor_rim_scene() {
+    let _serial = gpu_serial();
     let Some(mut renderer) = try_offscreen_renderer() else {
         return;
     };
@@ -1329,8 +1366,7 @@ fn actor_rim_scene() {
         "the bullet keeps PRD-0003 rule 2's contrast over the floor"
     );
 
-    check_scene("actor_rim_off", &off);
-    check_scene("actor_rim_on", &on);
+    check_scenes(&[("actor_rim_off", &off), ("actor_rim_on", &on)]);
 }
 
 /// Width of the [`actor_rim_cost`] measurement frame: four times the scene resolution above, so
@@ -1423,6 +1459,7 @@ fn actor_rim_cost_frame(renderer: &mut WgpuRenderer, rim: RimLight) -> StageFram
 #[test]
 #[ignore = "M3 measurement: run explicitly with GRIMOIRE_GPU_ADAPTER=software (see this test's doc comment)"]
 fn actor_rim_cost() {
+    let _serial = gpu_serial();
     let config = RendererConfig {
         vsync: false,
         initial_sprite_capacity: 16,
@@ -1472,25 +1509,41 @@ fn actor_rim_cost() {
             }
         }
     }
+    // Paired differences, not the difference of two medians: the two sides of a pair are rendered
+    // back to back, so whatever slows the runner down slows both of them down and cancels out
+    // here. A shared runner makes single frames arbitrarily slow, never arbitrarily fast, which is
+    // why the fastest pair is reported next to the median one.
+    let mut deltas: Vec<f64> = off_times
+        .iter()
+        .zip(on_times.iter())
+        .map(|(off, on)| on - off)
+        .collect();
     let summarise = |mut times: Vec<f64>| {
         times.sort_by(|a, b| a.partial_cmp(b).expect("no NaN duration"));
         (times[0], times[times.len() / 2])
     };
+    let fastest_pair = off_times
+        .iter()
+        .zip(on_times.iter())
+        .map(|(off, on)| (off + on, on - off))
+        .min_by(|a, b| a.0.partial_cmp(&b.0).expect("no NaN duration"))
+        .expect("at least one measured pair")
+        .1;
     let (off_min, off_median) = summarise(off_times);
     let (on_min, on_median) = summarise(on_times);
+    deltas.sort_by(|a, b| a.partial_cmp(b).expect("no NaN duration"));
+    let delta_median = deltas[deltas.len() / 2];
     println!(
         "grimoire-rim-cost: platform={} size={RIM_COST_WIDTH}x{RIM_COST_HEIGHT} \
          actors={RIM_COST_ACTORS} meshes={} lights={} frames={} \
          frame_off_median_ms={off_median:.3} frame_on_median_ms={on_median:.3} \
          frame_off_min_ms={off_min:.3} frame_on_min_ms={on_min:.3} \
-         delta_median_ms={:.3} delta_min_ms={:.3} contract_render_cpu_budget_ms=3.0 \
-         adapter=[{adapter}]",
+         paired_delta_median_ms={delta_median:.3} paired_delta_fastest_ms={fastest_pair:.3} \
+         contract_render_cpu_budget_ms=3.0 adapter=[{adapter}]",
         support::platform_dir(),
         on_stats.meshes_drawn,
         on_stats.point_lights_drawn,
         RIM_COST_FRAMES - 1,
-        on_median - off_median,
-        on_min - off_min,
     );
 }
 
@@ -1563,6 +1616,7 @@ fn scene_by_name(name: &str) -> Option<(WgpuRenderer, StageFrame)> {
 #[test]
 #[ignore = "OF-18.2 variance measurement: run explicitly (see this test's doc comment)"]
 fn scene_variance() {
+    let _serial = gpu_serial();
     let platform = support::platform_dir();
     for name in VARIANCE_SCENES {
         let Some((mut renderer, frame)) = scene_by_name(name) else {
