@@ -65,8 +65,9 @@ pub use stage::{
 };
 pub use stage3d::{
     AlphaMode, AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, CameraFollow,
-    DirectionalLight, MAX_SKIN_JOINTS, MaterialHandle, MeshHandle, MeshInstance, PbrMaterial,
-    PointLight, ShadowConfig, ShadowMode, SkinBinding, TextureHandle, point_light_from_bullet,
+    DirectionalLight, MAX_SKIN_JOINTS, MaterialHandle, MeshHandle, MeshInstance, MeshRole,
+    PbrMaterial, PointLight, RimLight, ShadowConfig, ShadowMode, SkinBinding, TextureHandle,
+    point_light_from_bullet,
 };
 pub use texture::{TextureColorSpace, TextureData, TextureError};
 

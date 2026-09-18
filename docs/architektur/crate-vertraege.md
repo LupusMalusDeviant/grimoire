@@ -822,8 +822,10 @@ pub struct MeshInstance {                // Debug, Clone, Copy, PartialEq
     pub mesh: MeshHandle,
     pub material: MaterialHandle,        // Index in `StageFrame::materials`
     pub transform: [[f32; 4]; 4],        // Spaltenmajor wie `Camera2D::view_projection`
+    pub role: MeshRole,                  // M3: nur `Actor` bekommt das Rim-Licht des Frames
     pub layer: RenderLayer,              // P1 akzeptiert nur `RenderLayer::World`
 }
+pub enum MeshRole { Environment, Actor } // Default `Environment`; Copy, Eq, Debug (kein `#[non_exhaustive]`, s.o.)
 
 #[non_exhaustive]
 pub struct PbrMaterial {                 // Debug, Clone, Copy, PartialEq; glTF `pbrMetallicRoughness`
@@ -855,11 +857,24 @@ pub enum AmbientLight {                  // kein `#[non_exhaustive]`, s.o.
 #[non_exhaustive]
 pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-0003 Regel 5 / FR-15
 
+#[non_exhaustive]
+pub struct RimLight {                    // Debug, Clone, Copy, PartialEq; M3, Stufe A
+    pub color: [f32; 3],                 // linear, >= 0.0; Vorgabe [0.62, 0.70, 0.86]
+    pub strength: f32,                   // >= 0.0; Vorgabe 0.24, 0.0 schaltet ab
+    pub power: f32,                      // Abfall `pow(1 - dot(n, v), power)`, 0.05..=64.0; Vorgabe 3.0
+    pub max_contribution: f32,           // harte Obergrenze je Kanal; Vorgabe 0.35, 0.0 schaltet ab
+}
+impl RimLight {
+    pub const fn off() -> Self;          // trägt nichts bei: Bild wie vor M3
+    pub fn is_active(&self) -> bool;     // strength > 0.0 && max_contribution > 0.0
+    pub fn sanitized(&self) -> Self;     // nicht-endliche Werte auf die Vorgabe, `power` geklemmt
+}
+
 // StageFrame (§6 oben) wächst additiv um:
 //   pub camera_25d: Option<Camera25D>,        pub meshes: Vec<MeshInstance>,
 //   pub materials: Vec<PbrMaterial>,          pub point_lights: Vec<PointLight>,
 //   pub key_light: Option<DirectionalLight>,  pub ambient: AmbientLight,
-//   pub bullet_light_cap: BulletLightCap,
+//   pub bullet_light_cap: BulletLightCap,     pub rim_light: RimLight,   // M3
 // StageStats (§6 oben) wächst additiv um Zähler: meshes_drawn, meshes_rejected_layer,
 //   meshes_rejected_invalid, meshes_rejected_unregistered (WP2.3, PO-Entscheid V-20
 //   2026-09-16, siehe unten), materials_rejected_invalid, point_lights_drawn,
@@ -889,6 +904,28 @@ pub struct BulletLightCap { pub floor_contribution: f32 }   // 0.0..=1.0, PRD-00
   `material`-Index außerhalb von `StageFrame::materials` bzw. auf ein ungültiges Material wird ebenfalls verworfen
   und gezählt (`meshes_rejected_invalid`), ohne Panic. `mesh` prüft P1 nicht gegen eine Registrierung — die gibt es
   erst ab WP2.3.
+- **`MeshRole`/`RimLight` (M3, Stufe A, PO-Freigabe 2026-09-18, gebündelt mit der Rim-Light-Entscheidung;
+  die Zeile der §2b-Änderungstabelle trägt der Doku-Strang nach):** `StageFrame::rim_light` ist ein Licht der
+  Akteurs-Ebene (PRD-0003 Ebene 3), kein Nachbearbeitungsschritt. Es wirkt ausschließlich auf `MeshInstance`s mit
+  `role == MeshRole::Actor`; die Vorgabe ist `Environment`, ein Spiel ohne Kenntnis von `MeshRole` zeichnet also
+  unverändert weiter. Der Term ist blickabhängig (`min(color * pow(1 - dot(n, v), power) * strength,
+  max_contribution)`, additiv im Fragment des Mesh-Passes) und damit **keine Kontur und kein Cel-Shading**
+  (Engine-ADR-0014, PRD-0003): er zeichnet keine Linie, sondern hellt die Silhouette eines Körpers auf.
+  - **Kosten:** kein zusätzlicher Pass, kein zusätzlicher Draw-Call, keine Pipeline-Variante. CPU-seitig sind es
+    vier Floats im Kamera-Uniform je Frame (`CameraGpu` wuchs von 304 auf 320 Byte) und ein `match` je
+    Mesh-Instanz; die Akteurs-Markierung reist im bis dahin reservierten `material_params.z`.
+  - **Lichtbudget:** Das Rim-Licht ist kein Licht im Sinne des Clustered-Forward+-Passes und belegt **keinen
+    Platz** im Budget (`LightBudget` `Low 32`/`High 256`, PRD-0003 FR-11); `point_lights_drawn` ändert sich mit
+    ihm nicht. Es ist auch kein Bullet-Licht und wird von `BulletLightCap` (Regel 5 / FR-15) weder begrenzt noch
+    umgangen, denn es erreicht die Umgebung gar nicht erst.
+  - **Lesbarkeitsregeln:** `max_contribution` ist die harte Obergrenze je Kanal und damit die Schranke gegen die
+    Ebenen 6 (Bullets) und 4 (Telegrafie): der Bullet-Pass zeichnet ohnehin nach dem Mesh-Pass und wird von ihm
+    nicht eingefärbt (Regel 1), und die Szene `actor_rim` belegt, dass ein angerandeter Akteur dunkler bleibt als
+    das Bullet daneben, das seinerseits weit über den 4,5:1 aus Regel 2 gegen den Boden steht.
+  - **Werte:** `is_active()` ist falsch, sobald `strength` oder `max_contribution` 0 ist — dann lädt
+    `camera_uniform` eine exakte Null und der Shader-Term entfällt. `sanitized()` ersetzt nicht-endliche Werte
+    durch die Vorgabe und klemmt `power` auf 0.05..=64.0, damit ein kaputter Wert nie als NaN auf die GPU geht.
+    `RimLight::off()` stellt das Bild von vor M3 her.
 - **`PbrMaterial`:** Validierung (`is_valid`) prüft Wertebereiche (`base_color_factor`, `metallic_factor`,
   `roughness_factor`, `emissive_factor` je 0.0..=1.0; `AlphaMode::Mask.cutoff` 0.0..=1.0) und Endlichkeit, nie
   Panic. Ungültige Materialien werden gezählt (`materials_rejected_invalid`), unabhängig davon, ob und wie viele

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::stage3d::{
     AmbientLight, BlobShadowInstance, BulletLightCap, Camera25D, DirectionalLight, MAX_SKIN_JOINTS,
-    MeshHandle, MeshInstance, PbrMaterial, PointLight, ShadowConfig,
+    MeshHandle, MeshInstance, PbrMaterial, PointLight, RimLight, ShadowConfig,
 };
 use crate::{RenderFrame, RenderStats, SpriteInstance};
 
@@ -204,6 +204,12 @@ pub struct StageFrame {
     /// Bullet-light cap for this frame (PRD-0003 rule 5 / FR-15, WP2.2). Persists across
     /// [`StageFrame::clear`], like [`StageFrame::camera_25d`].
     pub bullet_light_cap: BulletLightCap,
+    /// Rim light of the actor layer (contract §6, M3): every [`MeshInstance`] whose
+    /// [`crate::MeshRole`] is `Actor` receives it, the environment never does. On by default, so a
+    /// game gets readable characters without configuring anything; [`RimLight::off`] restores the
+    /// pre-M3 picture exactly. Set per stage and persists across [`StageFrame::clear`], like
+    /// [`StageFrame::camera_25d`].
+    pub rim_light: RimLight,
     /// Blob shadow discs (plan 0002 WP2.6, OF-3.2), drawn on the ground under an actor as a cheap
     /// alternative to the key-light shadow map (`docs/art/stilbibel.md`, preset "Low"). Only drawn
     /// when [`StageFrame::shadow_config`]'s [`crate::ShadowMode`] is [`crate::ShadowMode::Blob`];

@@ -703,6 +703,9 @@ pub struct MeshInstance {
     /// Column-major model-to-world transform (translation, rotation and scale combined), same
     /// matrix convention as [`crate::Camera2D::view_projection`].
     pub transform: [[f32; 4]; 4],
+    /// What this instance is in the picture (contract §6, M3 rim light): [`MeshRole::Actor`] gets
+    /// the frame's [`RimLight`], [`MeshRole::Environment`] (the default) never does.
+    pub role: MeshRole,
     /// Layer this instance is drawn on. P1 accepts only [`RenderLayer::World`] (contract §6: the
     /// mesh pass shares layers 1-3 with world sprites); any other value is rejected and counted
     /// (`StageStats::meshes_rejected_layer`), analogous to the bullet pass's palette-space check.
@@ -723,6 +726,7 @@ impl Default for MeshInstance {
             mesh: MeshHandle::default(),
             material: MaterialHandle::default(),
             transform: IDENTITY_TRANSFORM,
+            role: MeshRole::Environment,
             layer: RenderLayer::World,
             skin: None,
         }
@@ -890,6 +894,95 @@ impl AmbientLight {
             }
         }
     }
+}
+
+/// Rim light of the actor layer (contract §6, M3): a view-facing term added to every
+/// [`MeshRole::Actor`] instance, so a dark figure keeps a readable edge against a dark floor
+/// without an outline, a cel-shading step or a post-processing pass (PRD-0003, engine ADR-0014).
+///
+/// It costs no light slot: the term is analytic in the mesh shader and never enters the clustered
+/// light budget (`LightBudget`), so it cannot crowd out point lights or bullet-cloud lights.
+///
+/// Growable like every new P1 render type (contract §2 rule 13): `#[non_exhaustive]` with
+/// [`Default`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RimLight {
+    /// Colour of the rim term, linear RGB. The default is the cool white of the stage's sky
+    /// ambient, so a rimmed actor reads as lit from behind rather than tinted.
+    pub color: [f32; 3],
+    /// How much rim light an actor's silhouette receives at most, before
+    /// [`RimLight::max_contribution`] clamps it. `0.0` turns the rim light off.
+    pub strength: f32,
+    /// Falloff exponent of the view-facing term `pow(1 - dot(n, v), power)`. Larger values keep the
+    /// rim closer to the silhouette; below `1.0` it washes over the whole actor.
+    pub power: f32,
+    /// Hard upper bound of the rim term per channel, so a rim can never outshine the bullet layer
+    /// (PRD-0003 rules 1 and 2) however bright an actor's material is.
+    pub max_contribution: f32,
+}
+
+impl Default for RimLight {
+    fn default() -> Self {
+        // Measured in `tests/rim_light_contrast.rs`: on the arena floor these values lift a dark
+        // actor's brightest tenth well past the 1.5:1 band the round-4 imp already reached (game
+        // plan 0002, asset import pilot, stage 4), while the rim itself stays far below the
+        // brightness of the bullet layer.
+        Self {
+            color: [0.62, 0.70, 0.86],
+            strength: 0.24,
+            power: 3.0,
+            max_contribution: 0.35,
+        }
+    }
+}
+
+impl RimLight {
+    /// A rim light that contributes nothing; the stage then looks exactly as it did before M3.
+    #[must_use]
+    pub const fn off() -> Self {
+        Self {
+            color: [0.0; 3],
+            strength: 0.0,
+            power: 1.0,
+            max_contribution: 0.0,
+        }
+    }
+
+    /// Whether this rim light can contribute at all.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.strength > 0.0 && self.max_contribution > 0.0
+    }
+
+    /// The rim light with every non-finite or out-of-range value replaced by the default's, so a
+    /// broken value can never make an actor disappear into a NaN.
+    #[must_use]
+    pub fn sanitized(&self) -> Self {
+        let default = Self::default();
+        let finite = |value: f32, fallback: f32| if value.is_finite() { value } else { fallback };
+        Self {
+            color: [
+                finite(self.color[0], default.color[0]).max(0.0),
+                finite(self.color[1], default.color[1]).max(0.0),
+                finite(self.color[2], default.color[2]).max(0.0),
+            ],
+            strength: finite(self.strength, default.strength).max(0.0),
+            power: finite(self.power, default.power).clamp(0.05, 64.0),
+            max_contribution: finite(self.max_contribution, default.max_contribution).max(0.0),
+        }
+    }
+}
+
+/// What a [`MeshInstance`] is in the picture (contract §6, M3 rim light).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum MeshRole {
+    /// Floor, walls, props: lit by the frame's lights alone.
+    #[default]
+    Environment,
+    /// A character on the actor layer of PRD-0003 (layer 3): additionally receives the frame's
+    /// [`RimLight`], so a dark figure keeps a readable edge against a dark floor.
+    Actor,
 }
 
 /// Bullet-light cap hook (PRD-0003 rule 5 / FR-15, ADR-0014): the render vertrag's structural
@@ -2360,5 +2453,62 @@ mod tests {
             (-1.0..=1.0).contains(&clip[2]),
             "top of the frustum must stay within depth range: {clip:?}"
         );
+    }
+
+    #[test]
+    fn a_mesh_instance_is_environment_unless_the_game_says_otherwise() {
+        // Contract §6 (M3): the rim light is opt-in per instance, so a game that knows nothing
+        // about `MeshRole` renders exactly the picture it rendered before.
+        assert_eq!(MeshInstance::default().role, MeshRole::Environment);
+        assert_eq!(MeshRole::default(), MeshRole::Environment);
+    }
+
+    #[test]
+    fn the_default_rim_light_is_on_and_off_is_off() {
+        assert!(RimLight::default().is_active());
+        assert!(!RimLight::off().is_active());
+        // Both switches a stage can flip to get the pre-M3 picture back.
+        let no_strength = RimLight {
+            strength: 0.0,
+            ..RimLight::default()
+        };
+        assert!(!no_strength.is_active());
+        let no_headroom = RimLight {
+            max_contribution: 0.0,
+            ..RimLight::default()
+        };
+        assert!(!no_headroom.is_active());
+    }
+
+    #[test]
+    fn a_broken_rim_light_falls_back_instead_of_uploading_a_nan() {
+        let broken = RimLight {
+            color: [f32::NAN, f32::INFINITY, -2.0],
+            strength: f32::NAN,
+            power: f32::NEG_INFINITY,
+            max_contribution: f32::NAN,
+        };
+        let sane = broken.sanitized();
+        assert!(sane.color.iter().all(|c| c.is_finite() && *c >= 0.0));
+        assert!(sane.strength.is_finite() && sane.strength >= 0.0);
+        assert!(sane.power.is_finite() && sane.power > 0.0);
+        assert!(sane.max_contribution.is_finite() && sane.max_contribution >= 0.0);
+        assert_eq!(sane.color[0], RimLight::default().color[0]);
+
+        // A finite but absurd exponent is clamped, not rejected: `pow` with a huge exponent is a
+        // silhouette so thin it disappears, and with a tiny one it floods the whole actor.
+        let mut extreme = RimLight {
+            power: 1.0e12,
+            ..RimLight::default()
+        };
+        assert!(extreme.sanitized().power <= 64.0);
+        extreme.power = 0.0;
+        assert!(extreme.sanitized().power >= 0.05);
+    }
+
+    #[test]
+    fn a_sane_rim_light_survives_sanitising_unchanged() {
+        assert_eq!(RimLight::default().sanitized(), RimLight::default());
+        assert_eq!(RimLight::off().sanitized(), RimLight::off());
     }
 }
